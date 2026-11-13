@@ -452,7 +452,9 @@ function attach(key) {
   active = st;
   $('placeholder').style.display = 'none';
   $('t-detach').style.display = '';
-  term.reset();
+  // no term.reset() here: detach() above already cleared the screen when a session
+  // was active, and a fresh tmux attach full-redraws it when we come from a
+  // closed/detached state — a second reset was redundant
   $('t-name').textContent = s ? `${displayName(s)}  [${s.host}:${s.name}]` : key;
   $('t-cwd').textContent = s ? s.cwd : '';
   updateLocalBadge(s);
@@ -838,6 +840,7 @@ $('ns-ok').onclick = async () => {
   const name = $('ns-name').value.trim();
   const cwd = $('ns-cwd').value.trim() || undefined;
   if (!host) { $('ns-err').textContent = 'no reachable host'; return; }
+  // mirrors NAME_RE in server.js (and valid_name in pitux) — keep in sync
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) { $('ns-err').textContent = 'name: start with letter/digit, then letters, digits, . _ -'; return; }
   $('ns-err').textContent = 'creating…';
   const r = await fetch('/api/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ host, name, cwd }) });

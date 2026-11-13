@@ -94,8 +94,9 @@ Useful env vars (override the config file):
 
 ## Config (`config.json`)
 
-One file for everything: server settings + the host list. Re-read on every
-poll (5 s), so it is live-editable:
+One file for everything: server settings + the host list. The server stats it
+a couple of times per second and re-parses only when the mtime changes, so
+edits are live (picked up on the next poll, ~5 s):
 
 ```json
 {

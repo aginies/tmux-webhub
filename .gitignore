@@ -3,5 +3,9 @@ config.json
 .certs/
 plan/
 
+# stray build/tool logs
+error
+*.log
+
 # local screencast sources (converted to demo.gif)
 *.mp4

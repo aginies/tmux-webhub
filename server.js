@@ -30,6 +30,20 @@ function readConfig(fatal) {
     process.exit(1);
   }
 }
+// Atomic config write: write a temp file then rename over the target, so a
+// concurrent reader never sees a half-written file. Returns an error message
+// on failure, null on success (the caller owns the HTTP response).
+function writeConfigAtomic(obj) {
+  const tmp = CONFIG_FILE + '.tmp-' + process.pid;
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(obj, null, 2) + '\n');
+    fs.renameSync(tmp, CONFIG_FILE);
+    return null;
+  } catch (e) {
+    try { fs.unlinkSync(tmp); } catch {}
+    return e.message;
+  }
+}
 const CONFIG = readConfig(true);
 const HOST = process.env.PC_HOST || CONFIG.host || '0.0.0.0';
 const PORT = parseInt(process.env.PC_PORT || CONFIG.port || '8787', 10);
@@ -324,6 +338,11 @@ function refreshHosts() {
     .finally(() => { hostsInflight = null; });
   return hostsInflight;
 }
+// Mark ONE host's cache entry stale (at: 0) so the next poll re-fetches just that
+// host; the others keep their fresh data. No-op while there is no cache yet.
+function invalidateHost(name) {
+  if (hostsCache) hostsCache.hosts = hostsCache.hosts.map((h) => (h.name === name ? { ...h, at: 0 } : h));
+}
 setInterval(() => { refreshHosts().catch(() => {}); }, POLL_MS).unref();
 refreshHosts().catch(() => {});
 
@@ -442,6 +461,18 @@ function handleLogout(res) {
   res.end();
 }
 
+// Session-creation script (runs on the host). ~ is expanded on the HOST side:
+// tmux 3.8 does not expand tildes in -c and silently falls back to its default
+// directory. name is NAME_RE-validated; cmd/dir travel as ARGV elements
+// (sh -c 'script' sh <name> <cmd> <dir>), never embedded in the script.
+const NEW_SH = `d=$3
+case $d in
+  "~") d=$HOME ;;
+  "~"/*) d=$HOME/\${d#"~/"} ;;
+  /*) [ -d "$d" ] || { echo "not a directory: $d" >&2; exit 1; } ;;
+esac
+tmux new-session -d -s "$1" -c "$d" "$2"`;
+
 async function handleApiSessions(req, res, url, send) {
   if (req.method === 'GET') {
     lastSessionsGet = Date.now(); // this request IS a client → allow the poll below
@@ -462,34 +493,28 @@ async function handleApiSessions(req, res, url, send) {
     const dir = (typeof parsed.cwd === 'string' && parsed.cwd.trim()) ? parsed.cwd.trim() : '~';
     // per-host override: hosts may run a different binary (e.g. pi-bolt) or none of the default PI_CMD
     const cmd = (typeof host.cmd === 'string' && host.cmd.trim()) ? host.cmd.trim() : PI_CMD;
-    // ~ is expanded on the HOST side: tmux 3.8 does not expand tildes in -c and silently
-    // falls back to its default directory. name is NAME_RE-validated; cmd/dir travel as
-    // ARGV elements (sh -c 'script' sh <name> <cmd> <dir>), never embedded in the script.
-    const NEW_SH = `d=$3
-case $d in
-  "~") d=$HOME ;;
-  "~/"*) d=$HOME/\${d#"~/"} ;;
-  /*) [ -d "$d" ] || { echo "not a directory: $d" >&2; exit 1; } ;;
-esac
-tmux new-session -d -s "$1" -c "$d" "$2"`;
     const r = await runOn(host, ['sh', '-c', NEW_SH, 'sh', name, cmd, dir], 8000);
     if (!r.ok) return send(400, { error: (r.stderr || r.stdout || 'failed').trim().split('\n').pop() });
     // invalidate ONLY this host's entry: the client's immediate GET re-polls it, while
     // the other hosts keep their <3.5 s-old data
-    if (hostsCache) hostsCache.hosts = hostsCache.hosts.map((h) => (h.name === host.name ? { ...h, at: 0 } : h));
+    invalidateHost(host.name);
     return send(200, { ok: true, host: host.name, name });
   }
   return send(405, { error: 'method not allowed' });
 }
 
-// ---------- config editing: GET raw file, PUT validated JSON (atomic write) ----------
+// ---------- config editing: GET redacted file, PUT validated JSON (atomic write) ----------
 // Hosts/cmd edits hot-reload (loadHosts checks mtime) and invalidate the poll cache so the
 // next GET /api/sessions sees them. port/token/tls/cert/key are read at startup → restart.
+// The live token is never sent to the browser: GET redacts it to REDACTED, and a PUT that
+// leaves it redacted restores the on-disk value (so editing other fields doesn't wipe it).
+const REDACTED = '__REDACTED__';
 async function handleApiConfig(req, res, send) {
   if (req.method === 'GET') {
     try {
-      const raw = fs.readFileSync(CONFIG_FILE, 'utf8');
-      return send(200, { raw, path: CONFIG_FILE });
+      const cfg = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+      if (typeof cfg.token === 'string' && cfg.token) cfg.token = REDACTED;
+      return send(200, { raw: JSON.stringify(cfg, null, 2) + '\n', path: CONFIG_FILE });
     } catch (e) {
       return send(500, { error: 'cannot read config: ' + e.message });
     }
@@ -500,14 +525,15 @@ async function handleApiConfig(req, res, send) {
     let parsed;
     try { parsed = JSON.parse(body); } catch (e) { return send(400, { error: 'invalid JSON: ' + e.message }); }
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return send(400, { error: 'config must be a JSON object' });
-    const tmp = CONFIG_FILE + '.tmp-' + process.pid;
-    try {
-      fs.writeFileSync(tmp, JSON.stringify(parsed, null, 2) + '\n');
-      fs.renameSync(tmp, CONFIG_FILE); // atomic: readers never see a half-written file
-    } catch (e) {
-      try { fs.unlinkSync(tmp); } catch {}
-      return send(500, { error: 'cannot write config: ' + e.message });
+    // a redacted token means "unchanged" → restore the live one so saving other
+    // fields doesn't wipe it (the user can still set a new value by replacing it)
+    if (parsed.token === REDACTED) {
+      let cur;
+      try { cur = readConfig(false).token; } catch { cur = undefined; }
+      if (typeof cur === 'string' && cur) parsed.token = cur; else delete parsed.token;
     }
+    const werr = writeConfigAtomic(parsed);
+    if (werr) return send(500, { error: 'cannot write config: ' + werr });
     configTouched(); // don't wait out the loadHosts stat gate
     hostsCache = null; // the host LIST itself may have changed (added/removed/renamed) → full re-poll
     return send(200, { ok: true });
@@ -530,18 +556,12 @@ async function handleHostToggle(req, res, send) {
   if (!entry) return send(404, { error: 'host not in config: ' + name });
   const enabled = entry.enabled === false; // the new value (toggle)
   if (enabled) delete entry.enabled; else entry.enabled = false;
-  const tmp = CONFIG_FILE + '.tmp-' + process.pid;
-  try {
-    fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2) + '\n');
-    fs.renameSync(tmp, CONFIG_FILE); // atomic: readers never see a half-written file
-  } catch (e) {
-    try { fs.unlinkSync(tmp); } catch {}
-    return send(500, { error: 'cannot write config: ' + e.message });
-  }
+  const werr = writeConfigAtomic(cfg);
+  if (werr) return send(500, { error: 'cannot write config: ' + werr });
   configTouched();
   // force a re-poll of just this host on the next cycle (a disabled stub or a fresh
   // entry would otherwise look "not stale" and hide the change for up to POLL_MS)
-  if (hostsCache) hostsCache.hosts = hostsCache.hosts.map((h) => (h.name === name ? { ...h, at: 0 } : h));
+  invalidateHost(name);
   return send(200, { ok: true, host: name, enabled });
 }
 
