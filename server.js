@@ -503,6 +503,27 @@ async function handleApiSessions(req, res, url, send) {
   return send(405, { error: 'method not allowed' });
 }
 
+// POST /api/sessions/rename {host, from, to} — tmux rename-session. Attached clients
+// follow the session (not its name), so an open terminal keeps working after a rename.
+async function handleApiRename(req, res, send) {
+  if (req.method !== 'POST') return send(405, { error: 'method not allowed' });
+  const body = await readBody(req);
+  if (!body) return send(400, { error: 'bad request body' });
+  let parsed;
+  try { parsed = JSON.parse(body); } catch { return send(400, { error: 'invalid JSON' }); }
+  const host = hostByName(String(parsed.host || 'localhost'));
+  const from = String(parsed.from || '');
+  const to = String(parsed.to || '');
+  if (!host) return send(400, { error: 'unknown host' });
+  if (!NAME_RE.test(from)) return send(400, { error: 'bad session name' });
+  if (!NAME_RE.test(to)) return send(400, { error: 'bad new name: start with letter/digit, then letters, digits, . _ -' });
+  if (from === to) return send(200, { ok: true, host: host.name, from, to }); // no-op
+  const r = await runOn(host, ['tmux', 'rename-session', '-t', from, to], 6000);
+  if (!r.ok) return send(400, { error: (r.stderr || r.stdout || 'failed').trim().split('\n').pop() });
+  invalidateHost(host.name);
+  return send(200, { ok: true, host: host.name, from, to });
+}
+
 // ---------- config editing: GET redacted file, PUT validated JSON (atomic write) ----------
 // Hosts/cmd edits hot-reload (loadHosts checks mtime) and invalidate the poll cache so the
 // next GET /api/sessions sees them. port/token/tls/cert/key are read at startup → restart.
@@ -654,6 +675,7 @@ const server = (TLS ? https : http).createServer(tlsOpts, async (req, res) => {
     if (url.pathname.startsWith('/api/')) {
       if (!authed(req)) return send(401, { error: 'unauthorized' });
       if (url.pathname === '/api/sessions') return await handleApiSessions(req, res, url, send);
+      if (url.pathname === '/api/sessions/rename') return await handleApiRename(req, res, send);
       if (url.pathname === '/api/config') return await handleApiConfig(req, res, send);
       if (url.pathname === '/api/hosts/toggle') return await handleHostToggle(req, res, send);
       if (url.pathname === '/api/dirs') return await handleApiDirs(req, res, url, send);

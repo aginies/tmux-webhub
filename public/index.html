@@ -101,6 +101,17 @@
   .chip .ind-empty { width: 11px; flex: 0 0 auto; } /* reserves the indicator slot so chips don't shift */
   @keyframes pc-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
   .chip .cname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* per-chip action (✎ rename): hover-revealed on desktop, always (subtle) on touch */
+  .chip .crename {
+    flex: 0 0 auto; border: 0; background: transparent; color: var(--dim);
+    font-size: 11px; line-height: 1; padding: 2px 3px; border-radius: 6px; cursor: pointer;
+    opacity: 0; transition: opacity .1s;
+  }
+  .chip:hover .crename, .chip.active .crename { opacity: .85; }
+  .chip .crename:hover { color: var(--accent); opacity: 1; }
+  @media (pointer: coarse) {
+    .chip .crename { opacity: .55; padding: 4px; font-size: 12px; } /* no hover on touch */
+  }
 
   #main { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   #conn {
@@ -557,6 +568,30 @@ const chipTitle = (s, hostState, others) =>
   `${s.host}: ${stateLabel(hostState)} · tmux: ${s.name} · ${s.cwd}` +
   (others > 0 ? ` · ${others} other client(s) attached` : '') + (s.activity ? ' · active' : '');
 
+// rename a session (tmux rename-session). If it's the one we're attached to, the WS
+// keeps working (tmux clients follow the session, not its name) — just re-point the
+// client's identity so the chip highlight + termbar track the new name.
+async function renameSession(key) {
+  const s = findSession(key);
+  if (!s) return;
+  const to = prompt('rename session', s.name);
+  if (to === null) return; // cancelled
+  const name = to.trim();
+  if (!name || name === s.name) return;
+  // mirrors NAME_RE in server.js — keep in sync
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) { alert('name: start with letter/digit, then letters, digits, . _ -'); return; }
+  const wasActive = !!(active && active.key === key);
+  const { ok, d } = await api('/api/sessions/rename', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ host: s.host, from: s.name, to: name }) });
+  if (!ok) { setConnBanner(`⚠ could not rename “${s.name}”: ${d.error || 'failed'}`); return; }
+  if (wasActive) {
+    active.key = keyOf(s.host, name);
+    active.name = name;
+    $('t-name').textContent = `${name}  [${s.host}:${name}]`;
+  }
+  renderChips();
+  refresh(); // reconciles the chip list (old name gone, new name present)
+}
+
 // ---------- rendering: one section per host (automatic, no manual grouping) ----------
 // Reconcile in place: a full rebuild every 5 s poll (any field change, e.g. one
 // session's activity flag, would trigger it) resets hover/scroll and can eat a click
@@ -678,7 +713,13 @@ function chipEl(s, hostState) {
   const nm = document.createElement('span');
   nm.className = 'cname'; nm.textContent = displayName(s);
   nm.title = chipTitle(s, hostState, others);
-  c.append(ind, nm);
+  // action: ✎ rename (tmux rename-session)
+  const rn = document.createElement('button');
+  rn.className = 'crename';
+  rn.textContent = '✎';
+  rn.title = 'rename session';
+  rn.onclick = (e) => { e.stopPropagation(); renameSession(key); };
+  c.append(ind, nm, rn);
   c.onclick = () => attach(key);
   return c;
 }
