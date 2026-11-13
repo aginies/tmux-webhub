@@ -163,11 +163,17 @@
   .cfg-note { font-size: 12px; color: var(--dim); }
 
   /* ============ mobile ============ */
-  /* narrow screens: keep the header to two lines — controls on top, host
-     groups in a single horizontal-scroll row (swipe to see more hosts) */
+  /* narrow screens: ONE line — [☰] [+New] [host groups: swipeable, fill the
+     rest of the width]. order: reorders without touching the DOM (desktop
+     keeps its layout); the gear (config editor) is desktop-only. */
   @media (max-width: 640px) {
+    #edit-config { display: none; }
+    header .spacer { display: none; } /* #hosts absorbs the free space instead */
+    #toggle-panel { order: 1; }
+    #new-session { order: 2; }
     #hosts {
-      display: flex; flex: 1 1 100%; min-width: 0;
+      order: 3;
+      display: flex; flex: 1 1 auto; min-width: 0;
       overflow-x: auto; scrollbar-width: none;
     }
     #hosts::-webkit-scrollbar { display: none; }
