@@ -43,8 +43,13 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 const SLOW_MS = 2000;              // a host slower than this to answer is "slow"
 const CMD_TIMEOUT_MS = 5000;       // default per-command timeout (list/dirs)
 const BUF_4MB = 4 * 1024 * 1024;   // maxBuffer: list-sessions / runOn default
-const POLL_MS = 5000;              // how often the poller refreshes every host
+// poll period (ms): config "pollMs" (clamped so a typo can't hammer the hosts or
+// freeze the UI). Restart-scoped like the other server settings.
+const POLL_MS = Math.min(60000, Math.max(1000, parseInt(CONFIG.pollMs, 10) || 5000));
 const ACTIVE_WINDOW_MS = 2 * POLL_MS; // a session is "active" if it produced output within this window
+// bandwidth readout (header ↓/↑ + /api/sessions "net"): config "netDisplay"
+// (default on). When off the socket hooks aren't attached at all — nothing is counted.
+const NET_DISPLAY = CONFIG.netDisplay !== false;
 const LOGIN_WINDOW_MS = 15 * 60 * 1000; // brute-force guard window
 // WS terminal backpressure: a slow/throttled client (high-latency link, background tab)
 // must not grow the socket write queue without bound — pause the pty above
@@ -439,7 +444,7 @@ async function handleApiSessions(req, res, url, send) {
     await refreshHosts(); // fresh cache, or a coalesced poll if stale
     const snap = hostsCache || { hosts: [], configError: null };
     // strip the internal per-host `at` (would churn the client's change-detection snapshot)
-    return send(200, { hosts: snap.hosts.map(({ at, ...h }) => h), pi: PI_CMD, pollMs: POLL_MS, configError: snap.configError });
+    return send(200, { hosts: snap.hosts.map(({ at, ...h }) => h), pi: PI_CMD, pollMs: POLL_MS, configError: snap.configError, net: NET_DISPLAY ? netRate() : undefined });
   }
   if (req.method === 'POST') {
     const body = await readBody(req);
@@ -605,6 +610,42 @@ const server = (TLS ? https : http).createServer(tlsOpts, async (req, res) => {
     send(500, { error: String(e.message || e) });
   }
 });
+
+// ---------- network usage: app-level bytes per socket (pre/post TLS layer) ----------
+// one hook per socket (WeakSet guard: a TLS server may emit 'connection' and
+// 'secureConnection' for the same socket). The WS upgrade reuses the socket, so
+// terminal traffic is counted for free. Rate = last 5 s of per-second deltas
+// (matches the poll cadence); totals are since server start. Disabled by
+// config "netDisplay": false — then no hooks, no timer, no counting.
+const netStats = { inTotal: 0, outTotal: 0, inSec: 0, outSec: 0, histIn: [], histOut: [] };
+const hookedSockets = new WeakSet();
+function hookSocketBytes(s) {
+  if (hookedSockets.has(s)) return;
+  hookedSockets.add(s);
+  s.on('data', (d) => { netStats.inTotal += d.length; netStats.inSec += d.length; });
+  const ow = s.write.bind(s);
+  s.write = (chunk, enc, cb) => {
+    if (chunk) {
+      const n = typeof chunk === 'string' ? Buffer.byteLength(chunk, typeof enc === 'string' ? enc : 'utf8') : chunk.length;
+      netStats.outTotal += n; netStats.outSec += n;
+    }
+    return ow(chunk, enc, cb);
+  };
+}
+if (NET_DISPLAY) {
+  server.on('connection', hookSocketBytes);
+  server.on('secureConnection', hookSocketBytes);
+  setInterval(() => {
+    netStats.histIn.push(netStats.inSec); netStats.inSec = 0;
+    netStats.histOut.push(netStats.outSec); netStats.outSec = 0;
+    if (netStats.histIn.length > 60) netStats.histIn.shift();
+    if (netStats.histOut.length > 60) netStats.histOut.shift();
+  }, 1000).unref();
+}
+function netRate() {
+  const sum5 = (h) => h.slice(-5).reduce((a, b) => a + b, 0);
+  return { inBps: sum5(netStats.histIn), outBps: sum5(netStats.histOut), inTotal: netStats.inTotal, outTotal: netStats.outTotal };
+}
 
 // ---------- websocket: browser ⇄ tmux session (local or over ssh) ----------
 // terminal frames are tiny; bound per-message memory against a buggy/malicious client

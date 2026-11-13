@@ -27,6 +27,7 @@
     border-radius: 6px; padding: 5px 10px; cursor: pointer; font-size: 13px;
   }
   header button { padding: 3px 9px; font-size: 12.5px; }
+  .net { color: var(--dim); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
   button:hover { background: var(--chip-hover); }
 
   #unhide {
@@ -165,6 +166,7 @@
   <button id="toggle-panel" title="Hide session panel">☰</button>
   <div id="hosts"></div>
   <div class="spacer"></div>
+  <span id="net" class="net" title="server bandwidth (5 s average)"></span>
   <button id="new-session">+Session</button>
   <button id="edit-config" title="Edit config.json">⚙</button>
 </header>
@@ -212,7 +214,7 @@
 <div id="cfg-bg">
   <div class="modal" id="cfg-modal">
     <h2>config.json</h2>
-    <div class="cfg-note">hosts / cmd apply immediately · port, token, tls, cert, key need a server restart · changing the token logs out all clients</div>
+    <div class="cfg-note">hosts / cmd apply immediately · port, token, tls, cert, key, pollMs, netDisplay need a server restart · changing the token logs out all clients</div>
     <div class="cfg-edit">
       <div id="cfg-lines" class="cfg-lines"></div>
       <textarea id="cfg-text" spellcheck="false" wrap="off"></textarea>
@@ -475,6 +477,16 @@ function setConnBanner(msg) {
   el.textContent = msg;
   el.style.display = 'block';
 }
+function fmtBytes(b) {
+  if (b >= 1024 * 1024) return (b / (1024 * 1024)).toFixed(1) + ' MB';
+  if (b >= 1024) return (b / 1024).toFixed(1) + ' KB';
+  return Math.round(b) + ' B';
+}
+function setNetReadout(n) {
+  const el = $('net');
+  el.textContent = `↓ ${fmtBytes(n.inBps)}/s · ↑ ${fmtBytes(n.outBps)}/s`;
+  el.title = `server bandwidth (5 s average) — since start: ↓ ${fmtBytes(n.inTotal)} · ↑ ${fmtBytes(n.outTotal)}`;
+}
 async function refresh() {
   refreshTimer = null;
   if (refreshing) return; // one already in flight; it reschedules on completion
@@ -484,6 +496,7 @@ async function refresh() {
     const d = await r.json();
     netFails = 0;
     if (Number.isFinite(d.pollMs) && d.pollMs > 0) pollMs = d.pollMs;
+    if (d.net) setNetReadout(d.net); else $('net').textContent = ''; // netDisplay: false
     hosts = d.hosts || [];
     renderChips();
     populateHostSelect();

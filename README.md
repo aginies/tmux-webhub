@@ -89,6 +89,8 @@ poll (5 s), so it is live-editable:
   "cert": ".certs/cert.pem",
   "key": ".certs/key.pem",
   "cmd": "pi",
+  "pollMs": 5000,
+  "netDisplay": true,
   "hosts": [
     { "name": "localhost" },
     { "name": "station2", "ssh": "aginies@192.168.1.50" },
@@ -106,6 +108,11 @@ poll (5 s), so it is live-editable:
   e.g. `pi-bolt`, `htop`, `bash`. Without it, a host where the default command
   is missing creates sessions that die instantly (the command isn't found and
   the pane's shell exits).
+- `pollMs` (optional): poll period in ms (default `5000`, clamped to 1000–60000) —
+  how often the server refreshes the host list, and the pace of the browser's
+  GET poll. Needs a **server restart**.
+- `netDisplay` (optional): the header bandwidth readout (default `true`).
+  When `false` the server doesn't count bytes at all. Needs a **server restart**.
 - With `ssh` → `tmux list-sessions` / `attach` run over SSH
   (`ssh -o BatchMode=yes ...`, i.e. **key auth only**, no password prompts).
   Make sure `~/.ssh/known_hosts` has the host key (BatchMode refuses prompts).
@@ -159,9 +166,12 @@ fallback applies.
   terminal isn't focused — Esc is a normal key in the running program).
 - `⚙` (top right) opens the **config editor**: edit `config.json` in a modal
   and save. `hosts` / `cmd` apply immediately; `port`, `token`, `tls`,
-  `cert`, `key` need a server restart (changing the token logs out all
-  clients). The write is atomic and JSON-validated — a broken file can never
-  be saved.
+  `cert`, `key`, `pollMs`, `netDisplay` need a server restart (changing the
+  token logs out all clients). The write is atomic and JSON-validated — a
+  broken file can never be saved.
+- The header shows the server's current network usage (5 s average): `↓ in · ↑ out`;
+  hover for the totals since server start. Disable with `"netDisplay": false`
+  (restart) — the server then doesn't count bytes at all.
 - Resizing the browser resizes the tmux pane live.
 - When a session is attached from both your console and the web, tmux sizes the
   pane to whichever client was active last (standard tmux behavior).

@@ -99,6 +99,54 @@ test('GET /api/sessions with cookie → 200 + hosts array', async () => {
   assert.ok(Array.isArray(d.hosts));
 });
 
+test('GET /api/sessions: net stats present, totals monotonic', async () => {
+  const g1 = await fetch(base + '/api/sessions', { headers: { Cookie: cookie } });
+  const d1 = await g1.json();
+  assert.ok(d1.net && typeof d1.net === 'object', 'net object present');
+  assert.ok(Number.isFinite(d1.net.inBps) && Number.isFinite(d1.net.outBps), 'rates numeric');
+  assert.ok(d1.net.inTotal > 0 && d1.net.outTotal > 0, 'bytes counted');
+  // let the 1 s ring timer tick (a crash in it would kill the server)
+  await new Promise((res) => setTimeout(res, 1100));
+  const g2 = await fetch(base + '/api/sessions', { headers: { Cookie: cookie } });
+  const d2 = await g2.json();
+  assert.ok(d2.net.inTotal >= d1.net.inTotal, 'inTotal non-decreasing');
+  assert.ok(d2.net.outTotal >= d1.net.outTotal, 'outTotal non-decreasing');
+});
+
+test('config: pollMs + netDisplay=false (restart-scoped)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pc-cfg2-'));
+  const cfg = path.join(dir, 'config.json');
+  const tok = 'testtoken2-' + Date.now();
+  fs.writeFileSync(cfg, JSON.stringify({ port: 0, host: '127.0.0.1', token: tok, tls: false, hosts: [], pollMs: 1500, netDisplay: false }));
+  const port = await freePort();
+  const ch = spawn(process.execPath, [path.join(ROOT, 'server.js')], {
+    env: { ...process.env, PC_CONFIG_FILE: cfg, PC_PORT: String(port), PC_TLS: 'false' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  try {
+    await new Promise((resolve, reject) => {
+      let out = '';
+      const timer = setTimeout(() => reject(new Error('server did not start: ' + out)), 8000);
+      const onData = (d) => { out += d; if (out.includes('tmux-webhub on')) { clearTimeout(timer); resolve(); } };
+      ch.stdout.on('data', onData);
+      ch.stderr.on('data', onData);
+      ch.on('exit', (c) => { clearTimeout(timer); reject(new Error('server exited early (' + c + '): ' + out)); });
+    });
+    const lr = await fetch(`http://127.0.0.1:${port}/login`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: tok }),
+    });
+    assert.equal(lr.status, 200);
+    const ck = (lr.headers.get('set-cookie') || '').split(';')[0];
+    const d = await (await fetch(`http://127.0.0.1:${port}/api/sessions`, { headers: { Cookie: ck } })).json();
+    assert.equal(d.pollMs, 1500, 'pollMs from config');
+    assert.strictEqual(d.net, undefined, 'net omitted when netDisplay=false');
+  } finally {
+    ch.kill('SIGTERM');
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('GET / with cookie → index.html', async () => {
   const r = await fetch(base + '/', { headers: { Cookie: cookie } });
   assert.equal(r.status, 200);

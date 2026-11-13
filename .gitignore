@@ -2,3 +2,6 @@ node_modules/
 config.json
 .certs/
 plan/
+
+# local screencast sources (converted to demo.gif)
+*.mp4
