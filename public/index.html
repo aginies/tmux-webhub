@@ -356,6 +356,13 @@ const keyOf = (host, name) => host + ':' + name; // neither may contain ':' (ser
 const allSessions = () => hosts.flatMap((h) => h.sessions.map((s) => ({ ...s, host: h.name })));
 const findSession = (key) => allSessions().find((x) => keyOf(x.host, x.name) === key);
 
+// fetch a JSON API endpoint → { ok, d, status }; d is {} if the body isn't JSON
+const api = async (url, opts) => {
+  const r = await fetch(url, opts);
+  const d = await r.json().catch(() => ({}));
+  return { ok: r.ok, d, status: r.status };
+};
+
 // ---------- terminal ----------
 const term = new Terminal({
   cursorBlink: true,
@@ -535,6 +542,13 @@ function displayName(s) {
   return label;
 }
 
+// host connection state → short label for the chip tooltip
+const stateLabel = (hs) => hs === 'slow' ? 'connected (slow)' : hs === 'offline' ? 'host offline' : 'connected';
+// chip tooltip: host · state · tmux name · cwd (+ other clients, + active)
+const chipTitle = (s, hostState, others) =>
+  `${s.host}: ${stateLabel(hostState)} · tmux: ${s.name} · ${s.cwd}` +
+  (others > 0 ? ` · ${others} other client(s) attached` : '') + (s.activity ? ' · active' : '');
+
 // ---------- rendering: one section per host (automatic, no manual grouping) ----------
 // Reconcile in place: a full rebuild every 5 s poll (any field change, e.g. one
 // session's activity flag, would trigger it) resets hover/scroll and can eat a click
@@ -579,9 +593,8 @@ async function toggleHost(name) {
   renderChips();
   populateHostSelect();
   try {
-    const r = await fetch('/api/hosts/toggle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ host: name }) });
-    const d = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(d.error || 'HTTP ' + r.status);
+    const { ok, d, status } = await api('/api/hosts/toggle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ host: name }) });
+    if (!ok) throw new Error(d.error || 'HTTP ' + status);
     h.enabled = d.enabled !== false;
   } catch (e) {
     h.enabled = wasEnabled;
@@ -611,8 +624,7 @@ function syncChip(c, s, hostState) {
   const nm = c.children[1];
   nm.textContent = displayName(s);
   const others = otherAttached(s);
-  const stateLabel = hostState === 'slow' ? 'connected (slow)' : hostState === 'offline' ? 'host offline' : 'connected';
-  nm.title = `${s.host}: ${stateLabel} · tmux: ${s.name} · ${s.cwd}` + (others > 0 ? ` · ${others} other client(s) attached` : '') + (s.activity ? ' · active' : '');
+  nm.title = chipTitle(s, hostState, others);
 }
 
 function hostEl(h, idx) {
@@ -655,10 +667,9 @@ function chipEl(s, hostState) {
   } else {
     ind.className = 'ind-empty';
   }
-  const stateLabel = hostState === 'slow' ? 'connected (slow)' : hostState === 'offline' ? 'host offline' : 'connected';
   const nm = document.createElement('span');
   nm.className = 'cname'; nm.textContent = displayName(s);
-  nm.title = `${s.host}: ${stateLabel} · tmux: ${s.name} · ${s.cwd}` + (others > 0 ? ` · ${others} other client(s) attached` : '') + (s.activity ? ' · active' : '');
+  nm.title = chipTitle(s, hostState, others);
   c.append(ind, nm);
   c.onclick = () => attach(key);
   return c;
@@ -773,10 +784,9 @@ async function fetchDirs() {
   if (!host) return hideDirs();
   const id = ++dirsReq;
   const dot = p.endsWith('.') ? '1' : '';
-  const r = await fetch('/api/dirs?host=' + encodeURIComponent(host) + '&path=' + encodeURIComponent(p) + '&dot=' + dot);
-  const d = await r.json().catch(() => ({}));
+  const { ok, d } = await api('/api/dirs?host=' + encodeURIComponent(host) + '&path=' + encodeURIComponent(p) + '&dot=' + dot);
   if (id !== dirsReq) return; // a newer request superseded this one
-  if (!r.ok || !Array.isArray(d.dirs)) { hideDirs(); return; }
+  if (!ok || !Array.isArray(d.dirs)) { hideDirs(); return; }
   if (!d.dirs.length) { hideDirs(); return; }
   dirsBox.innerHTML = '';
   if (d.path) {
@@ -865,9 +875,8 @@ $('edit-config').onclick = async () => {
   $('cfg-text').value = 'loading…';
   renderCfgLines();
   cfgBg.classList.add('open');
-  const r = await fetch('/api/config');
-  const d = await r.json().catch(() => ({}));
-  if (!r.ok) { $('cfg-err').textContent = d.error || 'failed to load config'; $('cfg-text').value = ''; renderCfgLines(); return; }
+  const { ok, d } = await api('/api/config');
+  if (!ok) { $('cfg-err').textContent = d.error || 'failed to load config'; $('cfg-text').value = ''; renderCfgLines(); return; }
   $('cfg-text').value = d.raw;
   renderCfgLines();
 };
@@ -877,10 +886,9 @@ $('cfg-save').onclick = async () => {
   const text = $('cfg-text').value;
   try { JSON.parse(text); } catch (e) { $('cfg-err').textContent = 'invalid JSON: ' + e.message; return; }
   $('cfg-save').disabled = true;
-  const r = await fetch('/api/config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: text });
-  const d = await r.json().catch(() => ({}));
+  const { ok, d } = await api('/api/config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: text });
   $('cfg-save').disabled = false;
-  if (!r.ok) { $('cfg-err').textContent = d.error || 'failed to save'; return; }
+  if (!ok) { $('cfg-err').textContent = d.error || 'failed to save'; return; }
   cfgBg.classList.remove('open');
   await refresh(); // mtime changed → server reloads hosts, cache invalidated
 };
