@@ -47,6 +47,10 @@ cp config.example.json config.json   # then edit: token, hosts
 tmux-webhub                          # the server (npm install) — or: node server.js
 ```
 
+The server reads `config.json` from the **directory you start it in** (override
+with `PC_CONFIG_FILE`) — so with a global install, run `tmux-webhub` from the
+directory where you put the config file.
+
 Then open **https://<host>:8787** in a browser and enter the token from
 `config.json` (the cookie keeps you logged in for 30 days; `/logout` to sign
 out). On first start a self-signed TLS cert is generated in `.certs/` — the
