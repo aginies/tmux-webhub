@@ -12,6 +12,7 @@
     "public/",
     "pitux",
     "config.example.json",
+    "deploy/",
     "README.md",
     "LICENSE"
   ],
@@ -34,7 +35,7 @@
   },
   "homepage": "https://github.com/aginies/tmux-webhub#readme",
   "author": "aginies",
-  "license": "ISC",
+  "license": "MIT",
   "type": "commonjs",
   "engines": {
     "node": ">=18"

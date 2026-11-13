@@ -1,0 +1,47 @@
+# tmux-webhub — systemd unit (user scope by default)
+#
+# Why a user unit: the server attaches to *your* tmux sessions and uses
+# *your* ssh keys, so it must run as your user. A user unit does that
+# without any User=/Group= plumbing, and with linger it starts at boot
+# and survives logout.
+#
+# Install:
+#   mkdir -p ~/.config/systemd/user
+#   cp deploy/tmux-webhub.service ~/.config/systemd/user/
+#   $EDITOR ~/.config/systemd/user/tmux-webhub.service   # set WorkingDirectory (and ExecStart if needed)
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now tmux-webhub
+#   loginctl enable-linger $USER        # start at boot, keep running after logout
+#
+# Manage:
+#   systemctl --user status tmux-webhub
+#   systemctl --user restart tmux-webhub
+#   journalctl --user -u tmux-webhub -f
+#
+# Prefer a system unit? Copy to /etc/systemd/system/ instead, add
+#   User=<youruser>
+#   Group=<yourgroup>
+# under [Service], change WantedBy= to multi-user.target, and use plain
+# `systemctl` (no --user).
+
+[Unit]
+Description=tmux-webhub — web dashboard for tmux sessions (local + ssh hosts)
+After=network.target
+
+[Service]
+# The server reads ./config.json from this directory (override with
+# Environment=PC_CONFIG_FILE=/abs/path/to/config.json instead).
+WorkingDirectory=/opt/tmux-webhub
+ExecStart=/usr/bin/node server.js
+# npm-global install instead of a git checkout? Point at the bin:
+#   ExecStart=/home/YOURUSER/.npm-global/bin/tmux-webhub
+
+Restart=on-failure
+RestartSec=2
+
+# Deliberately NOT set:
+#   PrivateTmp      — the tmux socket lives in /tmp/tmux-$UID/ on the host
+#   ProtectSystem=strict — the web UI's config editor writes config.json
+
+[Install]
+WantedBy=default.target

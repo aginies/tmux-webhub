@@ -81,17 +81,15 @@ Useful env vars (override the config file):
   ```sh
   setsid nohup node server.js >> tmux-webhub.log 2>&1 &
   ```
-  or a systemd unit:
-  ```ini
-  [Unit]
-  Description=tmux-webhub
-  After=network.target
-  [Service]
-  WorkingDirectory=/path/to/tmux-webhub
-  ExecStart=/usr/bin/node server.js
-  Restart=on-failure
-  [Install]
-  WantedBy=default.target
+  or with systemd — the repo ships a user unit (`deploy/tmux-webhub.service`):
+  ```sh
+  mkdir -p ~/.config/systemd/user
+  cp deploy/tmux-webhub.service ~/.config/systemd/user/
+  $EDITOR ~/.config/systemd/user/tmux-webhub.service   # set WorkingDirectory
+  systemctl --user daemon-reload
+  systemctl --user enable --now tmux-webhub
+  loginctl enable-linger $USER    # start at boot, survive logout
+  journalctl --user -u tmux-webhub -f   # logs
   ```
 
 ## Config (`config.json`)
