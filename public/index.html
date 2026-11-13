@@ -204,18 +204,18 @@
     header .spacer { display: none; } /* #hosts absorbs the free space instead */
     #toggle-panel { order: 1; }
     #new-session { order: 2; }
+    #term-ctl {
+      order: 3; display: inline-flex; gap: 4px; flex: 0 0 auto;
+      margin-left: 10px; /* extra space between +New and the shortcuts (header gap is 8px) */
+      /* Esc / PgUp / PgDn / keys: no keyboard keys on a phone — same actions as
+         the desktop Esc binding and the PageUp/PageDown keys */
+    }
     #hosts {
-      order: 3;
+      order: 4;
       display: flex; flex: 1 1 auto; min-width: 0;
       overflow-x: auto; scrollbar-width: none;
     }
     #hosts::-webkit-scrollbar { display: none; }
-    #term-ctl {
-      order: 4; display: inline-flex; gap: 4px; flex: 0 0 auto;
-      /* Esc / PgUp / PgDn / keys: no keyboard keys on a phone — same actions as
-         the desktop Esc binding and the PageUp/PageDown keys; right side so the
-         host row (order 3) gets the free space */
-    }
     .group { flex: 0 0 auto; }
     .chips { flex-wrap: nowrap; }
     .net { display: none; } /* bandwidth readout is noise on a phone */
