@@ -6,6 +6,8 @@ tmux when you detach. New sessions run whatever `cmd` is set to (default
 `pi`); existing ones attach to whatever is already running in them — pi, bash,
 a build, anything.
 
+![tmux-webhub demo](demo.gif)
+
 ## How it works
 
 - Each session lives in its own tmux session (created with `pitux` or the
