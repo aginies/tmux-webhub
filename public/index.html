@@ -188,20 +188,40 @@
   }
   .cfg-note { font-size: 12px; color: var(--dim); }
 
-  /* special-key palette (⌨): sheet of keys sent via tmux send-keys — top sheet everywhere */
+  /* special-key palette (⌨): FLOATING panel of keys sent via tmux send-keys —
+     drag the header to move it, the corner handle to resize (width; the grid is
+     a fixed 4 columns, height follows). The backdrop is click-through, so the
+     terminal stays usable while the palette is open. Position/size are
+     remembered (localStorage) and clamped to the viewport. */
   #keys-bg {
-    position: fixed; inset: 0; background: rgba(0,0,0,.55); display: none;
-    align-items: flex-start; z-index: 10;
+    position: fixed; inset: 0; display: none; z-index: 9; pointer-events: none;
   }
-  #keys-bg.open { display: flex; }
+  #keys-bg.open { display: block; }
   #keys-panel {
-    background: var(--panel); border: 1px solid var(--border); border-top: 0;
-    border-radius: 0 0 12px 12px; width: 100%; max-width: 520px; margin: 0 auto;
-    padding: 12px 14px;
-    padding: calc(12px + env(safe-area-inset-top)) 14px 12px; /* fallback above where env() is unsupported */
+    position: absolute; pointer-events: auto;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    box-shadow: 0 12px 40px rgba(0,0,0,.6);
+    width: 320px; min-width: 250px; max-width: min(92vw, 560px);
+    left: 50%; transform: translateX(-50%); /* first open: top center (JS takes over once geometry exists) */
+    top: calc(8px + env(safe-area-inset-top, 0px)); /* below the notch (viewport-fit=cover) */
+    padding: 10px 12px 12px;
   }
-  #keys-head { display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: var(--dim); margin-bottom: 10px; }
-  #keys-close { padding: 1px 8px; font-size: 12px; } /* compact: it sits in the 12px header row */
+  #keys-head {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 12px; color: var(--dim); margin-bottom: 10px;
+    cursor: grab; touch-action: none; /* drag handle — mouse and touch */
+  }
+  #keys-head:active { cursor: grabbing; }
+  #keys-head > span { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #keys-close { padding: 1px 8px; font-size: 12px; flex: 0 0 auto; touch-action: auto; } /* compact: it sits in the 12px header row */
+  #keys-resize {
+    position: absolute; right: 2px; bottom: 2px; width: 18px; height: 18px;
+    cursor: nwse-resize; touch-action: none;
+  }
+  #keys-resize::after {
+    content: ''; position: absolute; right: 4px; bottom: 4px; width: 8px; height: 8px;
+    border-right: 2px solid var(--dim); border-bottom: 2px solid var(--dim);
+  }
   /* keyboard-like layout (gaps = keys we don't inject): F-row, Tab/Enter row,
      modifier row, arrow cluster as an inverted T bottom-right */
   #keys-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
@@ -380,6 +400,7 @@
       <button data-key="Down">↓</button>
       <button data-key="Right">→</button>
     </div>
+    <div id="keys-resize" title="Drag to resize"></div>
   </div>
 </div>
 
@@ -1024,13 +1045,59 @@ $('btn-pgdn').onclick = () => pageScroll(1);
 $('t-detach').onclick = detach; // ✕ in the termbar — the only detach on phones (⎋ now sends Esc)
 
 // ---------- special-key palette (⌨, phone) ----------
-// top sheet of keys sent via tmux send-keys (server-side) — for keys the
-// on-screen keyboard can't produce. Stays open for repeat sends; closes on ✕,
-// backdrop tap, or ⌨ again.
+// floating panel of keys sent via tmux send-keys (server-side) — for keys the
+// on-screen keyboard can't produce. Stays open for repeat sends (the backdrop is
+// click-through, so the terminal stays usable); closes on ✕ or ⌨ again.
+// Drag the header to move, the corner handle to resize (width only — the grid is
+// a fixed 4 columns, height follows). Geometry is remembered in localStorage.
 const keysBg = $('keys-bg');
-$('btn-keys').onclick = () => keysBg.classList.toggle('open');
+const keysPanel = $('keys-panel');
+const KEYS_MIN_W = 250;
+const keysMaxW = () => Math.min(560, innerWidth * 0.92);
+let keysGeom = null;
+try { keysGeom = JSON.parse(localStorage.getItem('wh-keys-geom') || 'null'); } catch {}
+function clampKeys() {
+  const vw = innerWidth, vh = innerHeight;
+  keysGeom.w = Math.min(Math.max(keysGeom.w, KEYS_MIN_W), keysMaxW());
+  keysGeom.x = Math.min(Math.max(4, keysGeom.x), vw - keysGeom.w - 4);
+  keysGeom.y = Math.min(Math.max(4, keysGeom.y), vh - keysPanel.offsetHeight - 4);
+  keysPanel.style.width = keysGeom.w + 'px';
+  keysPanel.style.left = keysGeom.x + 'px';
+  keysPanel.style.top = keysGeom.y + 'px';
+}
+$('btn-keys').onclick = () => {
+  if (keysBg.classList.contains('open')) { keysBg.classList.remove('open'); return; }
+  keysBg.classList.add('open');
+  if (!keysGeom || typeof keysGeom.x !== 'number') {
+    // first open: adopt the CSS default (top center, below the notch)
+    const r = keysPanel.getBoundingClientRect();
+    keysGeom = { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width) };
+  }
+  keysPanel.style.transform = 'none'; // geometry is now absolute px
+  clampKeys();
+};
 $('keys-close').onclick = () => keysBg.classList.remove('open');
-keysBg.addEventListener('click', (e) => { if (e.target === keysBg) keysBg.classList.remove('open'); });
+function keysDrag(handle, apply) {
+  handle.addEventListener('pointerdown', (e) => {
+    if (e.target.closest('button')) return; // ✕ sits inside the drag header
+    e.preventDefault();
+    const sx = e.clientX, sy = e.clientY;
+    const g0 = { ...keysGeom };
+    const move = (ev) => { apply(g0, ev.clientX - sx, ev.clientY - sy); clampKeys(); };
+    const up = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      window.removeEventListener('pointercancel', up);
+      try { localStorage.setItem('wh-keys-geom', JSON.stringify(keysGeom)); } catch {}
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', up);
+  });
+}
+keysDrag($('keys-head'), (g0, dx, dy) => { keysGeom.x = g0.x + dx; keysGeom.y = g0.y + dy; });
+keysDrag($('keys-resize'), (g0, dx) => { keysGeom.w = g0.w + dx; });
+window.addEventListener('resize', () => { if (keysBg.classList.contains('open')) clampKeys(); });
 for (const b of $('keys-grid').querySelectorAll('button'))
   b.onclick = () => {
     sendKeys([b.dataset.key]);
