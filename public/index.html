@@ -196,12 +196,11 @@
      rest of the width]. order: reorders without touching the DOM (desktop
      keeps its layout); the gear (config editor) is desktop-only. */
   @media (max-width: 640px) {
-    /* one line, no wrapping: with flex-wrap the host row's base width (all its
-       groups) pushes the shortcuts onto a second line; nowrap lets the host
-       row shrink to the remaining space (it scrolls) */
-    header { flex-wrap: nowrap; }
+    /* TWO lines: [☰ +New shortcuts] on top, the host row full-width below —
+       one line leaves the host row too narrow to read. #hosts' flex-basis:100%
+       forces it onto its own line (the header is flex-wrap:wrap). */
     #edit-config { display: none; }
-    header .spacer { display: none; } /* #hosts absorbs the free space instead */
+    header .spacer { display: none; } /* #hosts takes the whole second line */
     #toggle-panel { order: 1; }
     #new-session { order: 2; }
     #term-ctl {
@@ -212,7 +211,7 @@
     }
     #hosts {
       order: 4;
-      display: flex; flex: 1 1 auto; min-width: 0;
+      display: flex; flex: 1 1 100%; min-width: 0;
       overflow-x: auto; scrollbar-width: none;
     }
     #hosts::-webkit-scrollbar { display: none; }
@@ -475,8 +474,8 @@ function attach(key) {
   ws.onclose = (ev) => {
     if (active !== st) return;
     const why = ev.reason ? ev.reason : 'detached — session still runs in tmux';
-    term.write('\r\n\x1b[90m[' + why + ' — ' + key + ']\x1b[0m\r\n');
-    detach();
+    detach(); // resets the terminal — the reason is written over the CLEAN screen
+    term.write('\x1b[90m[' + why + ' — ' + key + ']\x1b[0m\r\n');
   };
 }
 
@@ -485,6 +484,7 @@ function detach() {
   try { active.dataSub.dispose(); } catch {}
   try { active.ws.close(); } catch {}
   active = null;
+  term.reset(); // clean screen: stale content must not linger behind the placeholder
   $('placeholder').style.display = 'flex';
   $('t-detach').style.display = 'none';
   $('keys-bg').classList.remove('open');
