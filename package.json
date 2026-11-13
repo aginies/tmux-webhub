@@ -1,13 +1,29 @@
 {
   "name": "tmux-webhub",
   "version": "0.1.0",
-  "description": "Web UI aggregator for local and remote pi (tmux) sessions",
+  "description": "Web dashboard for tmux sessions on local and remote (ssh) hosts: browse, attach, create — from any browser",
   "main": "server.js",
+  "bin": {
+    "pitux": "./pitux"
+  },
+  "files": [
+    "server.js",
+    "public/",
+    "pitux",
+    "config.example.json",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "start": "node server.js",
     "test": "node test/smoke.js"
   },
   "keywords": ["tmux", "pi", "terminal", "web", "dashboard", "ssh", "aggregator"],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aginies/tmux-webhub.git"
+  },
+  "homepage": "https://github.com/aginies/tmux-webhub#readme",
   "author": "aginies",
   "license": "ISC",
   "type": "commonjs",
@@ -17,6 +33,5 @@
   "dependencies": {
     "node-pty": "^1.1.0",
     "ws": "^8.23.0"
-  },
-  "private": true
+  }
 }
