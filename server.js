@@ -786,9 +786,14 @@ wss.on('connection', (ws, req) => {
       // applies to ALL following args, so mixing literal and named keys in one
       // call would corrupt the sequence. ~5 ms each with a warm ControlMaster.
       m.keys.reduce(
-        (p, k) => p.then(() => runOn(host, ['tmux', 'send-keys', '-t', name, ...SEND_KEYS[k]], 3000)),
+        (p, k) => p.then(async () => {
+          const r = await runOn(host, ['tmux', 'send-keys', '-t', name, ...SEND_KEYS[k]], 3000);
+          // log, don't swallow: a dead ssh link / unknown session would otherwise
+          // make the palette look broken with zero trace (journal: journalctl --user -u tmux-webhub)
+          if (!r.ok) console.error(`send-keys ${k} → ${host.name}:${name} failed: ${(r.stderr || r.stdout || (r.timeout ? 'timed out' : 'unknown')).trim().split('\n').pop()}`);
+        }),
         Promise.resolve()
-      ).catch(() => {});
+      ).catch((e) => console.error(`send-keys → ${host.name}:${name} failed: ${e.message}`));
     }
   };
   ws.on('message', (msg) => {

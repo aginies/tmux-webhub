@@ -202,8 +202,11 @@
   }
   #keys-head { display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: var(--dim); margin-bottom: 10px; }
   #keys-close { padding: 1px 8px; font-size: 12px; } /* compact: it sits in the 12px header row */
+  /* keyboard-like layout (gaps = keys we don't inject): F-row, Tab/Enter row,
+     modifier row, arrow cluster as an inverted T bottom-right */
   #keys-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
   #keys-grid button { min-height: 44px; font-size: 13px; padding: 8px 4px; }
+  #keys-grid button.sent { background: var(--accent); color: #fff; } /* sent-flash: feedback the key went out */
 
   /* ============ mobile ============ */
   /* narrow screens: ONE line — [☰] [+New] [host groups: swipeable, fill the
@@ -356,19 +359,26 @@
       <button id="keys-close" title="Close">✕</button>
     </div>
     <div id="keys-grid">
-      <button data-key="Enter">Enter</button>
-      <button data-key="C-c">Ctrl+C</button>
       <button data-key="F1">F1</button>
       <button data-key="F2">F2</button>
       <button data-key="F3">F3</button>
       <button data-key="F4">F4</button>
-      <button data-key="M-m">Alt+m</button>
+      <button data-key="Tab">Tab</button>
       <button data-key="S-Tab">Shift+Tab</button>
-      <button data-key="Left">←</button>
-      <button data-key="Right">→</button>
-      <button data-key="Up">↑</button>
-      <button data-key="Down">↓</button>
+      <button data-key="M-m">Alt+m</button>
+      <button data-key="Enter">Enter</button>
+      <button data-key="C-c">Ctrl+C</button>
       <button data-key="M-Up">Alt+↑</button>
+      <span class="kgap" aria-hidden="true"></span>
+      <span class="kgap" aria-hidden="true"></span>
+      <span class="kgap" aria-hidden="true"></span>
+      <span class="kgap" aria-hidden="true"></span>
+      <button data-key="Up">↑</button>
+      <span class="kgap" aria-hidden="true"></span>
+      <span class="kgap" aria-hidden="true"></span>
+      <button data-key="Left">←</button>
+      <button data-key="Down">↓</button>
+      <button data-key="Right">→</button>
     </div>
   </div>
 </div>
@@ -1021,8 +1031,12 @@ const keysBg = $('keys-bg');
 $('btn-keys').onclick = () => keysBg.classList.toggle('open');
 $('keys-close').onclick = () => keysBg.classList.remove('open');
 keysBg.addEventListener('click', (e) => { if (e.target === keysBg) keysBg.classList.remove('open'); });
-for (const b of $('keys-grid').children)
-  b.onclick = () => sendKeys([b.dataset.key]);
+for (const b of $('keys-grid').querySelectorAll('button'))
+  b.onclick = () => {
+    sendKeys([b.dataset.key]);
+    b.classList.add('sent'); // brief flash: the key was sent (the app may still not react)
+    setTimeout(() => b.classList.remove('sent'), 150);
+  };
 
 refresh();
 </script>
