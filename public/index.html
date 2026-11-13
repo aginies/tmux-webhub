@@ -174,6 +174,22 @@
   }
   .cfg-note { font-size: 12px; color: var(--dim); }
 
+  /* special-key palette (⌨, phone): bottom sheet of keys sent via tmux send-keys */
+  #keys-bg {
+    position: fixed; inset: 0; background: rgba(0,0,0,.55); display: none;
+    align-items: flex-end; z-index: 10;
+  }
+  #keys-bg.open { display: flex; }
+  #keys-panel {
+    background: var(--panel); border: 1px solid var(--border); border-bottom: 0;
+    border-radius: 12px 12px 0 0; width: 100%; max-width: 520px; margin: 0 auto;
+    padding: 12px 14px;
+    padding: 12px 14px calc(12px + env(safe-area-inset-bottom)); /* fallback above where env() is unsupported */
+  }
+  #keys-head { display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: var(--dim); margin-bottom: 10px; }
+  #keys-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+  #keys-grid button { min-height: 44px; font-size: 13px; padding: 8px 4px; }
+
   /* ============ mobile ============ */
   /* narrow screens: ONE line — [☰] [+New] [host groups: swipeable, fill the
      rest of the width]. order: reorders without touching the DOM (desktop
@@ -232,6 +248,7 @@
     <button id="btn-esc" title="Send Esc to the session (tmux send-keys on the host)">⎋</button>
     <button id="btn-pgup" title="Page up (scrollback — or the PageUp key in TUIs like vim/less)">Pg↑</button>
     <button id="btn-pgdn" title="Page down (scrollback — or the PageDown key in TUIs like vim/less)">Pg↓</button>
+    <button id="btn-keys" title="Special keys (Ctrl+C, F1–F4, Alt+…, Shift+Tab)">⌨</button>
   </span>
   <button id="edit-config" title="Edit config.json">⚙</button>
 </header>
@@ -289,6 +306,25 @@
     <div class="row">
       <button id="cfg-cancel">Cancel</button>
       <button id="cfg-save">Save</button>
+    </div>
+  </div>
+</div>
+
+<div id="keys-bg">
+  <div id="keys-panel">
+    <div id="keys-head">
+      <span>special keys — sent with tmux send-keys</span>
+      <button id="keys-close" title="Close">✕</button>
+    </div>
+    <div id="keys-grid">
+      <button data-key="C-c">Ctrl+C</button>
+      <button data-key="F1">F1</button>
+      <button data-key="F2">F2</button>
+      <button data-key="F3">F3</button>
+      <button data-key="F4">F4</button>
+      <button data-key="M-m">Alt+m</button>
+      <button data-key="S-Tab">Shift+Tab</button>
+      <button data-key="M-Up">Alt+↑</button>
     </div>
   </div>
 </div>
@@ -445,6 +481,7 @@ function detach() {
   active = null;
   $('placeholder').style.display = 'flex';
   $('t-detach').style.display = 'none';
+  $('keys-bg').classList.remove('open');
   $('t-name').textContent = 'no session selected';
   $('t-cwd').textContent = '';
   $('t-local').style.display = 'none';
@@ -862,6 +899,17 @@ function pageScroll(dir) { // dir: -1 = up, +1 = down
 $('btn-pgup').onclick = () => pageScroll(-1);
 $('btn-pgdn').onclick = () => pageScroll(1);
 $('t-detach').onclick = detach; // ✕ in the termbar — the only detach on phones (⎋ now sends Esc)
+
+// ---------- special-key palette (⌨, phone) ----------
+// bottom sheet of keys sent via tmux send-keys (server-side) — for keys the
+// on-screen keyboard can't produce. Stays open for repeat sends; closes on ✕,
+// backdrop tap, or ⌨ again.
+const keysBg = $('keys-bg');
+$('btn-keys').onclick = () => keysBg.classList.toggle('open');
+$('keys-close').onclick = () => keysBg.classList.remove('open');
+keysBg.addEventListener('click', (e) => { if (e.target === keysBg) keysBg.classList.remove('open'); });
+for (const b of $('keys-grid').children)
+  b.onclick = () => sendKeys([b.dataset.key]);
 
 refresh();
 </script>

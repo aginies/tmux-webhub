@@ -190,12 +190,13 @@ fallback applies.
   modal. Click again to bring it back.
 - `☰` / `Ctrl+B` hides the session strip. `Esc` detaches (only when the
   terminal isn't focused — Esc is a normal key in the running program).
-- On phones (≤640 px) three shortcuts appear right of **+New**: **⎋** sends
+- On phones (≤640 px) shortcuts appear right of **+New**: **⎋** sends
   Esc to the session via `tmux send-keys` on the host (reliable in vim & co. —
   no focus-loss or bracketed-paste pitfalls), **Pg↑/Pg↓** page the scrollback —
   or send the real PageUp/PageDown key to the app when it has no scrollback
-  (TUIs on the alternate screen: vim, less, …). **✕** in the session bar
-  detaches (the session keeps running in tmux).
+  (TUIs on the alternate screen: vim, less, …), and **⌨** opens a palette of
+  special keys sent the same way: Ctrl+C, F1–F4, Alt+m, Shift+Tab, Alt+↑.
+  **✕** in the session bar detaches (the session keeps running in tmux).
 - `⚙` (top right) opens the **config editor**: edit `config.json` in a modal
   and save. `hosts` / `cmd` apply immediately; `port`, `token`, `tls`,
   `cert`, `key`, `pollMs`, `netDisplay` need a server restart (changing the

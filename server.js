@@ -684,9 +684,18 @@ function netRate() {
 
 // ---------- websocket: browser ⇄ tmux session (local or over ssh) ----------
 // terminal frames are tiny; bound per-message memory against a buggy/malicious client
-// tmux key names the UI may inject via send-keys (phone shortcuts): whitelist, so the
-// client can only ask for well-known keys, never arbitrary input
-const SEND_KEYS = new Set(['Escape', 'Enter', 'Space', 'Tab', 'BSpace', 'Up', 'Down', 'Left', 'Right', 'Pageup', 'Pagedown', 'Home', 'End']);
+// Keys the UI may inject via send-keys (phone shortcuts + special-key palette):
+// whitelist — the client only names a key, the server decides the exact argv.
+// Modifier prefixes are tmux's: C- ctrl, M- alt, S- shift. S-Tab is special:
+// tmux 3.8's S-Tab is just a plain tab, so the real xterm Shift+Tab sequence
+// (\x1b[Z) is sent with -l (literal).
+const SEND_KEYS = {
+  Escape: ['Escape'], Enter: ['Enter'], Space: ['Space'], Tab: ['Tab'], BSpace: ['BSpace'],
+  Up: ['Up'], Down: ['Down'], Left: ['Left'], Right: ['Right'],
+  Pageup: ['Pageup'], Pagedown: ['Pagedown'], Home: ['Home'], End: ['End'],
+  'C-c': ['C-c'], F1: ['F1'], F2: ['F2'], F3: ['F3'], F4: ['F4'],
+  'M-m': ['M-m'], 'S-Tab': ['-l', '\x1b[Z'], 'M-Up': ['M-Up'],
+};
 const wss = new WebSocket.Server({ server, path: '/ws', maxPayload: 4 * 1024 * 1024 });
 wss.on('connection', (ws, req) => {
   wsClients++;
@@ -717,13 +726,19 @@ wss.on('connection', (ws, req) => {
     if (m.type === 'input' && typeof m.data === 'string') term.write(m.data);
     else if (m.type === 'resize' && m.cols > 0 && m.rows > 0) {
       try { term.resize(Math.floor(m.cols), Math.floor(m.rows)); } catch {}
-    } else if (m.type === 'send-keys' && Array.isArray(m.keys) && m.keys.length > 0 && m.keys.length <= 8 && m.keys.every((k) => SEND_KEYS.has(k))) {
-      // phone shortcuts (⎋): inject via `tmux send-keys` ON THE HOST (ssh or local),
-      // targeting the session's active pane — what the client is looking at. Immune
-      // to client-side focus loss (tapping the button blurs the terminal) and to
-      // xterm's bracketed-paste wrapping (paste() would hand the app a literal paste,
-      // not an Esc key).
-      runOn(host, ['tmux', 'send-keys', '-t', name, ...m.keys], 3000).catch(() => {});
+    } else if (m.type === 'send-keys' && Array.isArray(m.keys) && m.keys.length > 0 && m.keys.length <= 8 && m.keys.every((k) => typeof k === 'string' && k in SEND_KEYS)) {
+      // phone shortcuts + special-key palette: inject via `tmux send-keys` ON THE
+      // HOST (ssh or local), targeting the session's active pane — what the client
+      // is looking at. Immune to client-side focus loss (tapping the button blurs
+      // the terminal) and to xterm's bracketed-paste wrapping (paste() would hand
+      // the app a literal paste, not an Esc key).
+      // One invocation per key, sequential (order preserved): tmux's -l flag
+      // applies to ALL following args, so mixing literal and named keys in one
+      // call would corrupt the sequence. ~5 ms each with a warm ControlMaster.
+      m.keys.reduce(
+        (p, k) => p.then(() => runOn(host, ['tmux', 'send-keys', '-t', name, ...SEND_KEYS[k]], 3000)),
+        Promise.resolve()
+      ).catch(() => {});
     }
   };
   ws.on('message', (msg) => {
