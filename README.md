@@ -1,12 +1,14 @@
 # tmux-webhub
 
-Web dashboard for several `pi` (pi.dev) sessions running in **tmux** on one or
-more hosts. Browse all sessions grouped by host, click to attach, type, resize —
-the session keeps running in tmux when you detach.
+Web dashboard for **tmux** sessions on one or more hosts. Browse all sessions
+grouped by host, click to attach, type, resize — the session keeps running in
+tmux when you detach. New sessions run whatever `cmd` is set to (default
+`pi`); existing ones attach to whatever is already running in them — pi, bash,
+a build, anything.
 
 ## How it works
 
-- Every pi session lives in its own tmux session (created with `pitux` or the
+- Each session lives in its own tmux session (created with `pitux` or the
   web UI's "+ New session").
 - A small Node daemon (`server.js`) lists tmux sessions on each configured host
   (locally, or over SSH for remote hosts) and bridges your browser to a session
@@ -34,8 +36,8 @@ out). On first start a self-signed TLS cert is generated in `.certs/` — the
 browser shows a one-time "insecure connection" interstitial, accept it.
 
 Prereqs: `node` (with `node-pty` built — `npm install` once in this dir),
-`tmux`, `openssl`, and the `pi` command on `$PATH` (or set `PI_CMD`, or a
-per-host `cmd` in config.json).
+`tmux`, `openssl`, and a command to run in new sessions (default `pi` — set
+`PI_CMD` or a per-host `cmd` in config.json to anything else).
 
 Useful env vars (override the config file):
 
@@ -120,25 +122,39 @@ poll (5 s), so it is live-editable:
   autocompletes: subdirectories of the current path on the chosen host (local
   or over ssh) appear as you type — click one to descend a level, type `.` to
   include dot-dirs, empty field = the host's home.
-- Terminal (local): `./pitux new <name> [cwd]` — starts `pi` in a detached
-  tmux session and attaches. `./pitux <name>` attaches to an existing
-  session, `./pitux ls` lists. `PI_CMD` overrides the command (default `pi`).
+- Terminal (local): `./pitux new <name> [cwd]` — starts the configured
+  command (default `pi`) in a detached tmux session and attaches.
+  `./pitux <name>` attaches to an existing session, `./pitux ls` lists.
+  `PI_CMD` overrides the command (default `pi`).
 
 Session names must start with a letter/digit and contain only letters, digits,
 `.` `_` `-` (tmux target safety).
+
+## Activity
+
+The ⚡ indicator says "this session is doing something right now". For most
+commands it is the tmux `window_activity` timestamp: the session is active
+while it produces output, and idle 10 s after the last output. For
+`pi`/`pi-bolt` panes it is driven by **pi's own state** instead, so a settled
+pi is never shown as active just because its TUI redrew: the poller reads the
+last entry of the pane's newest pi session file
+(`~/.pi/agent/sessions/<cwd-hash>/*.jsonl`) — a user message or a `toolCall`
+means work is in flight; a final assistant message means pi is waiting for
+input. If the session file is missing or unreadable, the window-activity
+fallback applies.
 
 ## UI notes
 
 - Chips show the **basename of the session's working directory**; on collision
   the parent dir is added, then the tmux name (`proj (#0)`). Hover for
   `host · tmux name · full path`.
-- A pulsing **⚡** is shown left of the session name while it produces output
-  (agent working); idle sessions show no icon. The host label carries the
-  **connection** dot: green = ok, orange = connected but slow (>2 s), red =
-  host offline. Hover a session for details, including whether other clients
-  are attached.
+- A pulsing **⚡** is shown left of the session name while it is active
+  (see [Activity](#activity)); idle sessions show no icon. The host label
+  carries the **connection** dot: green = ok, orange = connected but slow
+  (>2 s), red = host offline. Hover a session for details, including whether
+  other clients are attached.
 - `☰` / `Ctrl+B` hides the session strip. `Esc` detaches (only when the
-  terminal isn't focused — Esc is a normal key inside pi).
+  terminal isn't focused — Esc is a normal key in the running program).
 - `⚙` (top right) opens the **config editor**: edit `config.json` in a modal
   and save. `hosts` / `cmd` apply immediately; `port`, `token`, `tls`,
   `cert`, `key` need a server restart (changing the token logs out all
