@@ -1,6 +1,6 @@
 {
   "name": "tmux-webhub",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Web dashboard for tmux sessions on local and remote (ssh) hosts: browse, attach, create — from any browser",
   "main": "server.js",
   "bin": {
@@ -19,7 +19,15 @@
     "start": "node server.js",
     "test": "node test/smoke.js"
   },
-  "keywords": ["tmux", "pi", "terminal", "web", "dashboard", "ssh", "aggregator"],
+  "keywords": [
+    "tmux",
+    "pi",
+    "terminal",
+    "web",
+    "dashboard",
+    "ssh",
+    "aggregator"
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/aginies/tmux-webhub.git"
