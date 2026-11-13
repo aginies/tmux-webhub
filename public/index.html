@@ -70,7 +70,7 @@
   .group-head .hst.slow { background: var(--amber); }
   .group-head .hst.offline { background: var(--red); }
   .group-head .gname {
-    font-weight: 700; font-size: 10.5px; letter-spacing: .09em; text-transform: uppercase;
+    font-weight: 700; font-size: 11px;
     color: var(--tint-text, #a8c7ff);
   }
   .group-head .gcount { color: var(--dim); font-size: 11px; }
@@ -81,7 +81,7 @@
   .chip {
     display: flex; align-items: center; gap: 5px; background: var(--chip);
     border: 1px solid var(--border); border-radius: 12px; padding: 2px 8px;
-    cursor: pointer; font-size: 12.5px; max-width: 100%;
+    cursor: pointer; font-size: 12.5px; max-width: 180px; /* long names truncate; full path is in the tooltip */
   }
   .chip:hover { background: var(--chip-hover); }
   /* --tint is inherited from the .group ancestor, so the selection ring matches the host's color */
@@ -386,7 +386,10 @@ function syncGroupHead(g, h, idx) {
   hst.className = 'hst' + (h.state === 'slow' ? ' slow' : h.state === 'offline' ? ' offline' : '');
   hst.title = h.state === 'offline' ? `unreachable: ${h.error}` : h.state === 'slow' ? 'connected, but slow' : 'connected';
   nm.title = h.error ? `unreachable: ${h.error}` : `${h.sessions.length} session(s)`;
-  const cntText = h.error ? 'offline' : `(${h.sessions.length})`;
+  // the count is only useful when there is nothing to count (or the host is down) —
+  // the chips already show the sessions; the total stays in the host-name tooltip
+  const cntText = h.error ? 'offline' : h.sessions.length ? '' : '(0)';
+  cnt.style.display = cntText ? '' : 'none';
   if (cnt.textContent !== cntText) cnt.textContent = cntText;
 }
 
@@ -428,7 +431,9 @@ function hostEl(h, idx) {
   nm.className = 'gname'; nm.textContent = h.name;
   nm.title = h.error ? `unreachable: ${h.error}` : `${h.sessions.length} session(s)`;
   const cnt = document.createElement('span');
-  cnt.className = 'gcount'; cnt.textContent = h.error ? 'offline' : `(${h.sessions.length})`;
+  cnt.className = 'gcount';
+  cnt.textContent = h.error ? 'offline' : h.sessions.length ? '' : '(0)';
+  if (!cnt.textContent) cnt.style.display = 'none';
   head.append(hst, nm, cnt);
   g.appendChild(head);
 
