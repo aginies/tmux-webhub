@@ -574,7 +574,9 @@ const chipTitle = (s, hostState, others) =>
 async function renameSession(key) {
   const s = findSession(key);
   if (!s) return;
-  const to = prompt('rename session', s.name);
+  // pre-fill with the chip's label (cwd basename), not the raw tmux name —
+  // that's the name the user sees and edits (the tmux name may be "0" etc.)
+  const to = prompt('rename session', displayName(s));
   if (to === null) return; // cancelled
   const name = to.trim();
   if (!name || name === s.name) return;
