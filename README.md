@@ -11,7 +11,7 @@ a build, anything.
 ## How it works
 
 - Each session lives in its own tmux session (created with `pitux` or the
-  web UI's "+Session").
+  web UI's "+New").
 - A small Node daemon (`server.js`) lists tmux sessions on each configured host
   (locally, or over SSH for remote hosts) and bridges your browser to a session
   through a WebSocket + node-pty. Attaching from the web is exactly like
@@ -145,7 +145,7 @@ poll (5 s), so it is live-editable:
 
 ## Create a session
 
-- Web: **"+Session"** → pick host, tmux name, working directory; the
+- Web: **"+New"** → pick host, tmux name, working directory; the
   command started is the host's `cmd` (default `pi`). The directory field
   autocompletes: subdirectories of the current path on the chosen host (local
   or over ssh) appear as you type — click one to descend a level, type `.` to
