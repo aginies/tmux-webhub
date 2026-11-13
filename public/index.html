@@ -196,6 +196,10 @@
      rest of the width]. order: reorders without touching the DOM (desktop
      keeps its layout); the gear (config editor) is desktop-only. */
   @media (max-width: 640px) {
+    /* one line, no wrapping: with flex-wrap the host row's base width (all its
+       groups) pushes the shortcuts onto a second line; nowrap lets the host
+       row shrink to the remaining space (it scrolls) */
+    header { flex-wrap: nowrap; }
     #edit-config { display: none; }
     header .spacer { display: none; } /* #hosts absorbs the free space instead */
     #toggle-panel { order: 1; }
