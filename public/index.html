@@ -27,6 +27,8 @@
     border-radius: 6px; padding: 5px 10px; cursor: pointer; font-size: 13px;
   }
   header button { padding: 3px 9px; font-size: 12.5px; }
+  #term-ctl { display: none; } /* phone-only: shown in the 640px media query */
+  #term-ctl button { padding: 3px 7px; font-size: 12px; }
   .net { color: var(--dim); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
   button:hover { background: var(--chip-hover); }
 
@@ -180,8 +182,13 @@
     header .spacer { display: none; } /* #hosts absorbs the free space instead */
     #toggle-panel { order: 1; }
     #new-session { order: 2; }
+    #term-ctl {
+      order: 3; display: inline-flex; gap: 4px;
+      /* Esc / PgUp / PgDn: no keyboard keys on a phone — same actions as the
+         desktop Esc binding and the PageUp/PageDown keys */
+    }
     #hosts {
-      order: 3;
+      order: 4;
       display: flex; flex: 1 1 auto; min-width: 0;
       overflow-x: auto; scrollbar-width: none;
     }
@@ -203,6 +210,7 @@
      on focus */
   @media (pointer: coarse) {
     header button, #unhide { padding: 9px 12px; font-size: 13px; }
+    #term-ctl button { padding: 9px 8px; font-size: 12.5px; }
     .chip { padding: 9px 12px; font-size: 13px; }
     .modal .row button { padding: 9px 14px; }
     .dirlist div { padding: 9px 12px; }
@@ -218,6 +226,11 @@
   <div class="spacer"></div>
   <span id="net" class="net" title="server bandwidth (5 s average)"></span>
   <button id="new-session">+New</button>
+  <span id="term-ctl" title="terminal shortcuts (phone)">
+    <button id="btn-esc" title="Send Esc (detach when the terminal isn't focused)">⎋</button>
+    <button id="btn-pgup" title="Page up (scroll buffer)">Pg↑</button>
+    <button id="btn-pgdn" title="Page down (scroll buffer)">Pg↓</button>
+  </span>
   <button id="edit-config" title="Edit config.json">⚙</button>
 </header>
 <button id="unhide" class="hidden" title="Show session panel">☰ sessions</button>
@@ -819,6 +832,19 @@ window.addEventListener('keydown', (e) => {
   // Esc detaches only when the terminal is NOT focused (Esc is a normal key inside TUIs)
   if (e.key === 'Escape' && active && !term.isActive) detach();
 });
+
+// ---------- phone shortcuts (⎋ / Pg↑ / Pg↓, right of +New) ----------
+// phones have no Esc / PageUp / PageDown keys. Esc mirrors the desktop binding
+// (focused terminal → send \x1b to the program; unfocused → detach); Pg↑/Pg↓
+// scroll the buffer like the PageUp/PageDown keys (same call the two-finger
+// touch handler uses).
+$('btn-esc').onclick = () => {
+  if (!active) return;
+  if (term.isActive) term.paste('\x1b');
+  else detach();
+};
+$('btn-pgup').onclick = () => { if (active) term.scrollLines(-1, term.rows); };
+$('btn-pgdn').onclick = () => { if (active) term.scrollLines(1, term.rows); };
 
 refresh();
 </script>
