@@ -142,11 +142,11 @@
   }
 
   /* modal */
-  #modal-bg, #cfg-bg {
+  #modal-bg, #cfg-bg, #rn-bg {
     position: fixed; inset: 0; background: rgba(0,0,0,.55); display: none;
     align-items: center; justify-content: center; z-index: 10;
   }
-  #modal-bg.open, #cfg-bg.open { display: flex; }
+  #modal-bg.open, #cfg-bg.open, #rn-bg.open { display: flex; }
   .modal {
     background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
     padding: 18px; width: 380px; max-width: calc(100vw - 24px);
@@ -239,7 +239,7 @@
        empty space below the form, not the form itself (with
        interactive-widget=resizes-content the layout viewport shrinks above
        the keyboard on Chromium; iOS scrolls the visual viewport instead) */
-    #modal-bg, #cfg-bg { align-items: flex-end; }
+    #modal-bg, #cfg-bg, #rn-bg { align-items: flex-end; }
     .modal, #cfg-modal { width: 100%; max-width: 100%; border-radius: 12px 12px 0 0; }
     .cfg-edit { height: min(340px, 40vh); }
   }
@@ -310,6 +310,21 @@
     <div class="row">
       <button id="ns-cancel">Cancel</button>
       <button id="ns-ok">Create &amp; attach</button>
+    </div>
+  </div>
+</div>
+
+<div id="rn-bg">
+  <div class="modal">
+    <h2>Rename session</h2>
+    <div>
+      <label>Session name (tmux name)</label>
+      <input id="rn-name" maxlength="60" spellcheck="false" autocomplete="off">
+    </div>
+    <div class="err" id="rn-err"></div>
+    <div class="row">
+      <button id="rn-cancel">Cancel</button>
+      <button id="rn-ok">Rename</button>
     </div>
   </div>
 </div>
@@ -516,6 +531,7 @@ function detach() {
   $('placeholder').style.display = 'flex';
   $('t-detach').style.display = 'none';
   $('keys-bg').classList.remove('open');
+  $('rn-bg').classList.remove('open');
   $('t-name').textContent = 'no session selected';
   $('t-cwd').textContent = '';
   $('t-local').style.display = 'none';
@@ -536,16 +552,20 @@ function updateLocalBadge(s) {
   else el.style.display = 'none';
 }
 
-// ---------- display names: basename of cwd, disambiguated per host on collision ----------
+// ---------- display names: explicit tmux name, else cwd basename (disambiguated per host) ----------
+// A bare-numeric name is tmux's default ("0", "1", …) — anonymous, so the cwd
+// basename stands in. Any other name was chosen (✎ rename, +New) → shown as-is,
+// so a rename is visible on the chip.
 function cwdParts(s) { return s.cwd.split('/').filter(Boolean); }
+const labelOf = (s) => (/^[0-9]+$/.test(s.name) ? (cwdParts(s).pop() || s.name) : s.name);
 function displayName(s) {
   const selfKey = keyOf(s.host, s.name);
   const siblings = (hosts.find((h) => h.name === s.host) || { sessions: [] }).sessions;
   // compare by key, not object identity (chipEl receives copies of the session objects)
   const collides = (pred) => siblings.some((x) => keyOf(s.host, x.name) !== selfKey && pred(x));
-  const base = cwdParts(s).pop() || s.name;
-  if (!collides((x) => (cwdParts(x).pop() || x.name) === base)) return base;
-  // basename collision: add the parent dir
+  const base = labelOf(s);
+  if (!collides((x) => labelOf(x) === base)) return base;
+  // label collision: add the parent dir
   let label = cwdParts(s).slice(-2).join('/') || s.name;
   if (collides((x) => (cwdParts(x).slice(-2).join('/') || x.name) === label)) {
     label += ` (#${s.name})`; // still colliding: show the tmux session name
@@ -563,20 +583,32 @@ const chipTitle = (s, hostState, others) =>
 // rename a session (tmux rename-session). If it's the one we're attached to, the WS
 // keeps working (tmux clients follow the session, not its name) — just re-point the
 // client's identity so the chip highlight + termbar track the new name.
-async function renameSession(key) {
+// In-page modal, not prompt(): native dialogs are unreliable on phones (iOS/PWA
+// quirks, blocked popups) and inconsistent with the rest of the UI.
+let rnKey = null;
+function openRename(key) {
   const s = findSession(key);
   if (!s) return;
-  // pre-fill with the chip's label (cwd basename), not the raw tmux name —
-  // that's the name the user sees and edits (the tmux name may be "0" etc.)
-  const to = prompt('rename session', displayName(s));
-  if (to === null) return; // cancelled
-  const name = to.trim();
+  rnKey = key;
+  $('rn-err').textContent = '';
+  // pre-fill with the chip's label — the name the user sees and edits
+  $('rn-name').value = displayName(s);
+  $('rn-bg').classList.add('open');
+  $('rn-name').focus();
+  $('rn-name').select();
+}
+async function doRename() {
+  const s = findSession(rnKey);
+  if (!s) return;
+  const name = $('rn-name').value.trim();
   if (!name || name === s.name) return;
   // mirrors NAME_RE in server.js — keep in sync
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) { alert('name: start with letter/digit, then letters, digits, . _ -'); return; }
-  const wasActive = !!(active && active.key === key);
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) { $('rn-err').textContent = 'name: start with letter/digit, then letters, digits, . _ -'; return; }
+  $('rn-err').textContent = 'renaming…';
+  const wasActive = !!(active && active.key === rnKey);
   const { ok, d } = await api('/api/sessions/rename', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ host: s.host, from: s.name, to: name }) });
-  if (!ok) { setConnBanner(`⚠ could not rename “${s.name}”: ${d.error || 'failed'}`); return; }
+  if (!ok) { $('rn-err').textContent = d.error || 'failed'; return; }
+  $('rn-bg').classList.remove('open');
   if (wasActive) {
     active.key = keyOf(s.host, name);
     active.name = name;
@@ -585,6 +617,11 @@ async function renameSession(key) {
   renderChips();
   refresh(); // reconciles the chip list (old name gone, new name present)
 }
+const rnBg = $('rn-bg');
+$('rn-cancel').onclick = () => rnBg.classList.remove('open');
+$('rn-ok').onclick = doRename;
+rnBg.addEventListener('click', (e) => { if (e.target === rnBg) rnBg.classList.remove('open'); });
+$('rn-name').addEventListener('keydown', (e) => { if (e.key === 'Enter') doRename(); });
 
 // ---------- rendering: one section per host (automatic, no manual grouping) ----------
 // Reconcile in place: a full rebuild every 5 s poll (any field change, e.g. one
@@ -712,7 +749,7 @@ function chipEl(s, hostState) {
   rn.className = 'crename';
   rn.textContent = '✎';
   rn.title = 'rename session';
-  rn.onclick = (e) => { e.stopPropagation(); renameSession(key); };
+  rn.onclick = (e) => { e.stopPropagation(); openRename(key); };
   c.append(ind, nm, rn);
   c.onclick = () => attach(key);
   return c;
