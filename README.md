@@ -135,6 +135,11 @@ poll (5 s), so it is live-editable:
   Make sure `~/.ssh/known_hosts` has the host key (BatchMode refuses prompts).
 - A host that is unreachable shows red as `offline` in the UI; its sessions
   reappear when it comes back.
+- `enabled` (optional, per host): set to `false` to **hide the host** in the UI
+  (no sessions shown, and the server stops polling it — no ssh work). The host
+  stays visible, dimmed, so you can re-enable it. Toggle it by **clicking the
+  host badge** in the UI, or by editing the flag here; the change is written to
+  `config.json` and applies on the next poll (no restart). Absent = enabled.
 - `cert`/`key` point to your own certs if you don't want the generated
   self-signed one (e.g. `mkcert` or an internal CA → no browser warning).
 - The generated cert's SAN is a **snapshot of the machine's IPs at first
@@ -179,6 +184,10 @@ fallback applies.
   carries the **connection** dot: green = ok, orange = connected but slow
   (>2 s), red = host offline. Hover a session for details, including whether
   other clients are attached.
+- **Click a host badge** to hide/show it (toggles `"enabled": false` in
+  `config.json`): a hidden host is dimmed with an **off** count, shows no
+  sessions, isn't polled, and can't receive new sessions from the `+New`
+  modal. Click again to bring it back.
 - `☰` / `Ctrl+B` hides the session strip. `Esc` detaches (only when the
   terminal isn't focused — Esc is a normal key in the running program).
 - `⚙` (top right) opens the **config editor**: edit `config.json` in a modal

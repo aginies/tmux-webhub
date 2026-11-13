@@ -76,6 +76,12 @@
   .group-head .gcount { color: var(--dim); font-size: 11px; }
   .group.offline .gname, .group.offline .gcount { color: var(--red); }
   .group.offline .group-head { background: rgba(248,81,73,.12); border-color: rgba(248,81,73,.3); }
+  /* host badge is clickable: click toggles the host's "enabled" flag in config.json */
+  .group-head { cursor: pointer; }
+  .group-head:hover { border-color: var(--blue); }
+  .group.disabled .hst { background: #555; box-shadow: none; }
+  .group.disabled .gname, .group.disabled .gcount { color: var(--dim); opacity: .7; }
+  .group.disabled .group-head { background: rgba(139,148,158,.08); border-style: dashed; }
   .chips { display: flex; flex-direction: row; align-items: center; gap: 4px; flex-wrap: wrap; }
 
   .chip {
@@ -480,16 +486,38 @@ function renderChips() {
 }
 
 function syncGroupHead(g, h, idx) {
-  g.className = 'group tint-' + (idx % 5) + (h.error ? ' offline' : '');
+  const off = h.enabled === false;
+  g.className = 'group tint-' + (idx % 5) + (off ? ' disabled' : h.error ? ' offline' : '');
   const [hst, nm, cnt] = g.querySelector('.group-head').children;
-  hst.className = 'hst' + (h.state === 'slow' ? ' slow' : h.state === 'offline' ? ' offline' : '');
-  hst.title = h.state === 'offline' ? `unreachable: ${h.error}` : h.state === 'slow' ? 'connected, but slow' : 'connected';
-  nm.title = h.error ? `unreachable: ${h.error}` : `${h.sessions.length} session(s)`;
+  hst.className = 'hst' + (off ? '' : h.state === 'slow' ? ' slow' : h.state === 'offline' ? ' offline' : '');
+  hst.title = off ? 'disabled — click to enable' : h.state === 'offline' ? `unreachable: ${h.error}` : h.state === 'slow' ? 'connected, but slow' : 'connected';
+  nm.title = off ? 'disabled — click to enable' : h.error ? `unreachable: ${h.error}` : `${h.sessions.length} session(s) — click to hide this host`;
   // the count is only useful when there is nothing to count (or the host is down) —
   // the chips already show the sessions; the total stays in the host-name tooltip
-  const cntText = h.error ? 'offline' : h.sessions.length ? '' : '(0)';
+  const cntText = off ? 'off' : h.error ? 'offline' : h.sessions.length ? '' : '(0)';
   cnt.style.display = cntText ? '' : 'none';
   if (cnt.textContent !== cntText) cnt.textContent = cntText;
+}
+
+// click the host badge → flip "enabled" in config.json (optimistic, rolled back on error)
+async function toggleHost(name) {
+  const h = hosts.find((x) => x.name === name);
+  if (!h) return;
+  const wasEnabled = h.enabled !== false;
+  h.enabled = !wasEnabled;
+  renderChips();
+  populateHostSelect();
+  try {
+    const r = await fetch('/api/hosts/toggle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ host: name }) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || 'HTTP ' + r.status);
+    h.enabled = d.enabled !== false;
+  } catch (e) {
+    h.enabled = wasEnabled;
+    setConnBanner(`⚠ could not ${wasEnabled ? 'hide' : 'show'} host “${name}”: ${e.message}`);
+  }
+  renderChips();
+  populateHostSelect();
 }
 
 function syncChips(box, h) {
@@ -519,22 +547,20 @@ function syncChip(c, s, hostState) {
 function hostEl(h, idx) {
   const g = document.createElement('div');
   g.dataset.host = h.name;
-  g.className = 'group tint-' + (idx % 5) + (h.error ? ' offline' : '');
+  g.className = 'group tint-' + (idx % 5);
 
   const head = document.createElement('div');
   head.className = 'group-head';
   const hst = document.createElement('span');
-  hst.className = 'hst' + (h.state === 'slow' ? ' slow' : h.state === 'offline' ? ' offline' : '');
-  hst.title = h.state === 'offline' ? `unreachable: ${h.error}` : h.state === 'slow' ? 'connected, but slow' : 'connected';
+  hst.className = 'hst';
   const nm = document.createElement('span');
   nm.className = 'gname'; nm.textContent = h.name;
-  nm.title = h.error ? `unreachable: ${h.error}` : `${h.sessions.length} session(s)`;
   const cnt = document.createElement('span');
   cnt.className = 'gcount';
-  cnt.textContent = h.error ? 'offline' : h.sessions.length ? '' : '(0)';
-  if (!cnt.textContent) cnt.style.display = 'none';
   head.append(hst, nm, cnt);
+  head.onclick = () => toggleHost(h.name);
   g.appendChild(head);
+  syncGroupHead(g, h, idx); // titles/count/disabled state (single source: syncGroupHead)
 
   const chips = document.createElement('div');
   chips.className = 'chips';
@@ -718,14 +744,15 @@ $('ns-host').addEventListener('change', scheduleDirs);
 const modal = $('modal-bg');
 let lastHostsSnap = '';
 function populateHostSelect() {
-  // skip the DOM rebuild when the host list (names + reachability) is unchanged
-  const snap = hosts.map((h) => h.name + (h.error ? '!' : '')).join(',');
+  // skip the DOM rebuild when the host list (names + reachability + enabled) is unchanged
+  const snap = hosts.map((h) => h.name + (h.error ? '!' : '') + (h.enabled === false ? 'x' : '')).join(',');
   if (snap === lastHostsSnap) return;
   lastHostsSnap = snap;
   const sel = $('ns-host');
   const cur = sel.value;
   sel.innerHTML = '';
   for (const h of hosts) {
+    if (h.enabled === false) continue; // hidden hosts can't receive new sessions
     const o = document.createElement('option');
     o.value = h.name;
     o.textContent = h.name + (h.error ? ' (offline)' : '');

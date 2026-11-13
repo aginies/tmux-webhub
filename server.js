@@ -221,6 +221,9 @@ function piActive(cmd, piLast, winActive) {
 }
 
 async function listHostSessions(host) {
+  // config "enabled": false → hidden in the UI: no ssh/tmux work at all (the host
+  // stays in the state as a stub so the UI can show it dimmed and re-enable it)
+  if (host.enabled === false) return { name: host.name, enabled: false, state: 'ok', sessions: [] };
   const t0 = Date.now();
   let r;
   let remoteNow = 0;
@@ -512,6 +515,36 @@ async function handleApiConfig(req, res, send) {
   return send(405, { error: 'method not allowed' });
 }
 
+// POST /api/hosts/toggle {host} — flip the host's "enabled" flag in config.json
+// (click the host badge in the UI). Absent flag = enabled, so enabling deletes the
+// key to keep the file clean.
+async function handleHostToggle(req, res, send) {
+  if (req.method !== 'POST') return send(405, { error: 'method not allowed' });
+  let parsed;
+  try { parsed = JSON.parse((await readBody(req)) || ''); } catch { return send(400, { error: 'invalid JSON' }); }
+  const name = parsed && parsed.host;
+  if (typeof name !== 'string' || !NAME_RE.test(name)) return send(400, { error: 'bad host name' });
+  let cfg;
+  try { cfg = readConfig(false); } catch (e) { return send(500, { error: 'cannot read config: ' + e.message }); }
+  const entry = ((cfg && cfg.hosts) || []).find((h) => h && h.name === name);
+  if (!entry) return send(404, { error: 'host not in config: ' + name });
+  const enabled = entry.enabled === false; // the new value (toggle)
+  if (enabled) delete entry.enabled; else entry.enabled = false;
+  const tmp = CONFIG_FILE + '.tmp-' + process.pid;
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2) + '\n');
+    fs.renameSync(tmp, CONFIG_FILE); // atomic: readers never see a half-written file
+  } catch (e) {
+    try { fs.unlinkSync(tmp); } catch {}
+    return send(500, { error: 'cannot write config: ' + e.message });
+  }
+  configTouched();
+  // force a re-poll of just this host on the next cycle (a disabled stub or a fresh
+  // entry would otherwise look "not stale" and hide the change for up to POLL_MS)
+  if (hostsCache) hostsCache.hosts = hostsCache.hosts.map((h) => (h.name === name ? { ...h, at: 0 } : h));
+  return send(200, { ok: true, host: name, enabled });
+}
+
 // ---------- directory completion: subdirectories of a path on a host ----------
 // The path is passed as an ARGV element (sh -c 'script' sh <path>), never embedded in the
 // script — user text cannot inject shell. Only directories are listed (cwd must be a dir).
@@ -602,6 +635,7 @@ const server = (TLS ? https : http).createServer(tlsOpts, async (req, res) => {
       if (!authed(req)) return send(401, { error: 'unauthorized' });
       if (url.pathname === '/api/sessions') return await handleApiSessions(req, res, url, send);
       if (url.pathname === '/api/config') return await handleApiConfig(req, res, send);
+      if (url.pathname === '/api/hosts/toggle') return await handleHostToggle(req, res, send);
       if (url.pathname === '/api/dirs') return await handleApiDirs(req, res, url, send);
       return send(404, { error: 'not found' });
     }
