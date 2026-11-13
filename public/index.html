@@ -30,7 +30,7 @@
   /* keyboard shortcuts: desktop shows only the ⌨ palette icon (⎋/Pg↑/Pg↓ have
      real keys); the phone media query below reveals all of them */
   #term-ctl { display: inline-flex; gap: 4px; }
-  #term-ctl button:not(#keys-toggle) { display: none; }
+  #term-ctl button:not(#btn-keys) { display: none; }
   #term-ctl button { padding: 3px 10px; font-size: 12.5px; white-space: nowrap; }
   .net { color: var(--dim); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
   button:hover { background: var(--chip-hover); }
@@ -212,7 +212,7 @@
       /* Esc / PgUp / PgDn / keys: no keyboard keys on a phone — same actions as
          the desktop Esc binding and the PageUp/PageDown keys */
     }
-    #term-ctl button:not(#keys-toggle) { display: inline-flex; }
+    #term-ctl button:not(#btn-keys) { display: inline-flex; }
     #hosts {
       order: 4;
       display: flex; flex: 1 1 100%; min-width: 0;
