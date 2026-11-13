@@ -230,8 +230,8 @@
   <button id="new-session">+New</button>
   <span id="term-ctl" title="terminal shortcuts (phone)">
     <button id="btn-esc" title="Send Esc to the session (tmux send-keys on the host)">⎋</button>
-    <button id="btn-pgup" title="Page up (scroll buffer)">Pg↑</button>
-    <button id="btn-pgdn" title="Page down (scroll buffer)">Pg↓</button>
+    <button id="btn-pgup" title="Page up (scrollback — or the PageUp key in TUIs like vim/less)">Pg↑</button>
+    <button id="btn-pgdn" title="Page down (scrollback — or the PageDown key in TUIs like vim/less)">Pg↓</button>
   </span>
   <button id="edit-config" title="Edit config.json">⚙</button>
 </header>
@@ -843,14 +843,24 @@ window.addEventListener('keydown', (e) => {
 // `tmux send-keys` (over ssh for remote hosts): tapping the button blurs the
 // terminal, so xterm's own input path can't be used — and its paste() would wrap
 // the byte in bracketed-paste markers, which vim & co. treat as a literal paste,
-// not an Esc key. Pg↑/Pg↓ scroll the buffer like the PageUp/PageDown keys (same
-// call the two-finger touch handler uses).
-$('btn-esc').onclick = () => {
-  if (!active || active.ws.readyState !== WebSocket.OPEN) return;
-  active.ws.send(JSON.stringify({ type: 'send-keys', keys: ['Escape'] }));
-};
-$('btn-pgup').onclick = () => { if (active) term.scrollLines(-1, term.rows); };
-$('btn-pgdn').onclick = () => { if (active) term.scrollLines(1, term.rows); };
+// not an Esc key.
+function sendKeys(keys) {
+  if (active && active.ws.readyState === WebSocket.OPEN)
+    active.ws.send(JSON.stringify({ type: 'send-keys', keys }));
+}
+$('btn-esc').onclick = () => sendKeys(['Escape']);
+
+// Pg↑/Pg↓: normal screen → page the xterm scrollback (like the PageUp/PageDown
+// keys — same call the two-finger touch handler uses). Alternate screen (vim,
+// less, TUIs) has NO xterm scrollback — send the real PageUp/PageDown key to
+// the app via tmux send-keys, like a real terminal would.
+function pageScroll(dir) { // dir: -1 = up, +1 = down
+  if (!active) return;
+  if (term.buffer.active === term.buffer.alternate) sendKeys(dir < 0 ? ['Pageup'] : ['Pagedown']);
+  else term.scrollLines(dir, term.rows);
+}
+$('btn-pgup').onclick = () => pageScroll(-1);
+$('btn-pgdn').onclick = () => pageScroll(1);
 $('t-detach').onclick = detach; // ✕ in the termbar — the only detach on phones (⎋ now sends Esc)
 
 refresh();

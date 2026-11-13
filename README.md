@@ -192,8 +192,10 @@ fallback applies.
   terminal isn't focused — Esc is a normal key in the running program).
 - On phones (≤640 px) three shortcuts appear right of **+New**: **⎋** sends
   Esc to the session via `tmux send-keys` on the host (reliable in vim & co. —
-  no focus-loss or bracketed-paste pitfalls), **Pg↑/Pg↓** scroll the buffer.
-  **✕** in the session bar detaches (the session keeps running in tmux).
+  no focus-loss or bracketed-paste pitfalls), **Pg↑/Pg↓** page the scrollback —
+  or send the real PageUp/PageDown key to the app when it has no scrollback
+  (TUIs on the alternate screen: vim, less, …). **✕** in the session bar
+  detaches (the session keeps running in tmux).
 - `⚙` (top right) opens the **config editor**: edit `config.json` in a modal
   and save. `hosts` / `cmd` apply immediately; `port`, `token`, `tls`,
   `cert`, `key`, `pollMs`, `netDisplay` need a server restart (changing the
