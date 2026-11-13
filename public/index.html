@@ -112,6 +112,7 @@
   #termbar .tname { font-weight: 600; }
   #termbar .tcwd { color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #termbar .tlocal { color: var(--red); font-size: 12px; display: none; }
+  #t-detach { margin-left: auto; padding: 2px 9px; font-size: 12px; flex: 0 0 auto; }
   /* panel hidden: keep the session name clear of the fixed "☰ sessions" button */
   body.panel-hidden #termbar { padding-left: 116px; }
   #termwrap { flex: 1 1 auto; min-height: 0; padding: 4px 6px; position: relative; }
@@ -210,6 +211,7 @@
      on focus */
   @media (pointer: coarse) {
     header button, #unhide { padding: 9px 12px; font-size: 13px; }
+    #t-detach { padding: 8px 12px; font-size: 13px; }
     #term-ctl button { padding: 9px 11px; font-size: 13px; white-space: nowrap; }
     .chip { padding: 9px 12px; font-size: 13px; }
     .modal .row button { padding: 9px 14px; }
@@ -227,7 +229,7 @@
   <span id="net" class="net" title="server bandwidth (5 s average)"></span>
   <button id="new-session">+New</button>
   <span id="term-ctl" title="terminal shortcuts (phone)">
-    <button id="btn-esc" title="Send Esc (detach when the terminal isn't focused)">⎋</button>
+    <button id="btn-esc" title="Send Esc to the session (tmux send-keys on the host)">⎋</button>
     <button id="btn-pgup" title="Page up (scroll buffer)">Pg↑</button>
     <button id="btn-pgdn" title="Page down (scroll buffer)">Pg↓</button>
   </span>
@@ -242,6 +244,7 @@
       <span class="tname" id="t-name">no session selected</span>
       <span class="tcwd" id="t-cwd"></span>
       <span class="tlocal" id="t-local">● also attached locally</span>
+      <button id="t-detach" title="Detach (the session keeps running in tmux)" style="display:none">✕</button>
     </div>
     <div id="termwrap">
       <div id="placeholder">click a session above to attach — sessions are grouped by host (config.json)</div>
@@ -399,6 +402,7 @@ function attach(key) {
   const st = { key, host: s ? s.host : 'localhost', name: s ? s.name : key, ws };
   active = st;
   $('placeholder').style.display = 'none';
+  $('t-detach').style.display = '';
   term.reset();
   $('t-name').textContent = s ? `${displayName(s)}  [${s.host}:${s.name}]` : key;
   $('t-cwd').textContent = s ? s.cwd : '';
@@ -440,6 +444,7 @@ function detach() {
   try { active.ws.close(); } catch {}
   active = null;
   $('placeholder').style.display = 'flex';
+  $('t-detach').style.display = 'none';
   $('t-name').textContent = 'no session selected';
   $('t-cwd').textContent = '';
   $('t-local').style.display = 'none';
@@ -834,17 +839,19 @@ window.addEventListener('keydown', (e) => {
 });
 
 // ---------- phone shortcuts (⎋ / Pg↑ / Pg↓, right of +New) ----------
-// phones have no Esc / PageUp / PageDown keys. Esc mirrors the desktop binding
-// (focused terminal → send \x1b to the program; unfocused → detach); Pg↑/Pg↓
-// scroll the buffer like the PageUp/PageDown keys (same call the two-finger
-// touch handler uses).
+// phones have no Esc / PageUp / PageDown keys. ⎋ is injected server-side with
+// `tmux send-keys` (over ssh for remote hosts): tapping the button blurs the
+// terminal, so xterm's own input path can't be used — and its paste() would wrap
+// the byte in bracketed-paste markers, which vim & co. treat as a literal paste,
+// not an Esc key. Pg↑/Pg↓ scroll the buffer like the PageUp/PageDown keys (same
+// call the two-finger touch handler uses).
 $('btn-esc').onclick = () => {
-  if (!active) return;
-  if (term.isActive) term.paste('\x1b');
-  else detach();
+  if (!active || active.ws.readyState !== WebSocket.OPEN) return;
+  active.ws.send(JSON.stringify({ type: 'send-keys', keys: ['Escape'] }));
 };
 $('btn-pgup').onclick = () => { if (active) term.scrollLines(-1, term.rows); };
 $('btn-pgdn').onclick = () => { if (active) term.scrollLines(1, term.rows); };
+$('t-detach').onclick = detach; // ✕ in the termbar — the only detach on phones (⎋ now sends Esc)
 
 refresh();
 </script>

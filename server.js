@@ -684,6 +684,9 @@ function netRate() {
 
 // ---------- websocket: browser ⇄ tmux session (local or over ssh) ----------
 // terminal frames are tiny; bound per-message memory against a buggy/malicious client
+// tmux key names the UI may inject via send-keys (phone shortcuts): whitelist, so the
+// client can only ask for well-known keys, never arbitrary input
+const SEND_KEYS = new Set(['Escape', 'Enter', 'Space', 'Tab', 'BSpace', 'Up', 'Down', 'Left', 'Right', 'Pageup', 'Pagedown', 'Home', 'End']);
 const wss = new WebSocket.Server({ server, path: '/ws', maxPayload: 4 * 1024 * 1024 });
 wss.on('connection', (ws, req) => {
   wsClients++;
@@ -714,6 +717,13 @@ wss.on('connection', (ws, req) => {
     if (m.type === 'input' && typeof m.data === 'string') term.write(m.data);
     else if (m.type === 'resize' && m.cols > 0 && m.rows > 0) {
       try { term.resize(Math.floor(m.cols), Math.floor(m.rows)); } catch {}
+    } else if (m.type === 'send-keys' && Array.isArray(m.keys) && m.keys.length > 0 && m.keys.length <= 8 && m.keys.every((k) => SEND_KEYS.has(k))) {
+      // phone shortcuts (⎋): inject via `tmux send-keys` ON THE HOST (ssh or local),
+      // targeting the session's active pane — what the client is looking at. Immune
+      // to client-side focus loss (tapping the button blurs the terminal) and to
+      // xterm's bracketed-paste wrapping (paste() would hand the app a literal paste,
+      // not an Esc key).
+      runOn(host, ['tmux', 'send-keys', '-t', name, ...m.keys], 3000).catch(() => {});
     }
   };
   ws.on('message', (msg) => {

@@ -190,6 +190,10 @@ fallback applies.
   modal. Click again to bring it back.
 - `☰` / `Ctrl+B` hides the session strip. `Esc` detaches (only when the
   terminal isn't focused — Esc is a normal key in the running program).
+- On phones (≤640 px) three shortcuts appear right of **+New**: **⎋** sends
+  Esc to the session via `tmux send-keys` on the host (reliable in vim & co. —
+  no focus-loss or bracketed-paste pitfalls), **Pg↑/Pg↓** scroll the buffer.
+  **✕** in the session bar detaches (the session keeps running in tmux).
 - `⚙` (top right) opens the **config editor**: edit `config.json` in a modal
   and save. `hosts` / `cmd` apply immediately; `port`, `token`, `tls`,
   `cert`, `key`, `pollMs`, `netDisplay` need a server restart (changing the
