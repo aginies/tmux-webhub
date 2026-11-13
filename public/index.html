@@ -306,6 +306,10 @@
       <input id="ns-cwd" placeholder="~" maxlength="512">
       <div id="ns-dirs" class="dirlist"></div>
     </div>
+    <div>
+      <label>Command (blank = host default)</label>
+      <input id="ns-cmd" placeholder="pi" maxlength="512" spellcheck="false" autocomplete="off">
+    </div>
     <div class="err" id="ns-err"></div>
     <div class="row">
       <button id="ns-cancel">Cancel</button>
@@ -761,6 +765,7 @@ let netFails = 0;
 // only the fallback for the first poll, before a response has supplied the real value
 const DEFAULT_POLL_MS = 5000;
 let pollMs = DEFAULT_POLL_MS;
+let defaultCmd = 'pi'; // server's PI_CMD — placeholder for the +New command field
 let refreshTimer = null;
 let refreshing = false;
 function setConnBanner(msg) {
@@ -788,6 +793,7 @@ async function refresh() {
     const d = await r.json();
     netFails = 0;
     if (Number.isFinite(d.pollMs) && d.pollMs > 0) pollMs = d.pollMs;
+    if (typeof d.pi === 'string' && d.pi) defaultCmd = d.pi;
     if (d.net) setNetReadout(d.net); else $('net').textContent = ''; // netDisplay: false
     hosts = d.hosts || [];
     renderChips();
@@ -922,18 +928,19 @@ function populateHostSelect() {
   }
   if ([...sel.options].some((o) => o.value === cur)) sel.value = cur;
 }
-$('new-session').onclick = () => { $('ns-err').textContent = ''; $('ns-name').value = ''; $('ns-cwd').value = ''; hideDirs(); modal.classList.add('open'); $('ns-name').focus(); };
+$('new-session').onclick = () => { $('ns-err').textContent = ''; $('ns-name').value = ''; $('ns-cwd').value = ''; $('ns-cmd').value = ''; $('ns-cmd').placeholder = defaultCmd; hideDirs(); modal.classList.add('open'); $('ns-name').focus(); };
 $('ns-cancel').onclick = () => modal.classList.remove('open');
 modal.addEventListener('click', (e) => { if (e.target === modal) modal.classList.remove('open'); });
 $('ns-ok').onclick = async () => {
   const host = $('ns-host').value;
   const name = $('ns-name').value.trim();
   const cwd = $('ns-cwd').value.trim() || undefined;
+  const cmd = $('ns-cmd').value.trim() || undefined;
   if (!host) { $('ns-err').textContent = 'no reachable host'; return; }
   // mirrors NAME_RE in server.js (and valid_name in pitux) — keep in sync
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) { $('ns-err').textContent = 'name: start with letter/digit, then letters, digits, . _ -'; return; }
   $('ns-err').textContent = 'creating…';
-  const r = await fetch('/api/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ host, name, cwd }) });
+  const r = await fetch('/api/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ host, name, cwd, cmd }) });
   const d = await r.json();
   if (!r.ok) { $('ns-err').textContent = d.error || 'failed'; return; }
   modal.classList.remove('open');

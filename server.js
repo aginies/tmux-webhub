@@ -491,8 +491,16 @@ async function handleApiSessions(req, res, url, send) {
     if (!host) return send(400, { error: 'unknown host' });
     if (!NAME_RE.test(name)) return send(400, { error: 'bad session name: start with letter/digit, then letters, digits, . _ -' });
     const dir = (typeof parsed.cwd === 'string' && parsed.cwd.trim()) ? parsed.cwd.trim() : '~';
-    // per-host override: hosts may run a different binary (e.g. pi-bolt) or none of the default PI_CMD
-    const cmd = (typeof host.cmd === 'string' && host.cmd.trim()) ? host.cmd.trim() : PI_CMD;
+    // command: picker choice (explicit) → per-host config override (e.g. pi-bolt) → PI_CMD.
+    // It travels as an ARGV element (sh -c 'script' sh <name> <cmd> <dir>), never
+    // embedded in the script, so no quoting can break out of NEW_SH.
+    let cmd = (typeof host.cmd === 'string' && host.cmd.trim()) ? host.cmd.trim() : PI_CMD;
+    if (typeof parsed.cmd === 'string' && parsed.cmd.trim()) {
+      const c = parsed.cmd.trim();
+      if (c.length > 512) return send(400, { error: 'command too long (max 512)' });
+      if (/[\r\n]/.test(c)) return send(400, { error: 'command: no newlines' });
+      cmd = c;
+    }
     const r = await runOn(host, ['sh', '-c', NEW_SH, 'sh', name, cmd, dir], 8000);
     if (!r.ok) return send(400, { error: (r.stderr || r.stdout || 'failed').trim().split('\n').pop() });
     // invalidate ONLY this host's entry: the client's immediate GET re-polls it, while
