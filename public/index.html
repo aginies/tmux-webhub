@@ -107,7 +107,10 @@
   /* panel hidden: keep the session name clear of the fixed "☰ sessions" button */
   body.panel-hidden #termbar { padding-left: 116px; }
   #termwrap { flex: 1 1 auto; min-height: 0; padding: 4px 6px; position: relative; }
-  #term { position: absolute; inset: 4px 6px; }
+  #term { position: absolute; inset: 4px 6px; touch-action: none; }
+  /* touch-action:none: all gestures on the terminal are handled in JS —
+     one-finger scroll by xterm, two-finger scroll by us (see below) — so the
+     browser must not start pinch-zoom / page-pan on it */
   /* keep the terminal above the iOS home indicator (no-op where env() is unsupported) */
   #term { position: absolute; inset: 4px 6px calc(4px + env(safe-area-inset-bottom)); }
   #placeholder {
@@ -312,6 +315,61 @@ function fitTerm() {
   } catch {}
 }
 window.addEventListener('resize', fitTerm);
+
+// ---------- two-finger touch scroll (smartphone) ----------
+// xterm's built-in touch handling only tracks the first finger (one-finger drag
+// scrolls); a two-finger gesture would otherwise become a browser pinch-zoom.
+// Intercept two-finger vertical drag and turn it into buffer scrolling, like a
+// mouse wheel: fingers up → into history, fingers down → back to the bottom.
+// Listeners sit on #termwrap in the CAPTURE phase: at the target element
+// listeners fire in registration order (xterm's were registered first), so
+// only a capture-phase ancestor can intercept the gesture before xterm sees it.
+(() => {
+  const el = $('termwrap');
+  let ids = null;      // touch identifiers of the ongoing two-finger gesture
+  let lastY = 0;       // mean clientY of those touches
+  let pendingPx = 0;   // sub-line remainder, so slow drags still scroll
+
+  const meanY = (e) => {
+    let y = 0, n = 0;
+    for (const t of e.touches) if (ids.has(t.identifier)) { y += t.clientY; n++; }
+    return n ? y / n : null;
+  };
+
+  el.addEventListener('touchstart', (e) => {
+    if (!ids && e.touches.length >= 2) {
+      ids = new Set([e.touches[0].identifier, e.touches[1].identifier]);
+      lastY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+      pendingPx = 0;
+      e.stopPropagation(); // don't let xterm's one-finger handler latch on
+    }
+  }, { capture: true, passive: false });
+
+  el.addEventListener('touchmove', (e) => {
+    if (!ids) return;
+    e.preventDefault();    // no pinch-zoom / page scroll
+    e.stopPropagation();   // xterm's touches[0] handler would double-scroll
+    const y = meanY(e);
+    if (y === null) return;
+    pendingPx += lastY - y; // >0: fingers moved up
+    lastY = y;
+    const rowH = el.querySelector('.xterm-rows > div')?.clientHeight || 19;
+    while (Math.abs(pendingPx) >= rowH) {
+      term.scrollLines(pendingPx > 0 ? -1 : 1); // negative = up into history
+      pendingPx -= pendingPx > 0 ? rowH : -rowH;
+    }
+  }, { capture: true, passive: false });
+
+  const end = (e) => {
+    if (!ids) return;
+    for (const t of e.changedTouches) ids.delete(t.identifier);
+    if (ids.size === 0) { ids = null; pendingPx = 0; }
+    // while a tracked finger is still down, keep intercepting moves: xterm's
+    // one-finger baseline is stale mid-gesture and would jump the remaining finger
+  };
+  el.addEventListener('touchend', end, { capture: true, passive: false });
+  el.addEventListener('touchcancel', end, { capture: true, passive: false });
+})();
 
 function attach(key) {
   detach();
