@@ -1,0 +1,13 @@
+{
+  "port": 8787,
+  "host": "0.0.0.0",
+  "token": "CHANGE-ME: openssl rand -hex 32",
+  "tls": true,
+  "cert": ".certs/cert.pem",
+  "key": ".certs/key.pem",
+  "cmd": "pi",
+  "hosts": [
+    { "name": "localhost" },
+    { "name": "station2", "ssh": "user@host", "cmd": "pi-bolt" }
+  ]
+}

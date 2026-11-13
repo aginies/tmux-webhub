@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# pitux — run pi inside a named tmux session (discovered by tmux-webhub)
+set -euo pipefail
+PI_CMD="${PI_CMD:-pi}"
+
+die() { echo "pitux: $*" >&2; exit 1; }
+# name rule mirrors NAME_RE in server.js (single authority) — keep in sync
+valid_name() { [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; }
+
+usage() {
+  cat <<EOF
+pitux — run pi inside a named tmux session (shown in tmux-webhub web UI)
+
+  pitux new <name> [cwd]   create tmux session <name>, start pi, attach
+  pitux <name>             attach to existing session <name>
+  pitux ls                 list sessions
+
+env: PI_CMD (default: pi)
+EOF
+}
+
+case "${1:-}" in
+  new)
+    [ -n "${2:-}" ] || die "usage: pitux new <name> [cwd]"
+    name="$2"; cwd="${3:-$HOME}"
+    valid_name "$name" || die "invalid name (start with letter/digit, then letters, digits, . _ -)"
+    # expand ~ like the server (tmux 3.8 does not expand tildes in -c and silently
+    # falls back to its default dir); reject nonexistent absolute dirs
+    case "$cwd" in
+      "~") cwd="$HOME" ;;
+      "~/"*) cwd="$HOME/${cwd#"~/"}" ;;
+      /*) [ -d "$cwd" ] || die "not a directory: $cwd" ;;
+    esac
+    tmux has-session -t "$name" 2>/dev/null && die "session '$name' already exists (attach: pitux $name)"
+    tmux new-session -d -s "$name" -c "$cwd"
+    tmux send-keys -t "$name" "$PI_CMD" Enter
+    exec tmux attach -t "$name"
+    ;;
+  ls)
+    exec tmux list-sessions
+    ;;
+  -h|--help|help)
+    usage
+    ;;
+  "")
+    usage
+    ;;
+  *)
+    name="$1"
+    valid_name "$name" || die "invalid name"
+    if tmux has-session -t "$name" 2>/dev/null; then
+      exec tmux attach -t "$name"
+    else
+      die "no session '$name' (start one: pitux new $name [cwd])"
+    fi
+    ;;
+esac

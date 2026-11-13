@@ -1,0 +1,681 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tmux-webhub</title>
+<link rel="stylesheet" href="/vendor/xterm.css">
+<style>
+  :root {
+    --bg: #14161a; --panel: #1b1e24; --border: #2a2e37; --text: #d7dae0;
+    --dim: #8b909c; --accent: #4f8cff; --chip: #232733; --chip-hover: #2c3140;
+    --green: #3fb950; --red: #f85149; --amber: #d29922;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { background: var(--bg); color: var(--text); font: 14px/1.4 ui-sans-serif, system-ui, sans-serif; display: flex; flex-direction: column; }
+
+  header {
+    display: flex; align-items: center; gap: 10px; padding: 7px 12px;
+    background: var(--panel); border-bottom: 1px solid var(--border); flex: 0 0 auto;
+    flex-wrap: wrap; row-gap: 5px;
+  }
+  header.hidden { display: none; }
+  header .spacer { flex: 1; }
+  button {
+    background: var(--chip); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 5px 10px; cursor: pointer; font-size: 13px;
+  }
+  button:hover { background: var(--chip-hover); }
+
+  #unhide {
+    position: fixed; top: 8px; left: 8px; z-index: 20;
+    background: var(--panel); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 4px 10px; cursor: pointer; font-size: 13px;
+    box-shadow: 0 2px 8px rgba(0,0,0,.45);
+  }
+  #unhide.hidden { display: none; }
+
+  #layout { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+
+  /* display:contents → the host groups are direct flex items of the header and wrap with it */
+  #hosts { display: contents; }
+
+  .group {
+    display: flex; flex-direction: row; align-items: center; gap: 8px;
+    padding: 3px 10px 3px 8px;
+    background: rgba(var(--tint, 255,255,255), .06);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    flex: 0 1 auto; min-width: 0;
+  }
+  /* per-host tints (cycled by index) so several hosts are tellable apart at a glance */
+  .group.tint-0 { --tint: 79,140,255;  --tint-text: #a8c7ff; }
+  .group.tint-1 { --tint: 63,185,80;   --tint-text: #7ee292; }
+  .group.tint-2 { --tint: 188,140,255; --tint-text: #d4b8ff; }
+  .group.tint-3 { --tint: 210,153,34;  --tint-text: #f0c674; }
+  .group.tint-4 { --tint: 248,81,120;  --tint-text: #ff9eb5; }
+  .group-head {
+    display: flex; align-items: center; gap: 5px; user-select: none; white-space: nowrap;
+    /* host badge: a stronger shade of the group tint so the host reads as a label,
+       distinct from the session chips */
+    background: rgba(var(--tint, 79,140,255), .16);
+    border: 1px solid rgba(var(--tint, 79,140,255), .3);
+    border-radius: 6px;
+    padding: 2px 8px;
+  }
+  .group-head .hst { width: 8px; height: 8px; border-radius: 50%; background: var(--green); flex: 0 0 auto; }
+  .group-head .hst.slow { background: var(--amber); }
+  .group-head .hst.offline { background: var(--red); }
+  .group-head .gname {
+    font-weight: 700; font-size: 11px; letter-spacing: .09em; text-transform: uppercase;
+    color: var(--tint-text, #a8c7ff);
+  }
+  .group-head .gcount { color: var(--dim); font-size: 12px; }
+  .group.offline .gname, .group.offline .gcount { color: var(--red); }
+  .group.offline .group-head { background: rgba(248,81,73,.12); border-color: rgba(248,81,73,.3); }
+  .chips { display: flex; flex-direction: row; align-items: center; gap: 5px; flex-wrap: wrap; }
+
+  .chip {
+    display: flex; align-items: center; gap: 6px; background: var(--chip);
+    border: 1px solid var(--border); border-radius: 14px; padding: 3px 10px;
+    cursor: pointer; font-size: 13px; max-width: 100%;
+  }
+  .chip:hover { background: var(--chip-hover); }
+  /* --tint is inherited from the .group ancestor, so the selection ring matches the host's color */
+  .chip.active { border-color: rgb(var(--tint, 79,140,255)); background: var(--chip-hover); }
+  .chip .flash { flex: 0 0 auto; display: inline-flex; animation: pc-pulse 1.2s ease-in-out infinite; }
+  .chip .ind-empty { width: 12px; flex: 0 0 auto; } /* reserves the indicator slot so chips don't shift */
+  @keyframes pc-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+  .chip .cname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  #main { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  #conn {
+    display: none; padding: 4px 12px; flex: 0 0 auto;
+    background: rgba(210,153,34,.14); color: var(--amber); font-size: 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  #termbar {
+    display: flex; align-items: center; gap: 8px; padding: 5px 12px;
+    background: var(--panel); border-bottom: 1px solid var(--border); font-size: 13px; flex: 0 0 auto;
+  }
+  #termbar .tname { font-weight: 600; }
+  #termbar .tcwd { color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #termbar .tlocal { color: var(--red); font-size: 12px; display: none; }
+  /* panel hidden: keep the session name clear of the fixed "☰ sessions" button */
+  body.panel-hidden #termbar { padding-left: 116px; }
+  #termwrap { flex: 1 1 auto; min-height: 0; padding: 4px 6px; position: relative; }
+  #term { position: absolute; inset: 4px 6px; }
+  #placeholder {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    color: var(--dim); font-size: 15px;
+  }
+
+  /* modal */
+  #modal-bg, #cfg-bg {
+    position: fixed; inset: 0; background: rgba(0,0,0,.55); display: none;
+    align-items: center; justify-content: center; z-index: 10;
+  }
+  #modal-bg.open, #cfg-bg.open { display: flex; }
+  .modal {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 18px; width: 380px; display: flex; flex-direction: column; gap: 10px;
+  }
+  .modal h2 { margin: 0; font-size: 15px; }
+  .modal label { font-size: 12px; color: var(--dim); }
+  .modal input, .modal select {
+    background: var(--chip); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 7px 9px; font-size: 14px; width: 100%;
+  }
+  .modal .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 4px; }
+  .modal .err { color: var(--red); font-size: 12px; min-height: 14px; }
+  .dirlist {
+    display: none; max-height: 130px; overflow: auto; margin-top: 4px;
+    background: var(--chip); border: 1px solid var(--border); border-radius: 6px;
+  }
+  .dirlist.open { display: block; }
+  .dirlist div { padding: 4px 9px; font-size: 13px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .dirlist div:hover { background: var(--chip-hover); }
+  .dirlist .dim { color: var(--dim); font-size: 12px; }
+  #cfg-modal { width: 640px; max-width: calc(100vw - 32px); }
+  /* line-number gutter: font/line-height/padding-top MUST match #cfg-text exactly,
+     and the textarea must not wrap (wrap="off") or the numbering drifts */
+  .cfg-edit {
+    display: flex; height: 340px; resize: vertical; overflow: auto;
+    border: 1px solid var(--border); border-radius: 6px; background: var(--chip);
+  }
+  .cfg-lines {
+    flex: 0 0 auto; min-width: 32px; padding: 8px 6px; overflow: hidden;
+    text-align: right; white-space: pre; user-select: none; color: var(--dim);
+    font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    background: rgba(0,0,0,.18); border-right: 1px solid var(--border);
+  }
+  #cfg-text {
+    flex: 1 1 auto; height: 100%; border: 0; resize: none; white-space: pre;
+    background: transparent; color: var(--text); padding: 8px;
+    font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  .cfg-note { font-size: 12px; color: var(--dim); }
+</style>
+</head>
+<body>
+
+<header id="header">
+  <button id="toggle-panel" title="Hide session panel">☰</button>
+  <div id="hosts"></div>
+  <div class="spacer"></div>
+  <button id="new-session">+ New session</button>
+  <button id="edit-config" title="Edit config.json">⚙</button>
+</header>
+<button id="unhide" class="hidden" title="Show session panel">☰ sessions</button>
+
+<div id="layout">
+  <main id="main">
+    <div id="conn"></div>
+    <div id="termbar">
+      <span class="tname" id="t-name">no session selected</span>
+      <span class="tcwd" id="t-cwd"></span>
+      <span class="tlocal" id="t-local">● also attached locally</span>
+    </div>
+    <div id="termwrap">
+      <div id="placeholder">click a session above to attach — sessions are grouped by host (config.json)</div>
+      <div id="term"></div>
+    </div>
+  </main>
+</div>
+
+<div id="modal-bg">
+  <div class="modal" id="modal">
+    <h2>New pi session</h2>
+    <div>
+      <label>Host</label>
+      <select id="ns-host"></select>
+    </div>
+    <div>
+      <label>Session name (tmux name)</label>
+      <input id="ns-name" placeholder="myproj" maxlength="60">
+    </div>
+    <div>
+      <label>Working directory</label>
+      <input id="ns-cwd" placeholder="~" maxlength="512">
+      <div id="ns-dirs" class="dirlist"></div>
+    </div>
+    <div class="err" id="ns-err"></div>
+    <div class="row">
+      <button id="ns-cancel">Cancel</button>
+      <button id="ns-ok">Create &amp; attach</button>
+    </div>
+  </div>
+</div>
+
+<div id="cfg-bg">
+  <div class="modal" id="cfg-modal">
+    <h2>config.json</h2>
+    <div class="cfg-note">hosts / cmd apply immediately · port, token, tls, cert, key need a server restart · changing the token logs out all clients</div>
+    <div class="cfg-edit">
+      <div id="cfg-lines" class="cfg-lines"></div>
+      <textarea id="cfg-text" spellcheck="false" wrap="off"></textarea>
+    </div>
+    <div class="err" id="cfg-err"></div>
+    <div class="row">
+      <button id="cfg-cancel">Cancel</button>
+      <button id="cfg-save">Save</button>
+    </div>
+  </div>
+</div>
+
+<script src="/vendor/xterm.js"></script>
+<script src="/vendor/xterm-addon-fit.js"></script>
+<script>
+'use strict';
+
+// ---------- state ----------
+let hosts = [];        // [{name, state, error?, sessions:[{name, attached, cwd, activity}]}]
+let active = null;     // {key, host, name, ws, dataSub}
+
+const $ = (id) => document.getElementById(id);
+const keyOf = (host, name) => host + ':' + name; // neither may contain ':' (server-enforced)
+const allSessions = () => hosts.flatMap((h) => h.sessions.map((s) => ({ ...s, host: h.name })));
+const findSession = (key) => allSessions().find((x) => keyOf(x.host, x.name) === key);
+
+// ---------- terminal ----------
+const term = new Terminal({
+  cursorBlink: true,
+  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+  fontSize: 13,
+  theme: { background: '#14161a', foreground: '#d7dae0', cursor: '#d7dae0' },
+  scrollback: 5000,
+});
+const fit = new FitAddon.FitAddon();
+term.loadAddon(fit);
+term.open($('term'));
+window.__pc = { get term() { return term; }, get active() { return active; }, get hosts() { return hosts; }, refresh, attach, detach }; // debug hook
+
+let resizeSendTimer = null;
+function fitTerm() {
+  if (!active) return;
+  try {
+    fit.fit(); // immediate: the xterm layout must follow the container right away
+    // throttle the ws.send: a resize drag fires per pixel and each send is a tmux
+    // resize over ssh — a trailing send at 100 ms keeps the final size exact
+    if (resizeSendTimer) return;
+    resizeSendTimer = setTimeout(() => {
+      resizeSendTimer = null;
+      if (active) {
+        try { active.ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows })); } catch {}
+      }
+    }, 100);
+  } catch {}
+}
+window.addEventListener('resize', fitTerm);
+
+function attach(key) {
+  detach();
+  const s = findSession(key);
+  try { fit.fit(); } catch {} // sync xterm to the container so we can pass the real size
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const ws = new WebSocket(`${proto}://${location.host}/ws?host=${encodeURIComponent(s ? s.host : 'localhost')}&session=${encodeURIComponent(s ? s.name : key)}&cols=${term.cols}&rows=${term.rows}`);
+  const st = { key, host: s ? s.host : 'localhost', name: s ? s.name : key, ws };
+  active = st;
+  $('placeholder').style.display = 'none';
+  term.reset();
+  $('t-name').textContent = s ? `${displayName(s)}  [${s.host}:${s.name}]` : key;
+  $('t-cwd').textContent = s ? s.cwd : '';
+  updateLocalBadge(s);
+  renderChips();
+
+  // keystrokes typed before the ws is open are queued and flushed on open
+  // (the server queues its side until the pty exists; the client must too).
+  // Bounded: a stalled WS must not accumulate keystrokes forever.
+  const inputQueue = [];
+  const INPUT_QUEUE_MAX = 1000;
+  st.dataSub = term.onData((d) => {
+    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'input', data: d }));
+    else if (ws.readyState === WebSocket.CONNECTING) {
+      if (inputQueue.length >= INPUT_QUEUE_MAX) inputQueue.shift(); // drop oldest
+      inputQueue.push(d);
+    }
+  });
+
+  ws.onopen = () => {
+    for (const d of inputQueue.splice(0)) ws.send(JSON.stringify({ type: 'input', data: d }));
+    fitTerm(); term.focus();
+  };
+  ws.onmessage = (ev) => {
+    // server→client text frames ARE the terminal output (no control messages from server)
+    if (typeof ev.data === 'string') term.write(ev.data);
+  };
+  ws.onclose = (ev) => {
+    if (active !== st) return;
+    const why = ev.reason ? ev.reason : 'detached — session still runs in tmux';
+    term.write('\r\n\x1b[90m[' + why + ' — ' + key + ']\x1b[0m\r\n');
+    detach();
+  };
+}
+
+function detach() {
+  if (!active) return;
+  try { active.dataSub.dispose(); } catch {}
+  try { active.ws.close(); } catch {}
+  active = null;
+  $('placeholder').style.display = 'flex';
+  $('t-name').textContent = 'no session selected';
+  $('t-cwd').textContent = '';
+  $('t-local').style.display = 'none';
+  renderChips();
+}
+
+// tmux counts our own web client once its ws is open; subtract it to get the number of
+// OTHER clients attached (shared by the chip tooltip and the "also attached" badge)
+function otherAttached(s) {
+  const selfAttached = active && active.key === keyOf(s.host, s.name) && active.ws.readyState === WebSocket.OPEN;
+  return s.attached - (selfAttached ? 1 : 0);
+}
+
+function updateLocalBadge(s) {
+  const others = otherAttached(s);
+  const el = $('t-local');
+  if (others > 0) { el.textContent = `● ${others} other client${others > 1 ? 's' : ''} attached`; el.style.display = 'inline'; }
+  else el.style.display = 'none';
+}
+
+// ---------- display names: basename of cwd, disambiguated per host on collision ----------
+function cwdParts(s) { return s.cwd.split('/').filter(Boolean); }
+function displayName(s) {
+  const selfKey = keyOf(s.host, s.name);
+  const siblings = (hosts.find((h) => h.name === s.host) || { sessions: [] }).sessions;
+  // compare by key, not object identity (chipEl receives copies of the session objects)
+  const collides = (pred) => siblings.some((x) => keyOf(s.host, x.name) !== selfKey && pred(x));
+  const base = cwdParts(s).pop() || s.name;
+  if (!collides((x) => (cwdParts(x).pop() || x.name) === base)) return base;
+  // basename collision: add the parent dir
+  let label = cwdParts(s).slice(-2).join('/') || s.name;
+  if (collides((x) => (cwdParts(x).slice(-2).join('/') || x.name) === label)) {
+    label += ` (#${s.name})`; // still colliding: show the tmux session name
+  }
+  return label;
+}
+
+// ---------- rendering: one section per host (automatic, no manual grouping) ----------
+// Reconcile in place: a full rebuild every 5 s poll (any field change, e.g. one
+// session's activity flag, would trigger it) resets hover/scroll and can eat a click
+// mid-rebuild. Existing chips are updated by key (host+name); only added/removed
+// sessions and hosts create or remove DOM nodes.
+const FLASH_SVG = '<svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path d="M11 21h-1l1-7H7.5c-.86 0-.91-.28-.71-.61l.07-.12C8.48 10.94 10.42 7.54 13 3h1l-1 7h3.5c.49 0 .56.33.47.51l-.07.15C12.96 17.55 11 21 11 21z" fill="var(--amber)"/></svg>';
+function renderChips() {
+  const box = $('hosts');
+  const groups = new Map();
+  for (const g of box.children) groups.set(g.dataset.host, g);
+  const seen = new Set();
+  hosts.forEach((h, i) => {
+    seen.add(h.name);
+    const g = groups.get(h.name);
+    if (!g) { box.appendChild(hostEl(h, i)); return; }
+    syncGroupHead(g, h, i);
+    syncChips(g.querySelector('.chips'), h);
+  });
+  for (const [name, g] of groups) if (!seen.has(name)) g.remove();
+}
+
+function syncGroupHead(g, h, idx) {
+  g.className = 'group tint-' + (idx % 5) + (h.error ? ' offline' : '');
+  const [hst, nm, cnt] = g.querySelector('.group-head').children;
+  hst.className = 'hst' + (h.state === 'slow' ? ' slow' : h.state === 'offline' ? ' offline' : '');
+  hst.title = h.state === 'offline' ? `unreachable: ${h.error}` : h.state === 'slow' ? 'connected, but slow' : 'connected';
+  nm.title = h.error ? `unreachable: ${h.error}` : `${h.sessions.length} session(s)`;
+  const cntText = h.error ? 'offline' : `(${h.sessions.length})`;
+  if (cnt.textContent !== cntText) cnt.textContent = cntText;
+}
+
+function syncChips(box, h) {
+  const byKey = new Map();
+  for (const c of box.children) byKey.set(c.dataset.key, c);
+  for (const s of h.sessions) {
+    const key = keyOf(h.name, s.name);
+    const c = byKey.get(key);
+    if (c) syncChip(c, { ...s, host: h.name }, h.state);
+    else box.appendChild(chipEl({ ...s, host: h.name }, h.state));
+  }
+  for (const [key, c] of byKey) if (!h.sessions.some((x) => keyOf(h.name, x.name) === key)) c.remove();
+}
+
+function syncChip(c, s, hostState) {
+  c.classList.toggle('active', !!(active && active.key === keyOf(s.host, s.name)));
+  const ind = c.children[0];
+  if (s.activity && ind.className !== 'flash') { ind.className = 'flash'; ind.innerHTML = FLASH_SVG; }
+  else if (!s.activity && ind.className !== 'ind-empty') { ind.className = 'ind-empty'; ind.innerHTML = ''; }
+  const nm = c.children[1];
+  nm.textContent = displayName(s);
+  const others = otherAttached(s);
+  const stateLabel = hostState === 'slow' ? 'connected (slow)' : hostState === 'offline' ? 'host offline' : 'connected';
+  nm.title = `${s.host}: ${stateLabel} · tmux: ${s.name} · ${s.cwd}` + (others > 0 ? ` · ${others} other client(s) attached` : '') + (s.activity ? ' · active' : '');
+}
+
+function hostEl(h, idx) {
+  const g = document.createElement('div');
+  g.dataset.host = h.name;
+  g.className = 'group tint-' + (idx % 5) + (h.error ? ' offline' : '');
+
+  const head = document.createElement('div');
+  head.className = 'group-head';
+  const hst = document.createElement('span');
+  hst.className = 'hst' + (h.state === 'slow' ? ' slow' : h.state === 'offline' ? ' offline' : '');
+  hst.title = h.state === 'offline' ? `unreachable: ${h.error}` : h.state === 'slow' ? 'connected, but slow' : 'connected';
+  const nm = document.createElement('span');
+  nm.className = 'gname'; nm.textContent = h.name;
+  nm.title = h.error ? `unreachable: ${h.error}` : `${h.sessions.length} session(s)`;
+  const cnt = document.createElement('span');
+  cnt.className = 'gcount'; cnt.textContent = h.error ? 'offline' : `(${h.sessions.length})`;
+  head.append(hst, nm, cnt);
+  g.appendChild(head);
+
+  const chips = document.createElement('div');
+  chips.className = 'chips';
+  for (const s of h.sessions) chips.appendChild(chipEl({ ...s, host: h.name }, h.state));
+  g.appendChild(chips);
+  return g;
+}
+
+function chipEl(s, hostState) {
+  const key = keyOf(s.host, s.name);
+  const c = document.createElement('div');
+  c.dataset.key = key;
+  c.className = 'chip' + (active && active.key === key ? ' active' : '');
+  const others = otherAttached(s);
+  // indicator: ⚡ only while the session is active; idle sessions show nothing
+  // (host connection state is still visible on the host label)
+  const ind = document.createElement('span');
+  if (s.activity) {
+    ind.className = 'flash';
+    ind.innerHTML = FLASH_SVG;
+  } else {
+    ind.className = 'ind-empty';
+  }
+  const stateLabel = hostState === 'slow' ? 'connected (slow)' : hostState === 'offline' ? 'host offline' : 'connected';
+  const nm = document.createElement('span');
+  nm.className = 'cname'; nm.textContent = displayName(s);
+  nm.title = `${s.host}: ${stateLabel} · tmux: ${s.name} · ${s.cwd}` + (others > 0 ? ` · ${others} other client(s) attached` : '') + (s.activity ? ' · active' : '');
+  c.append(ind, nm);
+  c.onclick = () => attach(key);
+  return c;
+}
+
+// ---------- api polling ----------
+let netFails = 0;
+// poll cadence comes from the server (single source of truth); DEFAULT_POLL_MS is
+// only the fallback for the first poll, before a response has supplied the real value
+const DEFAULT_POLL_MS = 5000;
+let pollMs = DEFAULT_POLL_MS;
+let refreshTimer = null;
+let refreshing = false;
+function setConnBanner(msg) {
+  const el = $('conn');
+  if (!msg) { el.style.display = 'none'; el.textContent = ''; return; }
+  el.textContent = msg;
+  el.style.display = 'block';
+}
+async function refresh() {
+  refreshTimer = null;
+  if (refreshing) return; // one already in flight; it reschedules on completion
+  refreshing = true;
+  try {
+    const r = await fetch('/api/sessions');
+    const d = await r.json();
+    netFails = 0;
+    if (Number.isFinite(d.pollMs) && d.pollMs > 0) pollMs = d.pollMs;
+    hosts = d.hosts || [];
+    renderChips();
+    populateHostSelect();
+    setConnBanner(d.configError ? `⚠ config.json unreadable (${d.configError}) — showing last good host list` : null);
+    if (active) {
+      const s = findSession(active.key);
+      if (s) updateLocalBadge(s);
+      // if !s: session died, ws close handles the UI
+    }
+  } catch {
+    netFails++;
+    setConnBanner(netFails >= 2
+      ? `⚠ server unreachable (${netFails} failed polls) — showing stale data`
+      : '⚠ reconnecting…');
+  } finally {
+    refreshing = false;
+  }
+  // the chips/badges are the only consumers of this poll: a hidden tab or a hidden
+  // panel (Ctrl+B) gets no updates (server-side polling follows the terminal WS)
+  if (!document.hidden && !document.body.classList.contains('panel-hidden')) refreshTimer = setTimeout(refresh, pollMs);
+}
+// hidden tabs stop polling entirely (the browser only throttles them to ~1/s);
+// one immediate refresh when the tab comes back. A hidden tab must also not hold a
+// terminal WS open: the server polls all hosts while any WS is alive and would
+// stream the terminal to a tab nobody sees — detach on hide, reattach on show.
+let hiddenAttachKey = null;
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    if (refreshTimer) { clearTimeout(refreshTimer); refreshTimer = null; }
+    if (active) { hiddenAttachKey = active.key; detach(); }
+  } else {
+    if (!refreshTimer && !refreshing && !document.body.classList.contains('panel-hidden')) {
+      refreshTimer = setTimeout(refresh, 0);
+    }
+    if (hiddenAttachKey) {
+      const key = hiddenAttachKey; hiddenAttachKey = null;
+      // stale data is safe to attach from: the host/name in the key are stable, and a
+      // session killed while hidden just gets a clean "no such tmux session" close
+      setTimeout(() => { if (!document.hidden && findSession(key)) attach(key); }, 0);
+    }
+  }
+});
+
+// ---------- panel toggle ----------
+const header = $('header');
+const unhideBtn = $('unhide');
+function setPanelHidden(hidden) {
+  header.classList.toggle('hidden', hidden);
+  unhideBtn.classList.toggle('hidden', !hidden);
+  document.body.classList.toggle('panel-hidden', hidden);
+  localStorage.setItem('pc.panel', hidden ? 'hidden' : 'shown');
+  // pause/resume the 5 s GET poll: with the panel hidden nothing on screen uses it
+  // (the terminal keeps working via its own WS; server-side polling follows that WS)
+  if (hidden) {
+    if (refreshTimer) { clearTimeout(refreshTimer); refreshTimer = null; }
+  } else if (!refreshTimer && !refreshing && !document.hidden) {
+    refreshTimer = setTimeout(refresh, 0);
+  }
+  setTimeout(fitTerm, 50);
+}
+if (localStorage.getItem('pc.panel') === 'hidden') setPanelHidden(true);
+$('toggle-panel').onclick = () => setPanelHidden(true);
+unhideBtn.onclick = () => setPanelHidden(false);
+
+// ---------- cwd completion: subdirectories on the chosen host (local or ssh) ----------
+let dirsTimer = null;
+let dirsReq = 0; // stale-response guard: only the latest fetch may render
+const dirsBox = $('ns-dirs');
+function hideDirs() { dirsBox.classList.remove('open'); dirsBox.innerHTML = ''; }
+async function fetchDirs() {
+  const host = $('ns-host').value;
+  const p = $('ns-cwd').value.trim();
+  if (!host) return hideDirs();
+  const id = ++dirsReq;
+  const dot = p.endsWith('.') ? '1' : '';
+  const r = await fetch('/api/dirs?host=' + encodeURIComponent(host) + '&path=' + encodeURIComponent(p) + '&dot=' + dot);
+  const d = await r.json().catch(() => ({}));
+  if (id !== dirsReq) return; // a newer request superseded this one
+  if (!r.ok || !Array.isArray(d.dirs)) { hideDirs(); return; }
+  if (!d.dirs.length) { hideDirs(); return; }
+  dirsBox.innerHTML = '';
+  if (d.path) {
+    const hint = document.createElement('div');
+    hint.className = 'dim';
+    hint.textContent = d.path;
+    dirsBox.appendChild(hint);
+  }
+  for (const name of d.dirs) {
+    const el = document.createElement('div');
+    el.textContent = name + '/';
+    el.title = (d.path ? d.path.replace(/\/$/, '') + '/' : '') + name;
+    el.onclick = () => {
+      let cur = $('ns-cwd').value.trim();
+      // empty field means the host's home: build ~/name, not a bare relative name
+      // (tmux would resolve that against the tmux server's own cwd)
+      $('ns-cwd').value = cur ? (cur.endsWith('/') ? cur + name : cur + '/' + name) : '~/' + name;
+      hideDirs();
+      $('ns-cwd').focus();
+      scheduleDirs(); // complete one level deeper
+    };
+    dirsBox.appendChild(el);
+  }
+  dirsBox.classList.add('open');
+}
+function scheduleDirs() {
+  clearTimeout(dirsTimer);
+  dirsTimer = setTimeout(fetchDirs, 250);
+}
+$('ns-cwd').addEventListener('input', scheduleDirs);
+$('ns-cwd').addEventListener('focus', fetchDirs);
+$('ns-cwd').addEventListener('blur', () => setTimeout(hideDirs, 150)); // let the suggestion click land first
+$('ns-host').addEventListener('change', scheduleDirs);
+
+// ---------- new session modal ----------
+const modal = $('modal-bg');
+let lastHostsSnap = '';
+function populateHostSelect() {
+  // skip the DOM rebuild when the host list (names + reachability) is unchanged
+  const snap = hosts.map((h) => h.name + (h.error ? '!' : '')).join(',');
+  if (snap === lastHostsSnap) return;
+  lastHostsSnap = snap;
+  const sel = $('ns-host');
+  const cur = sel.value;
+  sel.innerHTML = '';
+  for (const h of hosts) {
+    const o = document.createElement('option');
+    o.value = h.name;
+    o.textContent = h.name + (h.error ? ' (offline)' : '');
+    o.disabled = !!h.error;
+    sel.appendChild(o);
+  }
+  if ([...sel.options].some((o) => o.value === cur)) sel.value = cur;
+}
+$('new-session').onclick = () => { $('ns-err').textContent = ''; $('ns-name').value = ''; $('ns-cwd').value = ''; hideDirs(); modal.classList.add('open'); $('ns-name').focus(); };
+$('ns-cancel').onclick = () => modal.classList.remove('open');
+modal.addEventListener('click', (e) => { if (e.target === modal) modal.classList.remove('open'); });
+$('ns-ok').onclick = async () => {
+  const host = $('ns-host').value;
+  const name = $('ns-name').value.trim();
+  const cwd = $('ns-cwd').value.trim() || undefined;
+  if (!host) { $('ns-err').textContent = 'no reachable host'; return; }
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) { $('ns-err').textContent = 'name: start with letter/digit, then letters, digits, . _ -'; return; }
+  $('ns-err').textContent = 'creating…';
+  const r = await fetch('/api/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ host, name, cwd }) });
+  const d = await r.json();
+  if (!r.ok) { $('ns-err').textContent = d.error || 'failed'; return; }
+  modal.classList.remove('open');
+  await refresh();
+  setTimeout(() => attach(keyOf(host, name)), 400); // let tmux + pi boot a moment
+};
+
+// ---------- config editor ----------
+const cfgBg = $('cfg-bg');
+function renderCfgLines() {
+  const n = $('cfg-text').value.split('\n').length;
+  const s = Array.from({ length: n }, (_, i) => i + 1).join('\n');
+  if ($('cfg-lines').textContent !== s) $('cfg-lines').textContent = s;
+}
+$('cfg-text').addEventListener('input', renderCfgLines);
+$('cfg-text').addEventListener('scroll', () => { $('cfg-lines').scrollTop = $('cfg-text').scrollTop; });
+$('edit-config').onclick = async () => {
+  $('cfg-err').textContent = '';
+  $('cfg-text').value = 'loading…';
+  renderCfgLines();
+  cfgBg.classList.add('open');
+  const r = await fetch('/api/config');
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) { $('cfg-err').textContent = d.error || 'failed to load config'; $('cfg-text').value = ''; renderCfgLines(); return; }
+  $('cfg-text').value = d.raw;
+  renderCfgLines();
+};
+$('cfg-cancel').onclick = () => cfgBg.classList.remove('open');
+cfgBg.addEventListener('click', (e) => { if (e.target === cfgBg) cfgBg.classList.remove('open'); });
+$('cfg-save').onclick = async () => {
+  const text = $('cfg-text').value;
+  try { JSON.parse(text); } catch (e) { $('cfg-err').textContent = 'invalid JSON: ' + e.message; return; }
+  $('cfg-save').disabled = true;
+  const r = await fetch('/api/config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: text });
+  const d = await r.json().catch(() => ({}));
+  $('cfg-save').disabled = false;
+  if (!r.ok) { $('cfg-err').textContent = d.error || 'failed to save'; return; }
+  cfgBg.classList.remove('open');
+  await refresh(); // mtime changed → server reloads hosts, cache invalidated
+};
+
+// ---------- keyboard ----------
+window.addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'b') { e.preventDefault(); setPanelHidden(!header.classList.contains('hidden')); }
+  // Esc detaches only when the terminal is NOT focused (Esc is a normal key inside TUIs)
+  if (e.key === 'Escape' && active && !term.isActive) detach();
+});
+
+refresh();
+</script>
+</body>
+</html>

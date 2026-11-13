@@ -1,0 +1,22 @@
+{
+  "name": "tmux-webhub",
+  "version": "0.1.0",
+  "description": "Web UI aggregator for local and remote pi (tmux) sessions",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test/smoke.js"
+  },
+  "keywords": ["tmux", "pi", "terminal", "web", "dashboard", "ssh", "aggregator"],
+  "author": "aginies",
+  "license": "ISC",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "node-pty": "^1.1.0",
+    "ws": "^8.23.0"
+  },
+  "private": true
+}
