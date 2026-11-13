@@ -4,6 +4,7 @@
   "description": "Web dashboard for tmux sessions on local and remote (ssh) hosts: browse, attach, create — from any browser",
   "main": "server.js",
   "bin": {
+    "tmux-webhub": "./server.js",
     "pitux": "./pitux"
   },
   "files": [

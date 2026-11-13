@@ -23,13 +23,28 @@ a build, anything.
   upgrade path is base64-encoding frames server-side and decoding in the client
   (small, symmetric change in `server.js` and `public/index.html`).
 
-## Run (no install)
+## Install
 
-From this directory:
+From npm (installs the `tmux-webhub` server command and the `pitux` helper):
+
+```sh
+npm install -g tmux-webhub
+```
+
+Or from a git checkout:
+
+```sh
+git clone https://github.com/aginies/tmux-webhub && cd tmux-webhub
+npm install   # builds node-pty (native module — prebuilt on common platforms)
+```
+
+## Run
+
+From this directory (or anywhere, after `npm i -g`):
 
 ```sh
 cp config.example.json config.json   # then edit: token, hosts
-node server.js
+tmux-webhub                          # the server (npm install) — or: node server.js
 ```
 
 Then open **https://<host>:8787** in a browser and enter the token from
