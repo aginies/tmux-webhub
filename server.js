@@ -731,7 +731,7 @@ function localAddresses() {
     for (const info of ifaces[name] || []) {
       if (info.internal) continue; // skip loopback (127.0.0.1 / ::1)
       const fam = info.family;
-      if (fam !== 'IPv4' && fam !== 'IPv6' && fam !== 4 && fam !== 6) continue;
+      if (fam !== 'IPv4' && fam !== 'IPv6') continue;
       out.add(info.address);
     }
   }
