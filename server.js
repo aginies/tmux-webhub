@@ -550,8 +550,9 @@ function sessionOf(req) {
 function authed(req) {
   if (!token()) return true; // no token configured → open (dev mode)
   if (sessionOf(req)) return true; // 2FA session cookie
-  // raw-token cookie: only valid while no TOTP secret is enrolled (see above)
-  return totpSecret() === null && validToken(cookieOf(req));
+  // raw-token cookie: valid while 2FA is off, or while no TOTP secret is enrolled.
+  // A lingering secret with 2FA set to "off" must NOT block login (the mode wins).
+  return (TWOFA === null || totpSecret() === null) && validToken(cookieOf(req));
 }
 // brute-force guard: 5 failed logins / 15 min per source IP
 const loginFails = new Map();
@@ -648,8 +649,10 @@ async function handleLogin(req, res, url, send, ip) {
     return send(200, { ok: true }, { 'Set-Cookie': sessionCookie(newSession()) });
   }
   pendingEnroll = null; // expired or consumed
-  // 2. enrolled: the code is mandatory (the raw token alone no longer opens the door)
-  if (secret) {
+  // 2. enrolled AND 2FA in effect: the code is mandatory (the raw token alone no
+  // opens the door). A secret lingering after 2FA was set to "off" must NOT force a
+  // code — the mode wins, so gate this on TWOFA !== null.
+  if (secret && TWOFA !== null) {
     if (!j.code) {
       // token valid but no code entered yet → tell the client to show the code step
       return send(200, { next: 'verify' });

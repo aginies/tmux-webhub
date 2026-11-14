@@ -1307,8 +1307,14 @@ function buildPayload() {
   p.key = $('cfg-key').value.trim();
   p.twoFA = $('cfg-twoFA').value || undefined;
   p.hosts = cfgHostDraft.map(normalizeHost);
-  // the form never edits the TOTP secret value → preserve whatever is in config.json
-  p.totp = REDACTED;
+  // 2FA off → drop any enrolled secret so login stops asking for a code and the
+  // settings panel later shows "not enrolled"; otherwise never touch the secret.
+  if ($('cfg-twoFA').value === '') {
+    delete p.totp;
+  } else {
+    // the form never edits the TOTP secret value → preserve whatever is in config.json
+    p.totp = REDACTED;
+  }
   // token: preserve unless the user typed a new value
   p.token = cfgTokenUnchanged ? REDACTED : $('cfg-token').value;
   // drop empty path fields the server would not want
