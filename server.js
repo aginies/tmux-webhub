@@ -684,6 +684,28 @@ function handleTotpStatus(res, send) {
   return send(200, { mode: TWOFA, enrolled: totpSecret() !== null });
 }
 
+// GET /api/net-interfaces → { addresses: [...] } (authed). The settings bind-address
+// field offers these as suggestions (the client prepends 0.0.0.0). Computed here because
+// the browser has no access to the server's network interfaces.
+function localAddresses() {
+  const out = new Set();
+  let ifaces;
+  try { ifaces = os.networkInterfaces(); } catch { return []; }
+  for (const name of Object.keys(ifaces || {})) {
+    for (const info of ifaces[name] || []) {
+      if (info.internal) continue; // skip loopback (127.0.0.1 / ::1)
+      const fam = info.family;
+      if (fam !== 'IPv4' && fam !== 'IPv6' && fam !== 4 && fam !== 6) continue;
+      out.add(info.address);
+    }
+  }
+  return [...out].sort();
+}
+
+function handleNetInterfaces(res, send) {
+  return send(200, { addresses: localAddresses() });
+}
+
 // POST /api/totp/disable {code} — authed; the code proves the phone is in hand.
 async function handleTotpDisable(req, res, send) {
   if (req.method !== 'POST') return send(405, { error: 'method not allowed' });
@@ -957,6 +979,7 @@ const server = (TLS ? https : http).createServer(tlsOpts, async (req, res) => {
     if (url.pathname.startsWith('/api/')) {
       if (req.method === 'GET' && url.pathname === '/api/totp/status') return handleTotpStatus(res, send); // public: login page
       if (!authed(req)) return send(401, { error: 'unauthorized' });
+      if (req.method === 'GET' && url.pathname === '/api/net-interfaces') return handleNetInterfaces(res, send); // authed: leaks local IPs, so gated
       if (url.pathname === '/api/sessions') return await handleApiSessions(req, res, url, send);
       if (url.pathname === '/api/sessions/rename') return await handleApiRename(req, res, send);
       if (url.pathname === '/api/config') return await handleApiConfig(req, res, send);

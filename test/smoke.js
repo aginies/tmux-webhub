@@ -99,6 +99,19 @@ test('GET /api/sessions with cookie → 200 + hosts array', async () => {
   assert.ok(Array.isArray(d.hosts));
 });
 
+test('GET /api/net-interfaces without cookie → 401', async () => {
+  const r = await fetch(base + '/api/net-interfaces');
+  assert.equal(r.status, 401);
+});
+
+test('GET /api/net-interfaces with cookie → 200 + addresses array', async () => {
+  const r = await fetch(base + '/api/net-interfaces', { headers: { Cookie: cookie } });
+  assert.equal(r.status, 200);
+  const d = await r.json();
+  assert.ok(Array.isArray(d.addresses), 'addresses is an array');
+  assert.ok(d.addresses.length >= 1, 'proposes at least one address');
+});
+
 test('GET /api/sessions: net stats present, totals monotonic', async () => {
   const g1 = await fetch(base + '/api/sessions', { headers: { Cookie: cookie } });
   const d1 = await g1.json();

@@ -436,7 +436,8 @@
         </div>
         <div class="cfg-field">
           <label for="cfg-host">Bind address</label>
-          <input id="cfg-host" type="text" placeholder="0.0.0.0">
+          <input id="cfg-host" type="text" placeholder="0.0.0.0" list="cfg-host-list">
+          <datalist id="cfg-host-list"></datalist>
           <span class="cfg-hint">needs restart</span>
         </div>
         <div class="cfg-field">
@@ -1290,6 +1291,33 @@ function fillForm(cfg) {
   $('cfg-token').value = '';
   cfgHostDraft = (Array.isArray(cfg.hosts) ? cfg.hosts : []).map((h) => ({ ...h }));
   renderHosts();
+  populateBindSuggestions();
+}
+
+// offer 0.0.0.0 + the server's real addresses as bind-address suggestions (datalist).
+// fetched from the server because the browser can't read its network interfaces.
+async function populateBindSuggestions() {
+  const dl = $('cfg-host-list');
+  if (!dl) return;
+  dl.innerHTML = '';
+  let addresses = [];
+  try {
+    const r = await api('/api/net-interfaces');
+    if (r.ok && Array.isArray(r.d.addresses)) addresses = r.d.addresses;
+  } catch {}
+  const current = $('cfg-host').value.trim();
+  const seen = new Set();
+  const add = (v) => {
+    if (v && !seen.has(v)) {
+      seen.add(v);
+      const o = document.createElement('option');
+      o.value = v;
+      dl.appendChild(o);
+    }
+  };
+  add('0.0.0.0');       // propose "bind to all" first
+  addresses.forEach(add);
+  add(current);        // keep a custom value that isn't in the list selectable
 }
 
 // --- build the FULL config payload: start from the snapshot, override only edited fields ---
