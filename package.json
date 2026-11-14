@@ -1,6 +1,6 @@
 {
   "name": "tmux-webhub",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Web dashboard for tmux sessions on local and remote (ssh) hosts: browse, attach, create — from any browser",
   "main": "server.js",
   "bin": {
