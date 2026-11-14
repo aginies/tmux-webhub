@@ -410,7 +410,10 @@ test('2FA: required forces enrollment, then token+code is mandatory', async () =
     r = await fetch(b2 + '/api/sessions', { headers: { Cookie: 'pc_token=' + encodeURIComponent(tok) } });
     assert.equal(r.status, 401, 'raw-token cookie rejected once enrolled');
     r = await post('/login', { token: tok });
-    assert.equal(r.status, 401, 'token-only login rejected once enrolled');
+    // token is valid but no code yet → server asks for the 6-digit code (advances, no session)
+    assert.equal(r.status, 200, 'token-only login once enrolled');
+    assert.equal((await r.clone().json()).next, 'verify', 'server asks for the 6-digit code');
+    assert.ok(!r.headers.get('set-cookie'), 'no session cookie until the code is verified');
     await new Promise((resolve, reject) => {
       const ws = new WebSocket(b2.replace('http', 'ws') + '/ws?host=x&session=y&token=' + tok);
       ws.on('close', (code) => (code === 4401 ? resolve() : reject(new Error('close code ' + code))));
