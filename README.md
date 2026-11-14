@@ -8,6 +8,8 @@ anything.
 
 ![tmux-webhub demo](https://raw.githubusercontent.com/aginies/tmux-webhub/master/demo.gif)
 
+![tmux-webhub main dashboard](images/main.png)
+
 - **Two-factor + token auth** — TLS by default; one access token gates the
   page, the API and the WebSocket; optional TOTP two-factor (scan a QR at first
   login) — from then on every login needs token + code, and wrong attempts are
@@ -111,6 +113,8 @@ hand); if the phone is lost, delete the `totp` key in `config.json`. The full
 model — TLS, cookies, CSRF, rate limiting — is in
 [docs/SECURITY.md](docs/SECURITY.md).
 
+![2FA QR code enrollment](images/2fa_qr.png)
+
 **Prereqs:** `node` (with `node-pty` built), `tmux`, `openssl`.
 
 ## Create a session
@@ -132,6 +136,9 @@ Everything works on a phone, no hardware keyboard needed:
   PgUp/PgDn, …; *abc* page: Esc, F1–F10, digits, full QWERTY, and Shift /
   Ctrl / Alt — hold a modifier 2 s to lock it, tap it again to unlock. Every key
   goes out through `tmux send-keys`, exactly like a keystroke on the host.
+
+  ![Virtual keyboard - special keys](images/keyboard1.png)
+  ![Virtual keyboard - QWERTY](images/keyboard2.png)
 - **⎋ / Pg↑ / Pg↓** — Esc, PageUp and PageDown buttons in the header, covering
   the desktop keyboard's jobs: quit a TUI, scroll the scrollback.
 - **Two-finger scroll** — drag with two fingers to scroll the scrollback; one
@@ -163,6 +170,8 @@ Everything works on a phone, no hardware keyboard needed:
 
 The ⚙ button opens a modal to edit `config.json` in the browser. The write is
 atomic and JSON-validated, so a broken file can never be saved.
+
+![Config editor](images/settings.png)
 
 - **Hosts** — "+ Add host" appends a row; each row has `name`, `ssh`
   (`user@host`, empty = local), `cmd`, and an on/off switch; ↑/↓ reorder, ✕
