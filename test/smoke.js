@@ -4,7 +4,7 @@
 // flows end to end. Run with: npm test
 const { test, before, after } = require('node:test');
 const assert = require('node:assert');
-const { spawn } = require('node:child_process');
+const { spawn, execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -221,10 +221,9 @@ test('WS with ?token= → auth passes (then unknown-host 4000, not 4401)', async
 // the resulting pane cwd, so those two tests skip when tmux is absent. testhost is the
 // local host created by the config PUT test above; its cmd is set to a live command
 // (sleep) so the pane outlives the check — the default cmd (pi) may not be installed.
-const cp = require('node:child_process');
-const hasTmux = (() => { try { cp.execFileSync('tmux', ['-V'], { stdio: 'ignore' }); return true; } catch { return false; } })();
-const tmuxCwd = (name) => cp.execFileSync('tmux', ['display-message', '-p', '-t', name, '#{pane_current_path}'], { encoding: 'utf8' }).trim();
-const tmuxKill = (name) => { try { cp.execFileSync('tmux', ['kill-session', '-t', name], { stdio: 'ignore' }); } catch {} };
+const hasTmux = (() => { try { execFileSync('tmux', ['-V'], { stdio: 'ignore' }); return true; } catch { return false; } })();
+const tmuxCwd = (name) => execFileSync('tmux', ['display-message', '-p', '-t', name, '#{pane_current_path}'], { encoding: 'utf8' }).trim();
+const tmuxKill = (name) => { try { execFileSync('tmux', ['kill-session', '-t', name], { stdio: 'ignore' }); } catch {} };
 async function waitForCwd(name, timeoutMs = 3000) {
   const t0 = Date.now();
   for (;;) {

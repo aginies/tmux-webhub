@@ -532,7 +532,6 @@ const term = new Terminal({
 const fit = new FitAddon.FitAddon();
 term.loadAddon(fit);
 term.open($('term'));
-window.__pc = { get term() { return term; }, get active() { return active; }, get hosts() { return hosts; }, refresh, attach, detach }; // debug hook
 
 let resizeSendTimer = null;
 function fitTerm() {
