@@ -205,6 +205,7 @@
     left: 50%; transform: translateX(-50%); /* first open: top center (JS takes over once geometry exists) */
     top: calc(8px + env(safe-area-inset-top, 0px)); /* below the notch (viewport-fit=cover) */
     padding: 10px 12px 12px;
+    display: flex; flex-direction: column; /* grid scrolls when the panel is shorter than the full keyboard */
   }
   #keys-head {
     display: flex; align-items: center; gap: 8px;
@@ -224,7 +225,13 @@
   }
   /* keyboard-like layout (gaps = keys we don't inject): F-row, Tab/Enter row,
      modifier row, arrow cluster as an inverted T bottom-right */
-  #keys-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+  #keys-grid {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
+    flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+    scrollbar-width: thin; scrollbar-color: var(--border) transparent;
+  }
+  #keys-grid::-webkit-scrollbar { width: 6px; }
+  #keys-grid::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
   #keys-grid button { min-height: 44px; font-size: 13px; padding: 8px 4px; }
   #keys-grid button.sent { background: var(--accent); color: #fff; } /* sent-flash: feedback the key went out */
 
@@ -1052,16 +1059,19 @@ $('t-detach').onclick = detach; // ✕ in the termbar — the only detach on pho
 // a fixed 4 columns, height follows). Geometry is remembered in localStorage.
 const keysBg = $('keys-bg');
 const keysPanel = $('keys-panel');
-const KEYS_MIN_W = 250;
+const KEYS_MIN_W = 250, KEYS_MIN_H = 90; // min height: header + one row of keys (grid scrolls below that)
 const keysMaxW = () => Math.min(560, innerWidth * 0.92);
+const keysMaxH = () => innerHeight - 8;
 let keysGeom = null;
 try { keysGeom = JSON.parse(localStorage.getItem('wh-keys-geom') || 'null'); } catch {}
 function clampKeys() {
   const vw = innerWidth, vh = innerHeight;
   keysGeom.w = Math.min(Math.max(keysGeom.w, KEYS_MIN_W), keysMaxW());
-  keysGeom.x = Math.min(Math.max(4, keysGeom.x), vw - keysGeom.w - 4);
-  keysGeom.y = Math.min(Math.max(4, keysGeom.y), vh - keysPanel.offsetHeight - 4);
+  keysGeom.h = Math.min(Math.max(keysGeom.h, KEYS_MIN_H), keysMaxH());
   keysPanel.style.width = keysGeom.w + 'px';
+  keysPanel.style.height = keysGeom.h + 'px';
+  keysGeom.x = Math.min(Math.max(4, keysGeom.x), vw - keysGeom.w - 4);
+  keysGeom.y = Math.min(Math.max(4, keysGeom.y), vh - keysGeom.h - 4);
   keysPanel.style.left = keysGeom.x + 'px';
   keysPanel.style.top = keysGeom.y + 'px';
 }
@@ -1071,7 +1081,11 @@ $('btn-keys').onclick = () => {
   if (!keysGeom || typeof keysGeom.x !== 'number') {
     // first open: adopt the CSS default (top center, below the notch)
     const r = keysPanel.getBoundingClientRect();
-    keysGeom = { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width) };
+    keysGeom = { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) };
+  } else if (typeof keysGeom.h !== 'number') {
+    // geometry saved before height-resize existed: adopt the natural height
+    keysPanel.style.height = 'auto';
+    keysGeom.h = keysPanel.offsetHeight;
   }
   keysPanel.style.transform = 'none'; // geometry is now absolute px
   clampKeys();
@@ -1096,7 +1110,7 @@ function keysDrag(handle, apply) {
   });
 }
 keysDrag($('keys-head'), (g0, dx, dy) => { keysGeom.x = g0.x + dx; keysGeom.y = g0.y + dy; });
-keysDrag($('keys-resize'), (g0, dx) => { keysGeom.w = g0.w + dx; });
+keysDrag($('keys-resize'), (g0, dx, dy) => { keysGeom.w = g0.w + dx; keysGeom.h = g0.h + dy; });
 window.addEventListener('resize', () => { if (keysBg.classList.contains('open')) clampKeys(); });
 for (const b of $('keys-grid').querySelectorAll('button'))
   b.onclick = () => {
