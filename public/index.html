@@ -183,7 +183,7 @@
   }
   /* friendly settings form */
   .cfg-note { font-size: 12px; color: var(--dim); margin-bottom: 12px; }
-  .cfg-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 12px; overflow-x: auto; position: sticky; top: 0; background: var(--bg); z-index: 1; }
+  .cfg-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 12px; overflow-x: auto; }
   .cfg-tab { flex: 0 0 auto; background: none; border: 0; color: var(--dim); font-size: 13px; padding: 6px 12px; cursor: pointer; border-bottom: 2px solid transparent; white-space: nowrap; }
   .cfg-tab:hover { color: var(--text); }
   .cfg-tab.on { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
@@ -436,12 +436,12 @@
   <div class="modal" id="cfg-modal">
     <h2>config.json</h2>
     <div class="cfg-note">hosts / cmd apply immediately · port, token, tls, cert, key, pollMs, netDisplay, twoFA need a server restart · changing the token logs out all clients</div>
+    <div id="cfg-tabs" class="cfg-tabs">
+      <button type="button" class="cfg-tab on" data-tab="server">Server</button>
+      <button type="button" class="cfg-tab" data-tab="auth">Authentication</button>
+      <button type="button" class="cfg-tab" data-tab="hosts">Hosts</button>
+    </div>
     <div id="cfg-form">
-      <div id="cfg-tabs" class="cfg-tabs">
-        <button type="button" class="cfg-tab on" data-tab="server">Server</button>
-        <button type="button" class="cfg-tab" data-tab="auth">Authentication</button>
-        <button type="button" class="cfg-tab" data-tab="hosts">Hosts</button>
-      </div>
       <section class="cfg-sec" data-section="server">
         <h3>Server</h3>
         <div class="cfg-field">
