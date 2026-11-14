@@ -361,6 +361,7 @@ const CLIENT_IDLE_MS = 10 * 1000;
 const hasClients = () => wsClients > 0 || Date.now() - lastSessionsGet < CLIENT_IDLE_MS;
 let hostsCache = null;    // { hosts: [ { at, name, state, sessions, ...} ], configError } — per-host `at`
 let hostsInflight = null; // shared promise while a poll is running
+const invalidatedHosts = new Set();
 function refreshHosts() {
   if (hostsInflight) return hostsInflight;
   if (!hasClients()) return Promise.resolve(hostsCache ? hostsCache.hosts : null);
@@ -382,11 +383,13 @@ function refreshHosts() {
       const freshByName = new Map(fresh.map((h) => [h.name, h]));
       const hosts = wanted.map((h) => {
         const f = freshByName.get(h.name);
+        const staleAt = invalidatedHosts.has(h.name) ? 0 : now;
+        invalidatedHosts.delete(h.name);
         // per-host cmd (config "cmd", e.g. pi-bolt) travels for the +New picker's
         // command-field placeholder; it is stable config data, so it never churns the
         // client's change-detection snapshot. A fresh poll strips it (listHostSessions
         // returns only {name,state,sessions}), so re-attach it from `wanted`.
-        return { ...(f ? { ...f, at: now } : cached.get(h.name)), cmd: h.cmd };
+        return { ...(f ? { ...f, at: staleAt } : cached.get(h.name)), cmd: h.cmd };
       });
       hostsCache = { hosts, configError };
       return hosts;
@@ -395,8 +398,10 @@ function refreshHosts() {
   return hostsInflight;
 }
 // Mark ONE host's cache entry stale (at: 0) so the next poll re-fetches just that
-// host; the others keep their fresh data. No-op while there is no cache yet.
+// host; the others keep their fresh data. If a poll is in flight, ensure its completion
+// does not overwrite the invalidation.
 function invalidateHost(name) {
+  invalidatedHosts.add(name);
   if (hostsCache) hostsCache.hosts = hostsCache.hosts.map((h) => (h.name === name ? { ...h, at: 0 } : h));
 }
 setInterval(() => { refreshHosts().catch(() => {}); }, POLL_MS).unref();
@@ -453,7 +458,9 @@ function cookieOf(req) {
 const B32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
 function b32decode(s) {
   s = String(s || '').toUpperCase().replace(/[\s=]/g, '');
-  if (!s || s.length % 8 !== 0 || !/^[A-Z2-7]+$/.test(s)) return null;
+  if (!s || !/^[A-Z2-7]+$/.test(s)) return null;
+  const rem = s.length % 8;
+  if (rem === 1 || rem === 3 || rem === 6) return null;
   let bits = 0, value = 0;
   const out = [];
   for (const c of s) {
@@ -687,11 +694,10 @@ async function handleTotpDisable(req, res, send) {
   return send(200, { ok: true });
 }
 
-function handleLogout(req, res) {
+function handleLogout(req, res, send) {
   const v = cookieOf(req);
   if (v) sessions.delete(v);
-  res.writeHead(302, { 'Set-Cookie': `${COOKIE}=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0`, Location: '/' });
-  res.end();
+  return send(200, { ok: true }, { 'Set-Cookie': `${COOKIE}=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0` });
 }
 
 // Session-creation script (runs on the host). ~ is expanded on the HOST side:
@@ -790,8 +796,8 @@ async function handleApiConfig(req, res, send) {
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return send(400, { error: 'config must be a JSON object' });
     if (parsed.twoFA !== undefined && parsed.twoFA !== 'required' && parsed.twoFA !== 'optional')
       return send(400, { error: 'twoFA must be "required" or "optional"' });
-    if (parsed.totp !== undefined && parsed.totp !== REDACTED && (typeof parsed.totp !== 'string' || !/^[A-Za-z2-7]{16,64}$/.test(parsed.totp) || parsed.totp.length % 8 !== 0))
-      return send(400, { error: 'totp must be a base32 secret (16–64 chars, length a multiple of 8)' });
+    if (parsed.totp !== undefined && parsed.totp !== REDACTED && (typeof parsed.totp !== 'string' || !/^[A-Za-z2-7\s=]{16,64}$/.test(parsed.totp) || !b32decode(parsed.totp)))
+      return send(400, { error: 'totp must be a base32 secret (16–64 chars)' });
     // a redacted token means "unchanged" → restore the live one so saving other
     // fields doesn't wipe it (the user can still set a new value by replacing it)
     if (parsed.token === REDACTED) {
@@ -871,6 +877,12 @@ async function handleApiDirs(req, res, url, send) {
   return send(200, { path, dirs: lines.slice(1) });
 }
 
+// security headers applied to all responses (clickjacking and MIME-type sniffing defense)
+const SEC_HEADERS = {
+  'X-Content-Type-Options': 'nosniff',
+  'X-Frame-Options': 'DENY',
+};
+
 // static files: unauthenticated browsers get the login page for '/', other assets 401.
 // ETag (size+mtime) + Cache-Control: vendored assets are immutable, html revalidates.
 function serveStatic(req, res, url) {
@@ -880,36 +892,36 @@ function serveStatic(req, res, url) {
   if (!authed(req) && !isLoginAsset) {
     if (url.pathname === '/') {
       return fs.readFile(path.join(PUBLIC_DIR, 'login.html'), (err, data) => {
-        if (err) { res.writeHead(500); return res.end('login page missing'); }
-        res.writeHead(200, { 'Content-Type': MIME['.html'], 'Cache-Control': 'no-cache' });
+        if (err) { res.writeHead(500, SEC_HEADERS); return res.end('login page missing'); }
+        res.writeHead(200, { 'Content-Type': MIME['.html'], 'Cache-Control': 'no-cache', ...SEC_HEADERS });
         res.end(req.method === 'HEAD' ? undefined : data);
       });
     }
-    res.writeHead(401); return res.end('unauthorized');
+    res.writeHead(401, SEC_HEADERS); return res.end('unauthorized');
   }
   let p = url.pathname === '/' ? '/index.html' : url.pathname;
   try { p = decodeURIComponent(p); } catch {}
   const full = path.normalize(path.join(PUBLIC_DIR, p));
   if (!full.startsWith(PUBLIC_DIR + path.sep) && full !== PUBLIC_DIR) {
-    res.writeHead(404); return res.end('not found');
+    res.writeHead(404, SEC_HEADERS); return res.end('not found');
   }
   fs.stat(full, (err, st) => {
-    if (err || !st.isFile()) { res.writeHead(404); return res.end('not found'); }
+    if (err || !st.isFile()) { res.writeHead(404, SEC_HEADERS); return res.end('not found'); }
     const cc = full.startsWith(PUBLIC_DIR + path.sep + 'vendor' + path.sep)
       ? 'public, max-age=31536000, immutable'
       : 'no-cache';
     const respond = (c) => {
       if (req.headers['if-none-match'] === c.etag) {
-        res.writeHead(304, { ETag: c.etag, 'Cache-Control': cc });
+        res.writeHead(304, { ETag: c.etag, 'Cache-Control': cc, ...SEC_HEADERS });
         return res.end();
       }
-      res.writeHead(200, { 'Content-Type': MIME[path.extname(full)] || 'application/octet-stream', ETag: c.etag, 'Cache-Control': cc });
+      res.writeHead(200, { 'Content-Type': MIME[path.extname(full)] || 'application/octet-stream', ETag: c.etag, 'Cache-Control': cc, ...SEC_HEADERS });
       res.end(req.method === 'HEAD' ? undefined : c.buffer);
     };
     const c = staticCache.get(full);
     if (c && c.size === st.size && c.mtimeMs === st.mtimeMs) return respond(c);
     fs.readFile(full, (err2, data) => {
-      if (err2) { res.writeHead(404); return res.end('not found'); }
+      if (err2) { res.writeHead(404, SEC_HEADERS); return res.end('not found'); }
       staticCache.set(full, { size: st.size, mtimeMs: st.mtimeMs, buffer: data, etag: `"${st.size.toString(16)}-${Math.floor(st.mtimeMs).toString(16)}"` });
       respond(staticCache.get(full));
     });
@@ -918,7 +930,7 @@ function serveStatic(req, res, url) {
 
 const server = (TLS ? https : http).createServer(tlsOpts, async (req, res) => {
   const send = (code, obj, extraHeaders = {}) => {
-    res.writeHead(code, { 'Content-Type': 'application/json', ...extraHeaders });
+    res.writeHead(code, { 'Content-Type': 'application/json', ...SEC_HEADERS, ...extraHeaders });
     res.end(JSON.stringify(obj));
   };
   // an unparseable request target (e.g. absolute-form "GET http://[::1") must not throw
@@ -935,7 +947,10 @@ const server = (TLS ? https : http).createServer(tlsOpts, async (req, res) => {
       return send(415, { error: 'Content-Type: application/json required' });
     }
     if (req.method === 'POST' && url.pathname === '/login') return await handleLogin(req, res, url, send, ip);
-    if (req.method === 'GET' && url.pathname === '/logout') return handleLogout(req, res);
+    if (url.pathname === '/logout') {
+      if (req.method !== 'POST') return send(405, { error: 'method not allowed' });
+      return handleLogout(req, res, send);
+    }
     if (url.pathname.startsWith('/api/')) {
       if (req.method === 'GET' && url.pathname === '/api/totp/status') return handleTotpStatus(res, send); // public: login page
       if (!authed(req)) return send(401, { error: 'unauthorized' });
@@ -948,7 +963,7 @@ const server = (TLS ? https : http).createServer(tlsOpts, async (req, res) => {
       return send(404, { error: 'not found' });
     }
     if (req.method === 'GET' || req.method === 'HEAD') return serveStatic(req, res, url);
-    res.writeHead(405); res.end();
+    res.writeHead(405, SEC_HEADERS); res.end();
   } catch (e) {
     send(500, { error: String(e.message || e) });
   }
@@ -1043,6 +1058,18 @@ wss.on('connection', (ws, req) => {
   // sync listener: a throw here is an uncaughtException (server exit) — guard the parse
   let url;
   try { url = new URL(req.url, 'http://localhost'); } catch { ws.close(1002, 'bad request'); return; }
+  // CSWSH hardening: if an Origin header is sent (browsers), ensure it matches Host
+  const origin = req.headers.origin;
+  if (origin) {
+    try {
+      const oh = new URL(origin).host;
+      if (oh && req.headers.host && oh.toLowerCase() !== req.headers.host.toLowerCase()) {
+        ws.close(4403, 'cross-origin forbidden'); return;
+      }
+    } catch {
+      ws.close(4403, 'bad origin'); return;
+    }
+  }
   // cookie (same-origin browsers) or ?token= (non-browser clients). With a TOTP
   // secret enrolled the raw token is rejected here too — only the session cookie
   // (token + code at login) gets through.
@@ -1067,7 +1094,9 @@ wss.on('connection', (ws, req) => {
   const pending = [];
   const PENDING_MAX = 1000;
   const handleMsg = (m) => {
-    if (m.type === 'input' && typeof m.data === 'string') term.write(m.data);
+    if (m.type === 'input' && typeof m.data === 'string') {
+      try { term.write(m.data); } catch {}
+    }
     else if (m.type === 'resize' && m.cols > 0 && m.rows > 0) {
       // clamp like the WS URL path: an unbounded size would grow the remote tmux window
       // to limit-width/limit-height (default 10000×10000 = 100M cells, GBs of RAM)

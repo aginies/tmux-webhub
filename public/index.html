@@ -1121,7 +1121,10 @@ $('edit-config').onclick = async () => {
   renderCfgLines();
 };
 $('cfg-cancel').onclick = () => cfgBg.classList.remove('open');
-$('cfg-logout').onclick = () => location.replace('/logout');
+$('cfg-logout').onclick = async () => {
+  await fetch('/logout', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+  location.replace('/');
+};
 cfgBg.addEventListener('click', (e) => { if (e.target === cfgBg) cfgBg.classList.remove('open'); });
 $('cfg-save').onclick = async () => {
   const text = $('cfg-text').value;

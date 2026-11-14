@@ -216,6 +216,66 @@ test('WS with ?token= → auth passes (then unknown-host 4000, not 4401)', async
   });
 });
 
+test('WS with cross-origin Origin header → close 4403', async () => {
+  await new Promise((resolve, reject) => {
+    const ws = new WebSocket(base.replace('http', 'ws') + `/ws?host=x&session=y&token=${token}`, {
+      headers: { Origin: 'http://evil.com' },
+    });
+    ws.on('close', (code) => (code === 4403 ? resolve() : reject(new Error('close code ' + code))));
+    ws.on('error', reject);
+  });
+});
+
+test('WS with matching Origin header → passes origin check', async () => {
+  await new Promise((resolve, reject) => {
+    const ws = new WebSocket(base.replace('http', 'ws') + `/ws?host=x&session=y&token=${token}`, {
+      headers: { Origin: base },
+    });
+    ws.on('close', (code) => (code === 4000 ? resolve() : reject(new Error('close code ' + code))));
+    ws.on('error', reject);
+  });
+});
+
+test('security headers: X-Frame-Options and X-Content-Type-Options present', async () => {
+  const r1 = await fetch(base + '/');
+  assert.equal(r1.headers.get('x-frame-options'), 'DENY');
+  assert.equal(r1.headers.get('x-content-type-options'), 'nosniff');
+  const r2 = await fetch(base + '/api/totp/status');
+  assert.equal(r2.headers.get('x-frame-options'), 'DENY');
+  assert.equal(r2.headers.get('x-content-type-options'), 'nosniff');
+});
+
+test('POST /logout clears cookie; GET /logout rejected with 405', async () => {
+  const rGet = await fetch(base + '/logout');
+  assert.equal(rGet.status, 405);
+
+  const rPost = await fetch(base + '/logout', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Cookie: cookie },
+  });
+  assert.equal(rPost.status, 200);
+  const sc = rPost.headers.get('set-cookie') || '';
+  assert.match(sc, /Max-Age=0/);
+
+  // log back in so remaining tests still have a valid cookie
+  const rLogin = await fetch(base + '/login', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token }),
+  });
+  cookie = (rLogin.headers.get('set-cookie') || '').split(';')[0];
+});
+
+test('PUT /api/config invalid totp Base32 → 400, file untouched', async () => {
+  const before = fs.readFileSync(cfgPath, 'utf8');
+  const r = await fetch(base + '/api/config', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', Cookie: cookie },
+    body: JSON.stringify({ port: 0, host: '127.0.0.1', token, tls: false, totp: 'INVALID_BASE32_12345!', hosts: [{ name: 'testhost' }] }),
+  });
+  assert.equal(r.status, 400);
+  assert.equal(fs.readFileSync(cfgPath, 'utf8'), before);
+});
+
 // ---------- session creation (POST /api/sessions) ----------
 // The cwd-resolution fix (tmux 3.8 does not expand ~ in -c) needs a real tmux to observe
 // the resulting pane cwd, so those two tests skip when tmux is absent. testhost is the
@@ -426,6 +486,22 @@ test('2FA: required forces enrollment, then token+code is mandatory', async () =
     const sc3 = (r.headers.get('set-cookie') || '').split(';')[0];
     r = await fetch(b2 + '/api/sessions', { headers: { Cookie: sc3 } });
     assert.equal(r.status, 200);
+
+    // 7b. PUT /api/config accepts a standard 26-char (128-bit) Base32 secret
+    const secret26 = 'JBSWY3DPEHPK3PXPJBSWY3DPEP';
+    r = await fetch(b2 + '/api/config', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Cookie: sc3 },
+      body: JSON.stringify({ port: 0, host: '127.0.0.1', token: tok, tls: false, totp: secret26, hosts: [] }),
+    });
+    assert.equal(r.status, 200, JSON.stringify(await r.clone().json()));
+    assert.equal(JSON.parse(fs.readFileSync(cfg, 'utf8')).totp, secret26, '26-char Base32 secret saved');
+    // restore original secret
+    await fetch(b2 + '/api/config', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Cookie: sc3 },
+      body: JSON.stringify({ port: 0, host: '127.0.0.1', token: tok, tls: false, totp: secret, hosts: [] }),
+    });
 
     // 8. status now shows enrolled
     d = await (await fetch(b2 + '/api/totp/status')).json();
