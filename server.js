@@ -1055,6 +1055,9 @@ async function handleAddHost(req, res, send) {
   if (ssh !== undefined && typeof ssh !== 'string') {
     return send(400, { error: 'ssh must be a string' });
   }
+  if (ssh !== undefined && ssh !== '' && !validateSshHost(ssh)) {
+    return send(400, { error: 'invalid SSH host: ' + ssh });
+  }
   if (cmd !== undefined && typeof cmd !== 'string') {
     return send(400, { error: 'cmd must be a string' });
   }
@@ -1100,6 +1103,7 @@ async function handleUpdateHost(req, res, name, send) {
   if (!entry) return send(404, { error: 'host not found: ' + name });
   if (parsed.ssh !== undefined) {
     if (typeof parsed.ssh !== 'string') return send(400, { error: 'ssh must be a string' });
+    if (parsed.ssh !== '' && !validateSshHost(parsed.ssh)) return send(400, { error: 'invalid SSH host: ' + parsed.ssh });
     entry.ssh = parsed.ssh;
   }
   if (parsed.cmd !== undefined) {

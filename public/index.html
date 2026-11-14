@@ -894,6 +894,7 @@ function openSplit() {
       splitTerm.dispose();
       splitTerm = null;
     }
+    splitFit = null;
     const pane2 = wrap.querySelector('.split-pane[data-pane="2"]');
     if (pane2) pane2.remove();
     document.querySelectorAll('.chip').forEach(c => c.classList.remove('split-select'));
@@ -926,6 +927,7 @@ function openSplit() {
       splitTerm.dispose();
       splitTerm = null;
     }
+    splitFit = null;
     document.querySelectorAll('.chip').forEach(c => c.classList.remove('split-select'));
     fitTerm();
   };
@@ -935,13 +937,33 @@ function openSplit() {
   pane2.appendChild(div2);
   wrap.appendChild(pane2);
 
-  splitTerm = new Terminal({
-    fontFamily: 'Cascadia Code, Fira Code, Menlo, Consolas, monospace',
-    fontSize: 13,
-    lineHeight: 1.15,
-    cursorBlink: true,
-    scrollback: 5000,
-    theme: {
+  // theme-aware split terminal colors
+  const themeName = getTheme();
+  let termTheme;
+  if (themeName === 'light') {
+    termTheme = {
+      background: '#ffffff',
+      foreground: '#1f2328',
+      cursor: '#1f2328',
+      selectionBackground: '#0969da',
+      black: '#1f2328', red: '#cf222e', green: '#1a7f37', yellow: '#9a6700',
+      blue: '#0969da', magenta: '#8250df', cyan: '#0550ae', white: '#656d76',
+      brightBlack: '#656d76', brightRed: '#a40e26', brightGreen: '#037303', brightYellow: '#6c3f00',
+      brightBlue: '#004085', brightMagenta: '#5a32a3', brightCyan: '#015392', brightWhite: '#24292f',
+    };
+  } else if (themeName === 'contrast') {
+    termTheme = {
+      background: '#000000',
+      foreground: '#ffffff',
+      cursor: '#ffffff',
+      selectionBackground: '#00ffff',
+      black: '#000000', red: '#ff0000', green: '#00ff00', yellow: '#ffff00',
+      blue: '#0000ff', magenta: '#ff00ff', cyan: '#00ffff', white: '#ffffff',
+      brightBlack: '#808080', brightRed: '#ff8080', brightGreen: '#80ff80', brightYellow: '#ffff80',
+      brightBlue: '#8080ff', brightMagenta: '#ff80ff', brightCyan: '#80ffff', brightWhite: '#ffffff',
+    };
+  } else {
+    termTheme = {
       background: '#14161a',
       foreground: '#d7dae0',
       cursor: '#d7dae0',
@@ -950,7 +972,15 @@ function openSplit() {
       blue: '#4f8cff', magenta: '#bc8cff', cyan: '#39c5cf', white: '#d7dae0',
       brightBlack: '#565a63', brightRed: '#ff7b72', brightGreen: '#56d364', brightYellow: '#e3b341',
       brightBlue: '#79b8ff', brightMagenta: '#d2a8ff', brightCyan: '#56d4dd', brightWhite: '#ffffff',
-    },
+    };
+  }
+  splitTerm = new Terminal({
+    fontFamily: 'Cascadia Code, Fira Code, Menlo, Consolas, monospace',
+    fontSize: 13,
+    lineHeight: 1.15,
+    cursorBlink: true,
+    scrollback: 5000,
+    theme: termTheme,
   });
   splitFit = new FitAddon.FitAddon();
   splitTerm.loadAddon(splitFit);
