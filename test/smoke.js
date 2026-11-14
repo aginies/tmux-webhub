@@ -209,6 +209,42 @@ test('PUT /api/config with __REDACTED__ token preserves it (form contract)', asy
   }
 });
 
+test('login: enrolled secret with 2FA OFF does not force a code (mode wins)', async () => {
+  // regression: a lingering TOTP secret must not make login ask for a code once twoFA
+  // is set to "off". The secret is enrolled (hot-reloaded) but the mode is off.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pc-2faoff-'));
+  const cfg = path.join(dir, 'config.json');
+  fs.writeFileSync(cfg, JSON.stringify({ port: 0, host: '127.0.0.1', token: 'seed-token', tls: false, totp: 'JBSWY3DPEHPK3PXP', hosts: [] }));
+  const port = await freePort();
+  const ch = spawn(process.execPath, [path.join(ROOT, 'server.js')], {
+    env: { ...process.env, PC_CONFIG_FILE: cfg, PC_PORT: String(port), PC_TLS: 'false' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  try {
+    await new Promise((resolve, reject) => {
+      let out = '';
+      const timer = setTimeout(() => reject(new Error('server did not start: ' + out)), 8000);
+      const onData = (d) => { out += d; if (out.includes('tmux-webhub on')) { clearTimeout(timer); resolve(); } };
+      ch.stdout.on('data', onData);
+      ch.stderr.on('data', onData);
+      ch.on('exit', (c) => { clearTimeout(timer); reject(new Error('server exited early (' + c + '): ' + out)); });
+    });
+    // login with token ONLY (no code) → must succeed, not ask for a verify code
+    const r = await fetch(`http://127.0.0.1:${port}/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: 'seed-token' }) });
+    assert.equal(r.status, 200);
+    const body = await r.json();
+    assert.notEqual(body.next, 'verify', 'must not ask for a 2FA code when mode is off');
+    assert.equal(body.ok, true, 'login succeeds with token only');
+    // the issued raw-token cookie must pass auth even though a secret is enrolled
+    const ck = (r.headers.get('set-cookie') || '').split(';')[0];
+    const s = await fetch(`http://127.0.0.1:${port}/api/sessions`, { headers: { Cookie: ck } });
+    assert.equal(s.status, 200, 'raw-token cookie authenticated despite enrolled secret');
+  } finally {
+    ch.kill('SIGTERM');
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('GET /api/config without cookie → 401', async () => {
   const r = await fetch(base + '/api/config');
   assert.equal(r.status, 401);
