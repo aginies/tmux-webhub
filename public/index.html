@@ -521,6 +521,9 @@
 // ---------- state ----------
 let hosts = [];        // [{name, state, error?, sessions:[{name, attached, cwd, activity}]}]
 let active = null;     // {key, host, name, ws, dataSub}
+// host → sessions lookup, rebuilt once per renderChips so displayName is O(1)/chip instead
+// of an O(#hosts) hosts.find per chip (render is O(sessions × hosts) otherwise).
+let hostSessionsLookup = null;
 
 const $ = (id) => document.getElementById(id);
 const keyOf = (host, name) => host + ':' + name; // neither may contain ':' (server-enforced)
@@ -704,7 +707,7 @@ function cwdParts(s) { return s.cwd.split('/').filter(Boolean); }
 const labelOf = (s) => (/^[0-9]+$/.test(s.name) ? (cwdParts(s).pop() || s.name) : s.name);
 function displayName(s) {
   const selfKey = keyOf(s.host, s.name);
-  const siblings = (hosts.find((h) => h.name === s.host) || { sessions: [] }).sessions;
+  const siblings = (hostSessionsLookup && hostSessionsLookup.get(s.host)) || (hosts.find((h) => h.name === s.host) || { sessions: [] }).sessions;
   // compare by key, not object identity (chipEl receives copies of the session objects)
   const collides = (pred) => siblings.some((x) => keyOf(s.host, x.name) !== selfKey && pred(x));
   const base = labelOf(s);
@@ -775,6 +778,7 @@ $('rn-name').addEventListener('keydown', (e) => { if (e.key === 'Enter') doRenam
 const FLASH_SVG = '<svg viewBox="0 0 24 24" width="11" height="11" aria-hidden="true"><path d="M11 21h-1l1-7H7.5c-.86 0-.91-.28-.71-.61l.07-.12C8.48 10.94 10.42 7.54 13 3h1l-1 7h3.5c.49 0 .56.33.47.51l-.07.15C12.96 17.55 11 21 11 21z" fill="var(--amber)"/></svg>';
 function renderChips() {
   const box = $('hosts');
+  hostSessionsLookup = new Map(hosts.map((h) => [h.name, h.sessions]));
   const groups = new Map();
   for (const g of box.children) groups.set(g.dataset.host, g);
   const seen = new Set();

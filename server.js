@@ -36,7 +36,10 @@ function readConfig(fatal) {
 function writeConfigAtomic(obj) {
   const tmp = CONFIG_FILE + '.tmp-' + process.pid;
   try {
-    fs.writeFileSync(tmp, JSON.stringify(obj, null, 2) + '\n');
+    // 0600: the config holds the token + TOTP secret — the default umask would leave
+    // the temp file world-readable during the write, and the rename would downgrade a
+    // hand-tightened 0600 config.json to 0644
+    fs.writeFileSync(tmp, JSON.stringify(obj, null, 2) + '\n', { mode: 0o600 });
     fs.renameSync(tmp, CONFIG_FILE);
     return null;
   } catch (e) {
@@ -105,7 +108,8 @@ const WS_RESUME_BYTES = 2 * 1024 * 1024;
 // ControlPath is a short hash of the target: %C's 40-char hash plus ssh's random suffix
 // can exceed the ~108-char Unix socket path limit under long TMPDIRs (no tokens → no suffix).
 const CM_DIR = path.join(os.tmpdir(), 'tc-cm-' + (process.getuid ? process.getuid() : 0));
-fs.mkdirSync(CM_DIR, { recursive: true });
+fs.mkdirSync(CM_DIR, { recursive: true, mode: 0o700 });
+try { fs.chmodSync(CM_DIR, 0o700); } catch {} // directories created before the mode was set
 // crash leftovers: a stale master socket makes ssh fail with "Control socket connect ..."
 // instead of opening a fresh master — clear the directory at startup (single-instance app)
 for (const f of fs.readdirSync(CM_DIR)) {
@@ -137,6 +141,9 @@ let cfgMtimeNs = null;
 let cfgHosts = null;
 let cfgStatAt = 0;
 const CFG_STAT_GATE_MS = 500; // hostByName() runs on every request/WS: stat at most twice a second
+// name → host, rebuilt whenever loadHosts (re)assigns cfgHosts; hostByName() does an O(1)
+// get instead of an O(#hosts) .find on every WS attach and POST /api/sessions|rename|dirs.
+let hostByNameMap = null;
 function loadHosts() {
   const now = Date.now();
   // time-gate the statSync: it used to run on the event loop for EVERY request and
@@ -154,6 +161,7 @@ function loadHosts() {
     configError = null;
     cfgMtimeNs = mtimeNs;
     cfgHosts = hosts;
+    hostByNameMap = new Map(hosts.map((h) => [h.name, h]));
     return hosts;
   } catch (e) {
     configError = e.message;
@@ -163,7 +171,8 @@ function loadHosts() {
 }
 
 function hostByName(name) {
-  return loadHosts().find((h) => h.name === name) || null;
+  loadHosts(); // keep the reload/gate behaviour (also rebuilds hostByNameMap on change)
+  return (hostByNameMap && hostByNameMap.get(name)) || null;
 }
 // called after we write the config ourselves: don't wait out the stat gate
 function configTouched() { cfgStatAt = 0; tokenCache.statAt = 0; }
@@ -236,7 +245,9 @@ exit "$st"`;
 // changed) and emits this sentinel; Node then reuses the entry cached from the last
 // fresh poll. Cache key: host + session + cwd (the pane's identity).
 const PI_CACHED = '__CACHED__';
-const piLastCache = new Map();
+// pi panes: cache keyed by host then by pane key, so pruning a host's stale panes scans
+// only that host's entries (O(sessions in host)) instead of the whole flat cache.
+const piLastCache = new Map(); // hostName → (paneKey → last JSONL line)
 
 // pi / pi-bolt: the last session entry says what pi is doing right now.
 // A final assistant message (no toolCall) means the run settled → idle. Anything
@@ -311,9 +322,13 @@ async function listHostSessions(host) {
     const cacheKey = host.name + '\t' + name + '\t' + (pth || '');
     seenCache.add(cacheKey);
     let piEntry = piLast;
-    if (piEntry === PI_CACHED) piEntry = piLastCache.get(cacheKey) || '';
-    else if (piEntry) piLastCache.set(cacheKey, piEntry);
-    else piLastCache.delete(cacheKey);
+    const hostMap = piLastCache.get(host.name);
+    if (piEntry === PI_CACHED) piEntry = (hostMap && hostMap.get(cacheKey)) || '';
+    else if (piEntry) {
+      let hm = hostMap;
+      if (!hm) { hm = new Map(); piLastCache.set(host.name, hm); }
+      hm.set(cacheKey, piEntry);
+    } else if (hostMap) hostMap.delete(cacheKey);
     return {
       name,
       attached: parseInt(attached, 10) || 0,
@@ -321,9 +336,13 @@ async function listHostSessions(host) {
       activity: piActive(cmd, piEntry, winActive),
     };
   });
-  // prune cache entries for this host's panes that no longer exist
-  for (const k of piLastCache.keys())
-    if (k.startsWith(host.name + '\t') && !seenCache.has(k)) piLastCache.delete(k);
+  // prune this host's cached panes that no longer exist (scoped to the host's map)
+  const hostMap = piLastCache.get(host.name);
+  if (hostMap) {
+    for (const k of hostMap.keys())
+      if (!seenCache.has(k)) hostMap.delete(k);
+    if (hostMap.size === 0) piLastCache.delete(host.name); // hygiene: bounded by host count
+  }
   // host connection state: ok / slow (>2 s to answer, or timed out) / offline
   const state = elapsed > SLOW_MS ? 'slow' : 'ok';
   return { name: host.name, state, sessions };
@@ -413,6 +432,9 @@ function ensureCert() {
 // token (cookie or ?token=) is rejected — otherwise the code step could be bypassed
 // by presenting the token directly.
 const COOKIE = 'pc_token';
+// match the one cookie we care for anywhere in the header: at the start or after a ';'
+// + optional whitespace (mirrors the old split/trim + startsWith), capturing its value.
+const COOKIE_RE = new RegExp('(?:^|;)\\s*' + COOKIE + '=([^;]*)');
 function validToken(t) {
   if (!token() || !t) return false;
   const a = Buffer.from(String(t));
@@ -420,8 +442,12 @@ function validToken(t) {
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 function cookieOf(req) {
-  const m = (req.headers.cookie || '').split(';').map((s) => s.trim()).find((s) => s.startsWith(COOKIE + '='));
-  return m ? decodeURIComponent(m.slice(COOKIE.length + 1)) : null;
+  const m = (req.headers.cookie || '').match(COOKIE_RE);
+  if (!m) return null;
+  // m[1] is the captured value; a malformed percent-encoding (e.g. "pc_token=%") would
+  // throw URIError — uncaught on the WS path that is an unauthenticated crash (one
+  // request kills the server)
+  try { return decodeURIComponent(m[1]); } catch { return null; }
 }
 // ---------- TOTP (RFC 6238): HMAC-SHA1, 6 digits, 30 s period, ±1 step window ----------
 const B32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
@@ -891,13 +917,23 @@ function serveStatic(req, res, url) {
 }
 
 const server = (TLS ? https : http).createServer(tlsOpts, async (req, res) => {
-  const url = new URL(req.url, 'http://localhost');
   const send = (code, obj, extraHeaders = {}) => {
     res.writeHead(code, { 'Content-Type': 'application/json', ...extraHeaders });
     res.end(JSON.stringify(obj));
   };
+  // an unparseable request target (e.g. absolute-form "GET http://[::1") must not throw
+  // out of the handler — that leaves the connection hanging with no response
+  let url;
+  try { url = new URL(req.url, 'http://localhost'); } catch { return send(400, { error: 'bad request' }); }
   const ip = req.socket.remoteAddress || '?';
   try {
+    // CSRF hardening: a cross-origin "simple" POST (text/plain) needs no preflight, so
+    // require the JSON content-type every client already sends — otherwise a malicious
+    // page could burn the victim IP's login rate-limit budget (blind, no cookie set)
+    if ((req.method === 'POST' || req.method === 'PUT') &&
+        !String(req.headers['content-type'] || '').toLowerCase().includes('application/json')) {
+      return send(415, { error: 'Content-Type: application/json required' });
+    }
     if (req.method === 'POST' && url.pathname === '/login') return await handleLogin(req, res, url, send, ip);
     if (req.method === 'GET' && url.pathname === '/logout') return handleLogout(req, res);
     if (url.pathname.startsWith('/api/')) {
@@ -924,7 +960,7 @@ const server = (TLS ? https : http).createServer(tlsOpts, async (req, res) => {
 // terminal traffic is counted for free. Rate = last 5 s of per-second deltas
 // (matches the poll cadence); totals are since server start. Disabled by
 // config "netDisplay": false — then no hooks, no timer, no counting.
-const netStats = { inTotal: 0, outTotal: 0, inSec: 0, outSec: 0, histIn: [], histOut: [] };
+const netStats = { inTotal: 0, outTotal: 0, inSec: 0, outSec: 0, histIn: [], histOut: [], sum5In: 0, sum5Out: 0 };
 const hookedSockets = new WeakSet();
 function hookSocketBytes(s) {
   if (hookedSockets.has(s)) return;
@@ -943,15 +979,21 @@ if (NET_DISPLAY) {
   server.on('connection', hookSocketBytes);
   server.on('secureConnection', hookSocketBytes);
   setInterval(() => {
-    netStats.histIn.push(netStats.inSec); netStats.inSec = 0;
-    netStats.histOut.push(netStats.outSec); netStats.outSec = 0;
-    if (netStats.histIn.length > 60) netStats.histIn.shift();
-    if (netStats.histOut.length > 60) netStats.histOut.shift();
+    // rolling 5s sums maintained incrementally (netRate no longer slices+reduces per call)
+    const pushHist = (hist, sumKey, secKey) => {
+      const v = netStats[secKey];
+      if (hist.length >= 5) netStats[sumKey] -= hist[hist.length - 5]; // drop out of the 5-sample window
+      hist.push(v);
+      netStats[sumKey] += v;
+      netStats[secKey] = 0;
+      if (hist.length > 60) hist.shift(); // 60s cap never touches the last 5, so sum5 is unaffected
+    };
+    pushHist(netStats.histIn, 'sum5In', 'inSec');
+    pushHist(netStats.histOut, 'sum5Out', 'outSec');
   }, 1000).unref();
 }
 function netRate() {
-  const sum5 = (h) => h.slice(-5).reduce((a, b) => a + b, 0);
-  return { inBps: sum5(netStats.histIn), outBps: sum5(netStats.histOut), inTotal: netStats.inTotal, outTotal: netStats.outTotal };
+  return { inBps: netStats.sum5In, outBps: netStats.sum5Out, inTotal: netStats.inTotal, outTotal: netStats.outTotal };
 }
 
 // ---------- websocket: browser ⇄ tmux session (local or over ssh) ----------
@@ -998,7 +1040,9 @@ const wss = new WebSocket.Server({ server, path: '/ws', maxPayload: 4 * 1024 * 1
 wss.on('connection', (ws, req) => {
   wsClients++;
   refreshHosts().catch(() => {}); // a client just arrived → fresh data now
-  const url = new URL(req.url, 'http://localhost');
+  // sync listener: a throw here is an uncaughtException (server exit) — guard the parse
+  let url;
+  try { url = new URL(req.url, 'http://localhost'); } catch { ws.close(1002, 'bad request'); return; }
   // cookie (same-origin browsers) or ?token= (non-browser clients). With a TOTP
   // secret enrolled the raw token is rejected here too — only the session cookie
   // (token + code at login) gets through.
@@ -1025,7 +1069,11 @@ wss.on('connection', (ws, req) => {
   const handleMsg = (m) => {
     if (m.type === 'input' && typeof m.data === 'string') term.write(m.data);
     else if (m.type === 'resize' && m.cols > 0 && m.rows > 0) {
-      try { term.resize(Math.floor(m.cols), Math.floor(m.rows)); } catch {}
+      // clamp like the WS URL path: an unbounded size would grow the remote tmux window
+      // to limit-width/limit-height (default 10000×10000 = 100M cells, GBs of RAM)
+      const c = Math.min(1000, Math.max(2, Math.floor(m.cols)));
+      const r = Math.min(500, Math.max(2, Math.floor(m.rows)));
+      try { term.resize(c, r); } catch {}
     } else if (m.type === 'send-keys' && Array.isArray(m.keys) && m.keys.length > 0 && m.keys.length <= 8 && m.keys.every((k) => typeof k === 'string' && keyToArgv(k) !== null)) {
       // phone shortcuts + special-key palette: inject via `tmux send-keys` ON THE
       // HOST (ssh or local), targeting the session's active pane — what the client
