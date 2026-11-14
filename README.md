@@ -52,8 +52,8 @@ with `PC_CONFIG_FILE`) — so with a global install, run `tmux-webhub` from the
 directory where you put the config file.
 
 Then open **https://<host>:8787** in a browser and enter the token from
-`config.json` (the cookie keeps you logged in for 30 days; `/logout` to sign
-out). On first start a self-signed TLS cert is generated in `.certs/` — the
+`config.json` (the cookie keeps you logged in for 30 days; ⚙ → *Log out* to sign
+out — with 2FA enrolled that also deletes the session server-side). On first start a self-signed TLS cert is generated in `.certs/` — the
 browser shows a one-time "insecure connection" interstitial, accept it.
 
 Prereqs: `node` (with `node-pty` built — `npm install` once in this dir),
@@ -213,7 +213,9 @@ fallback applies.
   (changing the token logs out all clients). The write is atomic and
   JSON-validated — a broken file can never be saved. The same modal has a
   **two-factor** panel: shows the 2FA state and disables it with a 6-digit
-  code (the phone must be in hand).
+  code (the phone must be in hand), and a **Log out** button (ends this
+  browser's session — with 2FA enrolled, the session is also deleted
+  server-side).
 - The header shows the server's current network usage (5 s average): `↓ in · ↑ out`;
   hover for the totals since server start. Disable with `"netDisplay": false`
   (restart) — the server then doesn't count bytes at all.

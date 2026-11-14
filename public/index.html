@@ -402,9 +402,10 @@
         <button id="tf-disable" style="background:#c62828; color:#fff; border:0; border-radius:4px; padding:6px 12px; cursor:pointer; font-size:12px">disable 2FA</button>
         <span id="tf-err" style="color:#ff6b6b; font-size:12px"></span>
       </div>
-      <div id="tf-not-enrolled" style="color:#8a97a8; font-size:12px">Not enrolled. Set up two-factor on the login page: log out, log in with your token, and follow the QR-code prompt.</div>
+      <div id="tf-not-enrolled" style="color:#8a97a8; font-size:12px">Not enrolled. Set up two-factor on the login page: log out (button below), log in with your token, and follow the QR-code prompt.</div>
     </div>
     <div class="row">
+      <button id="cfg-logout" style="margin-right:auto" title="End this browser's session (with 2FA: deleted server-side)">Log out</button>
       <button id="cfg-cancel">Cancel</button>
       <button id="cfg-save">Save</button>
     </div>
@@ -1116,6 +1117,7 @@ $('edit-config').onclick = async () => {
   renderCfgLines();
 };
 $('cfg-cancel').onclick = () => cfgBg.classList.remove('open');
+$('cfg-logout').onclick = () => location.replace('/logout');
 cfgBg.addEventListener('click', (e) => { if (e.target === cfgBg) cfgBg.classList.remove('open'); });
 $('cfg-save').onclick = async () => {
   const text = $('cfg-text').value;
