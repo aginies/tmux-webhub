@@ -1,6 +1,6 @@
 {
   "name": "tmux-webhub",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Web dashboard for tmux sessions on local and remote (ssh) hosts: browse, attach, create — from any browser",
   "main": "server.js",
   "bin": {
@@ -38,7 +38,7 @@
   "license": "MIT",
   "type": "commonjs",
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "dependencies": {
     "node-pty": "^1.1.0",
