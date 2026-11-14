@@ -28,6 +28,15 @@
     padding: 9px 10px; font: inherit; letter-spacing: 0.05em;
   }
   input:focus { outline: none; border-color: var(--accent); }
+  .input-wrap { position: relative; }
+  .input-wrap input { padding-right: 52px; }
+  .pw-toggle {
+    position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+    background: none; border: 0; color: var(--dim); font: inherit; font-size: 11px;
+    letter-spacing: 0.02em; cursor: pointer; padding: 4px 6px; margin: 0; width: auto;
+    text-transform: lowercase; opacity: 0.85;
+  }
+  .pw-toggle:hover { opacity: 1; color: var(--text); }
   .code-input { font-size: 22px; letter-spacing: 0.5em; text-align: center; }
   button {
     width: 100%; margin-top: 18px; padding: 10px;
@@ -63,7 +72,10 @@
   <div class="step active" id="step-token">
     <form id="f-token">
       <label for="token">Token</label>
-      <input type="password" id="token" autocomplete="off" autofocus>
+      <div class="input-wrap">
+        <input type="password" id="token" autocomplete="off" autofocus>
+        <button type="button" id="toggle-token" class="pw-toggle" aria-label="show token">show</button>
+      </div>
       <button type="submit">Continue</button>
       <div class="err" id="err-token"></div>
     </form>
@@ -98,6 +110,14 @@
     document.querySelectorAll('.step').forEach((s) => s.classList.remove('active'));
     $(id).classList.add('active');
   };
+
+  // show/hide the token so you can verify exactly what you typed
+  $('toggle-token').addEventListener('click', () => {
+    const inp = $('token');
+    const on = inp.type === 'text';
+    inp.type = on ? 'password' : 'text';
+    $('toggle-token').textContent = on ? 'show' : 'hide';
+  });
 
   // what does the server expect? (public endpoint, safe before auth)
   fetch('/api/totp/status').then((r) => r.json()).then((s) => {
