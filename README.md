@@ -1,31 +1,30 @@
 # tmux-webhub
 
-Web dashboard for **tmux** sessions on one or more hosts. Browse all sessions
+Web dashboard for **tmux** sessions on one or more hosts. Browse every session
 grouped by host, click to attach, type, resize — the session keeps running in
-tmux when you detach. New sessions run whatever `cmd` is set to (default
-`pi`); existing ones attach to whatever is already running in them — pi, bash,
-a build, anything.
+tmux when you detach. New sessions run whatever `cmd` is set to (default `pi`);
+existing ones attach to whatever is already running in them — pi, bash, a build,
+anything.
 
 ![tmux-webhub demo](https://raw.githubusercontent.com/aginies/tmux-webhub/master/demo.gif)
 
-## How it works
-
-- Each session lives in its own tmux session (created with `pitux` or the
-  web UI's "+New").
-- A small Node daemon (`server.js`) lists tmux sessions on each configured host
-  (locally, or over SSH for remote hosts) and bridges your browser to a session
-  through a WebSocket + node-pty. Attaching from the web is exactly like
-  `tmux attach` — the session is never killed by closing the tab.
-- Sessions are **grouped by host automatically** — no manual grouping.
-- The terminal stream travels as **UTF-8 text frames**: node-pty decodes pty bytes
-  to strings before they reach the WebSocket, so output containing invalid UTF-8
-  (rare — e.g. raw binary dumps in the terminal) is mangled. If it ever bites, the
-  upgrade path is base64-encoding frames server-side and decoding in the client
-  (small, symmetric change in `server.js` and `public/index.html`).
+- **Attach any session** — click a session in the list and you're in. Type,
+  resize, scroll the scrollback — it's a full terminal. Close the tab and the
+  session keeps running in tmux.
+- **One host, many hosts** — sessions are grouped by host automatically. Local
+  hosts, or remote ones reached over SSH (e.g. `aginies@192.168.1.50`), all in
+  one view.
+- **pi / pi-bolt activity** — the ⚡ says "doing something right now". For most
+  programs it follows tmux output; for pi panes it reads pi's own state, so a
+  settled pi is never shown as active just because its TUI redrew.
+- **Network readout** — the header shows live bandwidth usage (5 s average), or
+  is off entirely.
+- **Two-factor** — optional TOTP (scan a QR at login); then every login needs
+  token + code.
 
 ## Install
 
-From npm (installs the `tmux-webhub` server command and the `pitux` helper):
+### 1. Install the server
 
 ```sh
 npm install -g tmux-webhub
@@ -35,53 +34,82 @@ Or from a git checkout:
 
 ```sh
 git clone https://github.com/aginies/tmux-webhub && cd tmux-webhub
-npm install   # builds node-pty (native module — prebuilt on common platforms)
+npm install   # builds node-pty (a native module — prebuilt on common platforms)
 ```
 
-## Run
+This installs the `tmux-webhub` server command and the `pitux` helper.
 
-From this directory (or anywhere, after `npm i -g`):
-
-```sh
-cp config.example.json config.json   # then edit: token, hosts
-tmux-webhub                          # the server (npm install) — or: node server.js
-```
+### 2. Create a config file
 
 The server reads `config.json` from the **directory you start it in** (override
-with `PC_CONFIG_FILE`) — so with a global install, run `tmux-webhub` from the
-directory where you put the config file.
+with the `PC_CONFIG_FILE` env var). So with a global install, run it from the
+directory where you put the config:
+
+```sh
+mkdir -p ~/.tmux-webhub && cd ~/.tmux-webhub
+cp /usr/local/share/tmux-webhub/config.example.json ./config.json
+# then edit: set a token, add your hosts
+```
+
+### 3. Configure
+
+At minimum, set a **token** (the access password) and list your **hosts**.
+Every field is documented in [docs/CONFIG.md](docs/CONFIG.md); a quick example:
+
+```json
+{
+  "port": 8787,
+  "token": "paste-an-openssl-rand-hex-32-here",
+  "tls": true,
+  "hosts": [
+    { "name": "localhost" },
+    { "name": "station2", "ssh": "aginies@192.168.1.50" }
+  ]
+}
+```
+
+- A host with no `ssh` runs commands **locally**. A host with `ssh` reaches
+  **remote** machines over SSH, using the daemon user's SSH identity (their keys
+  or agent), key auth only — so make sure `~/.ssh/known_hosts` has each host
+  key.
+- `cmd` is the command started in new sessions (default `pi`); set `PI_CMD` or a
+  per-host `cmd` to anything else (`pi-bolt`, `htop`, `bash`).
+
+### 4. Run it
+
+```sh
+tmux-webhub        # or: node server.js   (from the config directory)
+```
+
+On first start a self-signed TLS cert is generated in `.certs/`; the browser
+shows a one-time "insecure connection" interstitial — accept it.
 
 Then open **https://<host>:8787** in a browser and enter the token from
-`config.json` (the cookie keeps you logged in for 30 days; ⚙ → *Log out* to sign
-out — with 2FA enrolled that also deletes the session server-side). On first start a self-signed TLS cert is generated in `.certs/` — the
-browser shows a one-time "insecure connection" interstitial, accept it.
+`config.json`. The cookie keeps you logged in for 30 days; ⚙ → *Log out* to sign
+out (with 2FA enrolled, that also deletes the session server-side).
 
-Prereqs: `node` (with `node-pty` built — `npm install` once in this dir),
-`tmux`, `openssl`, and a command to run in new sessions (default `pi` — set
-`PI_CMD` or a per-host `cmd` in config.json to anything else).
+**Prereqs:** `node` (with `node-pty` built), `tmux`, `openssl`.
 
-Useful env vars (override the config file):
+## Create a session
 
-| var | meaning |
-|---|---|
-| `PC_PORT` | listen port |
-| `PC_HOST` | bind address |
-| `PC_TOKEN` | access token (empty = auth disabled, dev mode) |
-| `PC_TLS` | only the literal value `false` disables TLS (anything else = https) |
-| `PI_CMD` | command started in new sessions (default `pi`); a top-level config `cmd` takes precedence |
-| `PC_CONFIG_FILE` | config file path (default `./config.json`) |
+- **Web:** **"+New"** → pick host, tmux name, working directory (it
+  autocompletes: click a subdirectory to descend, `.` for dot-dirs, empty = the
+  host's home). The command started is the host's `cmd` (default `pi`).
+- **Terminal (local):** `pitux new <name> [cwd]` starts a detached session and
+  attaches, `pitux <name>` attaches to an existing one, `pitux ls` lists.
+  Session names start with a letter/digit and contain only letters, digits,
+  `.` `_` `-`.
 
-### Stop / restart / daemonize
+## Stop / restart / daemonize
 
-- Stop: `Ctrl+C` in the terminal running it, or `pkill -f 'node server.js'`.
-- Restart with new server settings: stop, edit `config.json` (or use the ⚙
-  editor), start again (server settings are read at startup; the host list —
-  incl. per-host `cmd` — is live-reloaded).
-- Keep it alive without a terminal:
+- **Stop:** `Ctrl+C`, or `pkill -f 'node server.js'`.
+- **Restart** with new server settings: stop, edit `config.json` (or the ⚙
+  editor), start again.
+- **Keep it alive** without a terminal:
   ```sh
   setsid nohup node server.js >> tmux-webhub.log 2>&1 &
   ```
-  or with systemd — the repo ships a user unit (`deploy/tmux-webhub.service`):
+  or with a systemd **user** unit (the repo ships `deploy/tmux-webhub.service`):
   ```sh
   mkdir -p ~/.config/systemd/user
   cp deploy/tmux-webhub.service ~/.config/systemd/user/
@@ -92,179 +120,36 @@ Useful env vars (override the config file):
   journalctl --user -u tmux-webhub -f   # logs
   ```
 
-## Config (`config.json`)
+## Config editor
 
-One file for everything: server settings + the host list. The server stats it
-a couple of times per second and re-parses only when the mtime changes, so
-edits are live (picked up on the next poll, ~5 s):
+The ⚙ button opens a modal to edit `config.json` in the browser. The host list
+and per-host `cmd` apply immediately; server settings (`port`, `token`, `tls`,
+`cert`, `key`, `pollMs`, `netDisplay`, `twoFA`) need a restart. The write is
+atomic and JSON-validated, so a broken file can never be saved. The same modal
+has a **two-factor** panel and a **Log out** button.
 
-```json
-{
-  "port": 8787,
-  "host": "0.0.0.0",
-  "token": "<openssl rand -hex 32>",
-  "tls": true,
-  "cert": ".certs/cert.pem",
-  "key": ".certs/key.pem",
-  "cmd": "pi",
-  "pollMs": 5000,
-  "netDisplay": true,
-  "twoFA": "required",
-  "hosts": [
-    { "name": "localhost" },
-    { "name": "station2", "ssh": "aginies@192.168.1.50" },
-    { "name": "lab-gpu", "ssh": "aginies@gpu.lab", "cmd": "pi-bolt" }
-  ]
-}
-```
+## Environment variables
 
-- No `ssh` key in a host → commands run **locally**.
-- `cmd` (optional, top level): the **default** command started in new sessions
-  on any host that doesn't set its own `cmd` — any terminal command (default
-  `PI_CMD` / `pi`). Editable in the ⚙ config editor.
-- `cmd` (optional, per host): command started in new sessions on that host —
-  any terminal command (default: the top-level `cmd`, else `PI_CMD` / `pi`),
-  e.g. `pi-bolt`, `htop`, `bash`. Without it, a host where the default command
-  is missing creates sessions that die instantly (the command isn't found and
-  the pane's shell exits).
-- `pollMs` (optional): poll period in ms (default `5000`, clamped to 1000–60000) —
-  how often the server refreshes the host list, and the pace of the browser's
-  GET poll. Needs a **server restart**.
-- `netDisplay` (optional): the header bandwidth readout (default `true`).
-  When `false` the server doesn't count bytes at all. Needs a **server restart**.
-- `twoFA` (optional): `"required"` or `"optional"` — enable TOTP two-factor
-  (RFC 6238, 6 digits, 30 s, ±1 step). `required` forces enrollment at login
-  while no secret is set; `optional` only asks for the code once one is.
-  Absent = 2FA off. Needs a **server restart**. The secret itself lives in
-  `totp` and is **live** (enroll/disable write it without a restart).
-- `totp` (optional): the enrolled base32 TOTP secret. Filled in automatically
-  by the login-page enrollment (QR code + confirm code) or by the ⚙ editor.
-  An invalid value is ignored (treated as not enrolled).
-- With `ssh` → `tmux list-sessions` / `attach` run over SSH
-  (`ssh -o BatchMode=yes ...`, i.e. **key auth only**, no password prompts).
-  Make sure `~/.ssh/known_hosts` has the host key (BatchMode refuses prompts).
-- A host that is unreachable shows red as `offline` in the UI; its sessions
-  reappear when it comes back.
-- `enabled` (optional, per host): set to `false` to **hide the host** in the UI
-  (no sessions shown, and the server stops polling it — no ssh work). The host
-  stays visible, dimmed, so you can re-enable it. Toggle it by **clicking the
-  host badge** in the UI, or by editing the flag here; the change is written to
-  `config.json` and applies on the next poll (no restart). Absent = enabled.
-- `cert`/`key` point to your own certs if you don't want the generated
-  self-signed one (e.g. `mkcert` or an internal CA → no browser warning).
-- The generated cert's SAN is a **snapshot of the machine's IPs at first
-  start**. If the station's IP changes, the browser will reject the cert for
-  the new address — `rm -rf .certs/` and restart to regenerate it.
+Override the config file for deployment-time settings:
 
-## Create a session
+| var | meaning |
+|---|---|
+| `PC_PORT` | listen port |
+| `PC_HOST` | bind address |
+| `PC_TOKEN` | access token (empty = auth disabled, dev mode) |
+| `PC_TLS` | only the literal value `false` disables TLS (anything else = https) |
+| `PI_CMD` | command started in new sessions (default `pi`) |
+| `PC_CONFIG_FILE` | config file path (default `./config.json`) |
 
-- Web: **"+New"** → pick host, tmux name, working directory; the
-  command started is the host's `cmd` (default `pi`). The directory field
-  autocompletes: subdirectories of the current path on the chosen host (local
-  or over ssh) appear as you type — click one to descend a level, type `.` to
-  include dot-dirs, empty field = the host's home.
-- Terminal (local): `./pitux new <name> [cwd]` — starts the configured
-  command (default `pi`) in a detached tmux session and attaches.
-  `./pitux <name>` attaches to an existing session, `./pitux ls` lists.
-  `PI_CMD` overrides the command (default `pi`).
+## Technical detail
 
-Session names must start with a letter/digit and contain only letters, digits,
-`.` `_` `-` (tmux target safety).
+The overview above is enough to run it. For how it works under the hood, the
+full config reference, and the security model, see the docs:
 
-## Activity
-
-The ⚡ indicator says "this session is doing something right now". For most
-commands it is the tmux `window_activity` timestamp: the session is active
-while it produces output, and idle 10 s after the last output. For
-`pi`/`pi-bolt` panes it is driven by **pi's own state** instead, so a settled
-pi is never shown as active just because its TUI redrew: the poller reads the
-last entry of the pane's newest pi session file
-(`~/.pi/agent/sessions/<cwd-hash>/*.jsonl`) — a user message or a `toolCall`
-means work is in flight; a final assistant message means pi is waiting for
-input. If the session file is missing or unreadable, the window-activity
-fallback applies.
-
-## UI notes
-
-- Chips show the **basename of the session's working directory**; on collision
-  the parent dir is added, then the tmux name (`proj (#0)`). Hover for
-  `host · tmux name · full path`.
-- A pulsing **⚡** is shown left of the session name while it is active
-  (see [Activity](#activity)); idle sessions show no icon. The host label
-  carries the **connection** dot: green = ok, orange = connected but slow
-  (>2 s), red = host offline. Hover a session for details, including whether
-  other clients are attached.
-- **Click a host badge** to hide/show it (toggles `"enabled": false` in
-  `config.json`): a hidden host is dimmed with an **off** count, shows no
-  sessions, isn't polled, and can't receive new sessions from the `+New`
-  modal. Click again to bring it back.
-- `☰` / `Ctrl+B` hides the session strip. `Esc` detaches (only when the
-  terminal isn't focused — Esc is a normal key in the running program).
-- On phones (≤640 px) shortcuts appear right of **+New**: **⎋** sends
-  Esc to the session via `tmux send-keys` on the host (reliable in vim & co. —
-  no focus-loss or bracketed-paste pitfalls), **Pg↑/Pg↓** page the scrollback —
-  or send the real PageUp/PageDown key to the app when it has no scrollback
-  (TUIs on the alternate screen: vim, less, …), and **⌨** opens a palette of
-  special keys sent the same way: Ctrl+C, F1–F4, Alt+m, Shift+Tab, Alt+↑.
-  **✕** in the session bar detaches (the session keeps running in tmux).
-- `⚙` (top right) opens the **config editor**: edit `config.json` in a modal
-  and save. `hosts` / `cmd` apply immediately; `port`, `token`, `tls`,
-  `cert`, `key`, `pollMs`, `netDisplay`, `twoFA` need a server restart
-  (changing the token logs out all clients). The write is atomic and
-  JSON-validated — a broken file can never be saved. The same modal has a
-  **two-factor** panel: shows the 2FA state and disables it with a 6-digit
-  code (the phone must be in hand), and a **Log out** button (ends this
-  browser's session — with 2FA enrolled, the session is also deleted
-  server-side).
-- The header shows the server's current network usage (5 s average): `↓ in · ↑ out`;
-  hover for the totals since server start. Disable with `"netDisplay": false`
-  (restart) — the server then doesn't count bytes at all.
-- Resizing the browser resizes the tmux pane live.
-- When a session is attached from both your console and the web, tmux sizes the
-  pane to whichever client was active last (standard tmux behavior).
-- Debug hook: the client exposes `window.__pc` in the browser console
-  (`hosts`, `active`, `refresh()`, `attach()`, `detach()`).
-- If the server becomes unreachable, a banner appears above the terminal and
-  the last data is shown (dimmed truth: it's stale). The same banner reports
-  a broken `config.json` (the server then keeps the last good host list).
-
-## Security
-
-- **TLS**: self-signed cert auto-generated on first run (10 y, SAN =
-  `localhost` + all local IPv4 addresses, so it's valid for LAN access too).
-  Drop in `mkcert`/internal-CA certs via `cert`/`key` to remove the browser
-  warning.
-- **Token auth**: the page, the REST API and the WebSocket all require the
-  token. Browsers get it via the login form → `HttpOnly; Secure; SameSite=Lax`
-  cookie (30 days). Non-browser clients can pass `?token=…` on the WS URL —
-  note that query strings can end up in proxy/access logs, so prefer the
-  cookie for anything long-lived. Wrong tokens are rate-limited (5 / 15 min per
-  source IP — the daemon's view of the connection, so behind a proxy or an
-  `ssh -L` tunnel that is the proxy/tunnel's address, not each end user).
-  Comparison is constant-time.
-- **Two-factor (TOTP)**: with `"twoFA": "required"` (or `"optional"`), the
-  login page enrolls a TOTP secret on first login — scan the QR code with any
-  authenticator app (or type the base32 secret), confirm with a 6-digit code,
-  and the secret is saved to `config.json`. From then on every login needs
-  **token + code**, and the raw token no longer grants access anywhere (login
-  cookie, `?token=`, WS) — it's replaced by a random session cookie (30 days,
-  in-memory, so a restart logs everyone out). Wrong codes share the token
-  rate limit. Disable from ⚙ → *two-factor* with a 6-digit code, or delete the
-  `totp` key in `config.json` (takes effect live, no restart). Recovery if the
-  phone is lost: same — delete `totp` (you have the server's filesystem).
-  The QR is rendered by a vendored copy of `qrcode-generator` (MIT) in
-  `public/vendor/` — no CDN, works offline.
-- The daemon binds to `0.0.0.0` by default so other LAN machines can reach it
-  — the token is the gate. Anyone with the token can read/write every session
-  (and the daemon uses the SSH keys of the user running it for remote hosts),
-  so treat the token like a password: keep it out of version control
-  (`.gitignore` already excludes `config.json`), rotate it by editing
-  `config.json` (⚙ in the UI) and restarting
-  the server (server settings are read at startup; the host list is
-  live-reloaded). Old cookies die with the restart.
-- For stricter setups: set `host` to `127.0.0.1` and browse through an SSH
-  tunnel instead of exposing the port:
-  ```sh
-  ssh -L 8787:127.0.0.1:8787 user@station
-  # then open https://127.0.0.1:8787 locally
-  ```
+- **[docs/CONFIG.md](docs/CONFIG.md)** — every config field, env var, the
+  `pitux` helper, and daemonizing.
+- **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — how attaching, the
+  session poller, SSH connection pooling, backpressure, the network readout, and
+  pi activity work.
+- **[docs/SECURITY.md](docs/SECURITY.md)** — the full security model (TLS, token
+  auth, TOTP two-factor, CSRF, rate limiting, session cookies).

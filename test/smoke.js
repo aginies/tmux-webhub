@@ -181,7 +181,9 @@ test('PUT /api/config invalid JSON → 400, file untouched', async () => {
 });
 
 test('PUT /api/config valid → 200, file updated, hosts hot-reload', async () => {
-  const r = await fetch(base + '/api/config', { method: 'PUT', headers: { 'Content-Type': 'application/json', Cookie: cookie }, body: JSON.stringify({ port: 0, host: '127.0.0.1', token, tls: false, hosts: [{ name: 'testhost' }] }) });
+  // PUT now requires the one-use CSRF token from a matching GET /api/config
+  const csrf = await (await fetch(base + '/api/config', { headers: { Cookie: cookie } })).json().then((d) => d.csrf);
+  const r = await fetch(base + '/api/config', { method: 'PUT', headers: { 'Content-Type': 'application/json', Cookie: cookie }, body: JSON.stringify({ port: 0, host: '127.0.0.1', token, tls: false, hosts: [{ name: 'testhost' }], csrf }) });
   assert.equal(r.status, 200);
   const onDisk = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
   assert.equal(onDisk.hosts[0].name, 'testhost');
@@ -211,7 +213,10 @@ test('PUT /api/config with __REDACTED__ token preserves it (form contract)', asy
     });
     // log in with the seeded token, then save with token redacted + a changed field → token must survive, port must change
     const ck = ((await fetch(`http://127.0.0.1:${port}/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: 'seed-token' }) })).headers.get('set-cookie') || '').split(';')[0];
-    const r = await fetch(`http://127.0.0.1:${port}/api/config`, { method: 'PUT', headers: { 'Content-Type': 'application/json', Cookie: ck }, body: JSON.stringify({ port: 9999, host: '127.0.0.1', token: '__REDACTED__', tls: false, hosts: [{ name: 'seedhost' }] }) });
+    // PUT now requires the one-use CSRF token from a matching GET /api/config
+    const cr = await fetch(`http://127.0.0.1:${port}/api/config`, { headers: { Cookie: ck } });
+    const csrf = (await cr.json()).csrf;
+    const r = await fetch(`http://127.0.0.1:${port}/api/config`, { method: 'PUT', headers: { 'Content-Type': 'application/json', Cookie: ck }, body: JSON.stringify({ port: 9999, host: '127.0.0.1', token: '__REDACTED__', tls: false, hosts: [{ name: 'seedhost' }], csrf }) });
     assert.equal(r.status, 200);
     const onDisk = JSON.parse(fs.readFileSync(cfg, 'utf8'));
     assert.equal(onDisk.port, 9999, 'edited field applied');
@@ -384,7 +389,8 @@ test('POST /api/sessions: nonexistent absolute dir → 400 "not a directory"', a
 });
 
 test('POST /api/sessions: ~/x resolves to an absolute path', { skip: !hasTmux }, async () => {
-  await fetch(base + '/api/config', { method: 'PUT', headers: { 'Content-Type': 'application/json', Cookie: cookie }, body: JSON.stringify({ port: 0, host: '127.0.0.1', token, tls: false, hosts: [{ name: 'testhost', cmd: 'sleep 60' }] }) });
+  const tildeCsrf = await (await fetch(base + '/api/config', { headers: { Cookie: cookie } })).json().then((d) => d.csrf);
+  await fetch(base + '/api/config', { method: 'PUT', headers: { 'Content-Type': 'application/json', Cookie: cookie }, body: JSON.stringify({ port: 0, host: '127.0.0.1', token, tls: false, hosts: [{ name: 'testhost', cmd: 'sleep 60' }], csrf: tildeCsrf }) });
   const sub = 'pc-tilde-' + Date.now();
   const homeSub = path.join(os.homedir(), sub);
   fs.mkdirSync(homeSub);
@@ -435,7 +441,8 @@ test('pi pane: activity from last session entry', { skip: !hasTmux }, async () =
     const fakePi = path.join(dir, 'bin', 'pi');
     fs.writeFileSync(fakePi, '#!/usr/bin/env node\nprocess.title = "pi";\nsetInterval(() => { try { if (!require("fs").existsSync(require("path").join(process.cwd(), "pause"))) process.stdout.write(".\\n"); } catch {} }, 2000);\n');
     fs.chmodSync(fakePi, 0o755);
-    await fetch(base + '/api/config', { method: 'PUT', headers: { 'Content-Type': 'application/json', Cookie: cookie }, body: JSON.stringify({ port: 0, host: '127.0.0.1', token, tls: false, hosts: [{ name: 'pihost', cmd: fakePi }] }) });
+    const actCsrf = await (await fetch(base + '/api/config', { headers: { Cookie: cookie } })).json().then((d) => d.csrf);
+    await fetch(base + '/api/config', { method: 'PUT', headers: { 'Content-Type': 'application/json', Cookie: cookie }, body: JSON.stringify({ port: 0, host: '127.0.0.1', token, tls: false, hosts: [{ name: 'pihost', cmd: fakePi }], csrf: actCsrf }) });
     const r = await fetch(base + '/api/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie }, body: JSON.stringify({ host: 'pihost', name, cwd: dir }) });
     assert.equal(r.status, 200, JSON.stringify(await r.clone().json()));
     // poll until the flag matches (the poller refreshes every POLL_MS while a client is present)
@@ -570,18 +577,20 @@ test('2FA: required forces enrollment, then token+code is mandatory', async () =
 
     // 7b. PUT /api/config accepts a standard 26-char (128-bit) Base32 secret
     const secret26 = 'JBSWY3DPEHPK3PXPJBSWY3DPEP';
+    const csrf26 = await (await fetch(b2 + '/api/config', { headers: { Cookie: sc3 } })).json().then((d) => d.csrf);
     r = await fetch(b2 + '/api/config', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', Cookie: sc3 },
-      body: JSON.stringify({ port: 0, host: '127.0.0.1', token: tok, tls: false, totp: secret26, hosts: [] }),
+      body: JSON.stringify({ port: 0, host: '127.0.0.1', token: tok, tls: false, totp: secret26, hosts: [], csrf: csrf26 }),
     });
     assert.equal(r.status, 200, JSON.stringify(await r.clone().json()));
     assert.equal(JSON.parse(fs.readFileSync(cfg, 'utf8')).totp, secret26, '26-char Base32 secret saved');
-    // restore original secret
+    // restore original secret (fresh CSRF per one-use write)
+    const csrfR = await (await fetch(b2 + '/api/config', { headers: { Cookie: sc3 } })).json().then((d) => d.csrf);
     await fetch(b2 + '/api/config', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', Cookie: sc3 },
-      body: JSON.stringify({ port: 0, host: '127.0.0.1', token: tok, tls: false, totp: secret, hosts: [] }),
+      body: JSON.stringify({ port: 0, host: '127.0.0.1', token: tok, tls: false, totp: secret, hosts: [], csrf: csrfR }),
     });
 
     // 8. status now shows enrolled

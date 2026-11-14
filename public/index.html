@@ -1223,6 +1223,7 @@ $('ns-ok').onclick = async () => {
 const cfgBg = $('cfg-bg');
 const REDACTED = '__REDACTED__'; // mirrors server: token/totp are never returned in the clear
 let cfgBase = null;      // full config snapshot from GET — the save base, so no field is ever dropped
+let cfgCsrf = null;      // one-use CSRF token from GET /api/config — required to save (PUT)
 let cfgHostDraft = [];   // working copy of the host list for this modal open
 let cfgTokenUnchanged = true;
 
@@ -1351,6 +1352,9 @@ function buildPayload() {
   p.key = $('cfg-key').value.trim();
   p.twoFA = $('cfg-twoFA').value || undefined;
   p.hosts = cfgHostDraft.map(normalizeHost);
+  // CSRF: the one-use synchronizer token from GET /api/config — required for the
+  // server to accept the write (protects token/2FA/totp/tls/hosts against CSRF).
+  p.csrf = cfgCsrf;
   // 2FA off → drop any enrolled secret so login stops asking for a code and the
   // settings panel later shows "not enrolled"; otherwise never touch the secret.
   if ($('cfg-twoFA').value === '') {
@@ -1374,6 +1378,7 @@ $('edit-config').onclick = async () => {
   tfRefresh();
   const { ok, d } = await api('/api/config');
   if (!ok) { $('cfg-err').textContent = d.error || 'failed to load config'; return; }
+  cfgCsrf = d.csrf || null; // required by the PUT — a fresh one per modal open
   fillForm(JSON.parse(d.raw));
 };
 $('cfg-cancel').onclick = () => cfgBg.classList.remove('open');
@@ -1479,7 +1484,7 @@ $('t-detach').onclick = detach; // ✕ in the termbar — the only detach on pho
 // Geometry is remembered in localStorage.
 // Two pages: “special” (F1–F4, Tab/Shift+Tab, Alt+m, Enter, Ctrl+C, PgUp/PgDn,
 // arrows) and “abc” (classical keyboard: F1–F10, Esc+numbers+Backspace, QWERTY,
-// and a bottom row of Shift/Ctrl/Alt + a wide Space, with Enter/Del/Ins below).
+// and a bottom row of Shift/Ctrl/Alt + a wide Space, with Enter/Del below (Ins was removed).
 // Page 2 combos: hold a modifier 2 s to lock it (it stays lit, haptic tick);
 // tap a key to send the combo (C-c, M-x, S-a); tap the locked modifier again to
 // unlock. Shift alone → literal uppercase (S-a → 'A'); with Ctrl/Alt locked,

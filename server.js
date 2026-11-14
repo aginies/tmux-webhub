@@ -12,6 +12,10 @@ const pty = require('node-pty');
 
 // ---------- config (single file: server settings + hosts) ----------
 const CONFIG_FILE = process.env.PC_CONFIG_FILE || path.join(__dirname, 'config.json');
+// session-name rule — the SINGLE source of truth. There is no shared module (no build
+// step), so it MUST be mirrored verbatim in the client (public/index.html, twice) and in
+// pitux (valid_name): a drift lets the client accept a name the server later rejects,
+// or reject one the server would accept. Keep the four copies identical by hand.
 const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 // validate a raw config's hosts array → the well-formed hosts (bad entries dropped,
 // never invented). Single source of truth for host shape, shared by startup + runtime.
@@ -80,6 +84,10 @@ const TWOFA = CONFIG.twoFA === 'required' || CONFIG.twoFA === 'optional' ? CONFI
 const TLS = process.env.PC_TLS !== undefined ? process.env.PC_TLS !== 'false' : CONFIG.tls !== false;
 const CERT = path.resolve(__dirname, CONFIG.cert || '.certs/cert.pem');
 const KEY = path.resolve(__dirname, CONFIG.key || '.certs/key.pem');
+// Secure flag on cookies: only over TLS. Over plain http:// (tls:false dev mode) a
+// Secure cookie is never sent by the browser, so cookie auth would silently never
+// persist — drop it so dev auth keeps working without TLS.
+const COOKIE_SECURE = TLS ? 'Secure' : '';
 // default command for new sessions: config "cmd" (editable in the ⚙ UI) → PI_CMD env → pi
 const PI_CMD = (typeof CONFIG.cmd === 'string' && CONFIG.cmd) || process.env.PI_CMD || 'pi';
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -530,7 +538,7 @@ function setTotpSecretInConfig(secret) {
 const SESSION_TTL_MS = 2592000 * 1000; // 30 days — same lifetime as the old raw-token cookie
 const sessions = new Map(); // session id → expiry (ms)
 function sessionCookie(id) {
-  return `${COOKIE}=${id}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${SESSION_TTL_MS / 1000}`;
+  return `${COOKIE}=${id}; HttpOnly${COOKIE_SECURE}; SameSite=Lax; Path=/; Max-Age=${SESSION_TTL_MS / 1000}`;
 }
 function newSession() {
   const now = Date.now();
@@ -569,6 +577,34 @@ setInterval(() => {
   const now = Date.now();
   for (const [k, v] of loginFails) if (now > v.resetAt) loginFails.delete(k);
 }, LOGIN_WINDOW_MS).unref();
+
+// ---------- CSRF: synchronizer token for config writes ----------
+// PUT /api/config can rewrite the access token, 2FA/totp (i.e. disable two-factor),
+// TLS and the whole host list — one high-privilege action. The SameSite=Lax cookie
+// plus the application/json Content-Type gate are not enough against a crafted request,
+// so every GET /api/config issues a fresh one-use token, stored server-side and bound
+// to the caller's session; the PUT must echo it back. A cross-origin attacker can't
+// read the token (it comes back in a same-origin JSON body, behind the HttpOnly auth
+// cookie), so a forged write can't carry a valid value. Non-browser/API callers that
+// don't go through the GET simply can't write config.
+const CSRF_TTL_MS = 10 * 60 * 1000; // match the login page enrollment window
+const csrfTokens = new Map(); // token → { session, exp }
+function genCsrfToken(session) {
+  const now = Date.now();
+  for (const [k, v] of csrfTokens) if (v.exp < now) csrfTokens.delete(k);
+  const token = crypto.randomBytes(32).toString('hex');
+  csrfTokens.set(token, { session, exp: now + CSRF_TTL_MS });
+  return token;
+}
+function consumeCsrfToken(token, session) {
+  if (typeof token !== 'string') return false;
+  const e = csrfTokens.get(token);
+  if (!e || e.exp < Date.now()) { csrfTokens.delete(token); return false; }
+  // bound to the session that fetched it (sessionOf is null in dev/no-2FA mode)
+  if (e.session && session && e.session !== session) return false;
+  csrfTokens.delete(token); // one-time use
+  return true;
+}
 
 // ---------- http api + static files ----------
 function readBody(req) {
@@ -674,7 +710,7 @@ async function handleLogin(req, res, url, send, ip) {
   //    raw token stops circulating); without one it stays the raw token.
   loginFails.delete(ip);
   return send(200, { ok: true }, {
-    'Set-Cookie': TWOFA ? sessionCookie(newSession()) : `${COOKIE}=${encodeURIComponent(token())}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=2592000`,
+    'Set-Cookie': TWOFA ? sessionCookie(newSession()) : `${COOKIE}=${encodeURIComponent(token())}; HttpOnly${COOKIE_SECURE}; SameSite=Lax; Path=/; Max-Age=2592000`,
   });
 }
 
@@ -722,7 +758,7 @@ async function handleTotpDisable(req, res, send) {
 function handleLogout(req, res, send) {
   const v = cookieOf(req);
   if (v) sessions.delete(v);
-  return send(200, { ok: true }, { 'Set-Cookie': `${COOKIE}=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0` });
+  return send(200, { ok: true }, { 'Set-Cookie': `${COOKIE}=; HttpOnly${COOKIE_SECURE}; SameSite=Lax; Path=/; Max-Age=0` });
 }
 
 // Session-creation script (runs on the host). ~ is expanded on the HOST side:
@@ -808,7 +844,8 @@ async function handleApiConfig(req, res, send) {
       const cfg = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
       if (typeof cfg.token === 'string' && cfg.token) cfg.token = REDACTED;
       if (typeof cfg.totp === 'string' && cfg.totp) cfg.totp = REDACTED;
-      return send(200, { raw: JSON.stringify(cfg, null, 2) + '\n', path: CONFIG_FILE });
+      // issue a one-use CSRF token bound to this session; the PUT must echo it back
+      return send(200, { raw: JSON.stringify(cfg, null, 2) + '\n', path: CONFIG_FILE, csrf: genCsrfToken(sessionOf(req)) });
     } catch (e) {
       return send(500, { error: 'cannot read config: ' + e.message });
     }
@@ -823,6 +860,12 @@ async function handleApiConfig(req, res, send) {
       return send(400, { error: 'twoFA must be "required" or "optional"' });
     if (parsed.totp !== undefined && parsed.totp !== REDACTED && (typeof parsed.totp !== 'string' || !/^[A-Za-z2-7\s=]{16,64}$/.test(parsed.totp) || !b32decode(parsed.totp)))
       return send(400, { error: 'totp must be a base32 secret (16–64 chars)' });
+    // CSRF: this PUT can rewrite the token, 2FA/totp (disable 2FA), tls and hosts —
+    // require the one-use synchronizer token from the matching GET /api/config, bound
+    // to this session. Without it the write is refused (403), not silently applied.
+    if (!consumeCsrfToken(parsed.csrf, sessionOf(req))) {
+      return send(403, { error: 'invalid or expired CSRF token — reopen the settings to save again' });
+    }
     // a redacted token means "unchanged" → restore the live one so saving other
     // fields doesn't wipe it (the user can still set a new value by replacing it)
     if (parsed.token === REDACTED) {
@@ -1081,6 +1124,7 @@ const wss = new WebSocket.Server({ server, path: '/ws', maxPayload: 4 * 1024 * 1
 wss.on('connection', (ws, req) => {
   wsClients++;
   refreshHosts().catch(() => {}); // a client just arrived → fresh data now
+  const ip = req.socket.remoteAddress || '?';
   // sync listener: a throw here is an uncaughtException (server exit) — guard the parse
   let url;
   try { url = new URL(req.url, 'http://localhost'); } catch { ws.close(1002, 'bad request'); return; }
@@ -1096,10 +1140,17 @@ wss.on('connection', (ws, req) => {
       ws.close(4403, 'bad origin'); return;
     }
   }
-  // cookie (same-origin browsers) or ?token= (non-browser clients). With a TOTP
+  // brute-force guard (same 5 / 15 min per source IP as /login): the WS handshake
+  // accepts ?token= with no throttle today, so under 2FA-off a wrong token is
+  // brute-forceable over the socket — cap it like /login does.
+  if (tooManyLogins(ip)) { ws.close(4401, 'too many attempts, try again in 15 min'); return; }
+  // auth: cookie (same-origin browsers) or ?token= (non-browser clients). With a TOTP
   // secret enrolled the raw token is rejected here too — only the session cookie
-  // (token + code at login) gets through.
+  // (token + code at login) gets through. Prefer the `Authorization: Bearer` header
+  // over the cookie or ?token= for non-browser clients: query strings land in proxy /
+  // access logs and the Referer header, leaking the token.
   if (token() && !authed(req) && !(totpSecret() === null && validToken(url.searchParams.get('token')))) {
+    recordLoginFail(ip);
     ws.close(4401, 'unauthorized'); return;
   }
   const host = hostByName(url.searchParams.get('host') || 'localhost');
