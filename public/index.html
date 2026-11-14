@@ -434,7 +434,7 @@
 
 <div id="cfg-bg">
   <div class="modal" id="cfg-modal">
-    <h2>config.json</h2>
+    <h2 id="cfg-title">config.json</h2>
     <div class="cfg-note">hosts / cmd apply immediately · port, token, tls, cert, key, pollMs, netDisplay, twoFA need a server restart · changing the token logs out all clients</div>
     <div id="cfg-tabs" class="cfg-tabs">
       <button type="button" class="cfg-tab on" data-tab="server">Server</button>
@@ -526,7 +526,6 @@
       <button id="cfg-cancel">Cancel</button>
       <button id="cfg-save">Save</button>
     </div>
-    <div id="cfg-version" style="text-align:center; color:#8a97a8; font-size:11px; margin-top:8px"></div>
   </div>
 </div>
 
@@ -1383,7 +1382,10 @@ $('edit-config').onclick = async () => {
   // fetch version for display
   try {
     const vr = await api('/api/version');
-    if (vr.ok) $('cfg-version').textContent = 'tmux-webhub v' + vr.d.version;
+    if (vr.ok) {
+      $('cfg-title').textContent = 'config.json — tmux-webhub v' + vr.d.version;
+      $('cfg-version').textContent = '';
+    }
   } catch {}
   const { ok, d } = await api('/api/config');
   if (!ok) { $('cfg-err').textContent = d.error || 'failed to load config'; return; }
