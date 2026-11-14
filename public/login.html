@@ -102,7 +102,7 @@
   // what does the server expect? (public endpoint, safe before auth)
   fetch('/api/totp/status').then((r) => r.json()).then((s) => {
     $('hint-2fa').textContent = s.enrolled
-      ? 'Two-factor is enabled — you will be asked for a 6-digit code.'
+      ? 'Two-factor is enabled. The Token field is your access token (config.json → token), NOT the 2FA secret. Enter it, then the 6-digit code from your authenticator app.'
       : (s.mode === 'required' ? 'Two-factor is required — you will set it up now.' : '');
     if (s.mode === 'optional' && !s.enrolled) $('enroll-opt').style.display = '';
   }).catch(() => {});
