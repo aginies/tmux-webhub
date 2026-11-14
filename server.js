@@ -591,8 +591,6 @@ async function handleLogin(req, res, url, send, ip) {
   const body = await readBody(req);
   let j = {};
   try { j = JSON.parse(body || '{}') || {}; } catch {}
-  // TEMP debug (issue: 'secret' rejected as wrong token) — capture exact arrival
-  console.log(`[LOGIN-DEBUG] ip=${ip} ua=${JSON.stringify(req.headers['user-agent'])} recv_token=${JSON.stringify(j.token)}(len ${(j.token||'').length}) expected_token=${JSON.stringify(token())}(len ${(token()||'').length}) code=${JSON.stringify(j.code)}`);
   if (!validToken(j.token)) {
     recordLoginFail(ip);
     return send(401, { error: 'wrong token' });
