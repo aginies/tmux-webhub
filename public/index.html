@@ -275,6 +275,21 @@
     display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
   }
   #keys-grid button { min-height: 44px; font-size: 13px; padding: 8px 4px; }
+  /* page 1 arrow keys laid out like a keyboard: ↑ on top, then ← ↓ → below (a cross/plus).
+     it is the only item on row 3, so span the full width for a comfortable target. */
+  .keys-arrows {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    grid-template-rows: minmax(28px, 1fr) minmax(28px, 1fr);
+    gap: 4px;
+    padding: 4px;
+  }
+  .keys-arrows button { min-height: 0; font-size: 15px; padding: 6px 0; }
+  .keys-arrows [data-key="Up"]    { grid-column: 2; grid-row: 1; }
+  .keys-arrows [data-key="Left"]  { grid-column: 1; grid-row: 2; }
+  .keys-arrows [data-key="Down"]  { grid-column: 2; grid-row: 2; }
+  .keys-arrows [data-key="Right"] { grid-column: 3; grid-row: 2; }
   /* page 2: classical keyboard. The number row (Esc … 0 … Backspace) is 12 keys, so
      the grid is 12 columns wide; rows 1-2 hold Esc…F10…Backspace and 1…0…Del, rows 3-5 the QWERTY letter/symbol rows, and Enter is double-height (spans rows 4-5) on the right. The bottom modifier row is a flex row: Shift Ctrl Alt | wide Space | Del (Del moved to the right; Ins removed). */
   #keys-grid2 { display: grid; grid-template-columns: repeat(12, 1fr); gap: 4px; margin-bottom: 8px; }
@@ -535,10 +550,12 @@
       <button data-key="M-Up">Alt+↑</button>
       <button data-key="Pageup">Pg↑</button>
       <button data-key="Pagedown">Pg↓</button>
-      <button data-key="Up">↑</button>
-      <button data-key="Left">←</button>
-      <button data-key="Down">↓</button>
-      <button data-key="Right">→</button>
+      <div class="keys-arrows" title="Arrow keys — sent like a keyboard">
+        <button data-key="Up">↑</button>
+        <button data-key="Left">←</button>
+        <button data-key="Down">↓</button>
+        <button data-key="Right">→</button>
+      </div>
     </div>
     </div>
     <div id="keys-page2" class="keys-page">
