@@ -37,6 +37,12 @@ function readConfig(fatal) {
 // Atomic config write: write a temp file then rename over the target, so a
 // concurrent reader never sees a half-written file. Returns an error message
 // on failure, null on success (the caller owns the HTTP response).
+
+// read version from package.json
+let VERSION = 'unknown';
+try {
+  VERSION = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version;
+} catch {}
 function writeConfigAtomic(obj) {
   const tmp = CONFIG_FILE + '.tmp-' + process.pid;
   try {
@@ -1102,6 +1108,7 @@ const server = (TLS ? https : http).createServer(tlsOpts, async (req, res) => {
     }
     if (url.pathname.startsWith('/api/')) {
       if (req.method === 'GET' && url.pathname === '/api/totp/status') return handleTotpStatus(res, send); // public: login page
+      if (req.method === 'GET' && url.pathname === '/api/version') return send(200, { version: VERSION }); // public: version info
       if (!authed(req)) return send(401, { error: 'unauthorized' });
       if (req.method === 'GET' && url.pathname === '/api/net-interfaces') return handleNetInterfaces(res, send); // authed: leaks local IPs, so gated
       if (url.pathname === '/api/sessions') return await handleApiSessions(req, res, url, send);

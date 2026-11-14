@@ -526,6 +526,7 @@
       <button id="cfg-cancel">Cancel</button>
       <button id="cfg-save">Save</button>
     </div>
+    <div id="cfg-version" style="text-align:center; color:#8a97a8; font-size:11px; margin-top:8px"></div>
   </div>
 </div>
 
@@ -1379,6 +1380,11 @@ $('edit-config').onclick = async () => {
   $('cfg-err').textContent = '';
   cfgBg.classList.add('open');
   tfRefresh();
+  // fetch version for display
+  try {
+    const vr = await api('/api/version');
+    if (vr.ok) $('cfg-version').textContent = 'tmux-webhub v' + vr.d.version;
+  } catch {}
   const { ok, d } = await api('/api/config');
   if (!ok) { $('cfg-err').textContent = d.error || 'failed to load config'; return; }
   cfgCsrf = d.csrf || null; // required by the PUT — a fresh one per modal open
