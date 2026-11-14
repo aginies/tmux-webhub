@@ -177,6 +177,38 @@ test('PUT /api/config valid → 200, file updated, hosts hot-reload', async () =
   assert.ok(d2.hosts.some((h) => h.name === 'testhost'));
 });
 
+test('PUT /api/config with __REDACTED__ token preserves it (form contract)', async () => {
+  // isolated server so enrolling/changing secrets never disturbs the suite's shared cookie
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pc-redact-'));
+  const cfg = path.join(dir, 'config.json');
+  fs.writeFileSync(cfg, JSON.stringify({ port: 0, host: '127.0.0.1', token: 'seed-token', tls: false, hosts: [] }));
+  const port = await freePort();
+  const ch = spawn(process.execPath, [path.join(ROOT, 'server.js')], {
+    env: { ...process.env, PC_CONFIG_FILE: cfg, PC_PORT: String(port), PC_TLS: 'false' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  try {
+    await new Promise((resolve, reject) => {
+      let out = '';
+      const timer = setTimeout(() => reject(new Error('server did not start: ' + out)), 8000);
+      const onData = (d) => { out += d; if (out.includes('tmux-webhub on')) { clearTimeout(timer); resolve(); } };
+      ch.stdout.on('data', onData);
+      ch.stderr.on('data', onData);
+      ch.on('exit', (c) => { clearTimeout(timer); reject(new Error('server exited early (' + c + '): ' + out)); });
+    });
+    // log in with the seeded token, then save with token redacted + a changed field → token must survive, port must change
+    const ck = ((await fetch(`http://127.0.0.1:${port}/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: 'seed-token' }) })).headers.get('set-cookie') || '').split(';')[0];
+    const r = await fetch(`http://127.0.0.1:${port}/api/config`, { method: 'PUT', headers: { 'Content-Type': 'application/json', Cookie: ck }, body: JSON.stringify({ port: 9999, host: '127.0.0.1', token: '__REDACTED__', tls: false, hosts: [{ name: 'seedhost' }] }) });
+    assert.equal(r.status, 200);
+    const onDisk = JSON.parse(fs.readFileSync(cfg, 'utf8'));
+    assert.equal(onDisk.port, 9999, 'edited field applied');
+    assert.equal(onDisk.token, 'seed-token', 'token preserved via __REDACTED__');
+  } finally {
+    ch.kill('SIGTERM');
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('GET /api/config without cookie → 401', async () => {
   const r = await fetch(base + '/api/config');
   assert.equal(r.status, 401);

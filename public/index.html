@@ -181,12 +181,46 @@
     font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     background: rgba(0,0,0,.18); border-right: 1px solid var(--border);
   }
-  #cfg-text {
-    flex: 1 1 auto; height: 100%; border: 0; resize: none; white-space: pre;
-    background: transparent; color: var(--text); padding: 8px;
-    font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  /* friendly settings form */
+  .cfg-note { font-size: 12px; color: var(--dim); margin-bottom: 12px; }
+  .cfg-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 12px; overflow-x: auto; }
+  .cfg-tab { flex: 0 0 auto; background: none; border: 0; color: var(--dim); font-size: 13px; padding: 6px 12px; cursor: pointer; border-bottom: 2px solid transparent; white-space: nowrap; }
+  .cfg-tab:hover { color: var(--text); }
+  .cfg-tab.on { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
+  #cfg-form { display: flex; flex-direction: column; gap: 16px; max-height: 52vh; overflow: auto; padding-right: 4px; }
+  .cfg-sec { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; background: var(--chip); }
+  .cfg-sec h3 { margin: 0 0 10px; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--dim); }
+  .cfg-field { display: flex; align-items: center; gap: 8px; margin-bottom: 9px; }
+  .cfg-field:last-of-type { margin-bottom: 0; }
+  .cfg-field > label { flex: 0 0 128px; font-size: 13px; }
+  .cfg-field.chk { flex-wrap: wrap; }
+  .cfg-field.chk > label { flex: none; display: inline-flex; align-items: center; gap: 8px; }
+  .cfg-field input[type=text], .cfg-field input[type=password], .cfg-field input[type=number], .cfg-field select {
+    flex: 1 1 auto; background: var(--panel); color: var(--text); border: 1px solid var(--border);
+    border-radius: 4px; padding: 5px 8px; font-size: 13px; min-width: 0;
   }
-  .cfg-note { font-size: 12px; color: var(--dim); }
+  .cfg-field input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); }
+  .cfg-hint { display: block; width: 100%; font-size: 11px; color: var(--dim); margin-top: 3px; }
+  .cfg-field > .cfg-hint { margin: 3px 0 0; }
+  .cfg-pw { display: flex; gap: 6px; flex: 1 1 auto; min-width: 0; }
+  .cfg-pw input { flex: 1 1 auto; }
+  .cfg-link { background: none; border: 0; color: var(--accent); font-size: 12px; cursor: pointer; padding: 0 4px; }
+  .cfg-link:hover { text-decoration: underline; }
+  /* host rows */
+  .cfg-host { border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; margin-bottom: 8px; background: var(--panel); }
+  .cfg-host:last-of-type { margin-bottom: 8px; }
+  .cfg-host-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+  .cfg-host-name { font-size: 12px; color: var(--accent); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cfg-host-actions { display: flex; gap: 4px; }
+  .cfg-host-actions button { width: 24px; height: 24px; font-size: 12px; background: var(--chip); color: var(--dim); border: 1px solid var(--border); border-radius: 4px; cursor: pointer; }
+  .cfg-host-actions button:hover { color: var(--text); }
+  .cfg-host-actions .cfg-host-remove:hover { color: #fff; background: #c62828; border-color: #c62828; }
+  .cfg-host-row { display: flex; gap: 6px; align-items: center; }
+  .cfg-host-row input[type=text] { flex: 1 1 auto; background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 4px 7px; font-size: 13px; min-width: 0; }
+  .cfg-h-name { flex: 0 0 100px !important; }
+  .cfg-h-ssh { flex: 2 2 auto !important; }
+  .cfg-h-cmd { flex: 0 0 110px !important; }
+  .cfg-h-enchk { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--dim); white-space: nowrap; }
 
   /* special-key palette (⌨): FLOATING panel of keys sent via tmux send-keys —
      drag the header to move it, the corner handle to resize (width; the grid is
@@ -387,23 +421,91 @@
   <div class="modal" id="cfg-modal">
     <h2>config.json</h2>
     <div class="cfg-note">hosts / cmd apply immediately · port, token, tls, cert, key, pollMs, netDisplay, twoFA need a server restart · changing the token logs out all clients</div>
-    <div class="cfg-edit">
-      <div id="cfg-lines" class="cfg-lines"></div>
-      <textarea id="cfg-text" spellcheck="false" wrap="off"></textarea>
+    <div id="cfg-form">
+      <div id="cfg-tabs" class="cfg-tabs">
+        <button type="button" class="cfg-tab on" data-tab="server">Server</button>
+        <button type="button" class="cfg-tab" data-tab="auth">Authentication</button>
+        <button type="button" class="cfg-tab" data-tab="hosts">Hosts</button>
+      </div>
+      <section class="cfg-sec" data-section="server">
+        <h3>Server</h3>
+        <div class="cfg-field">
+          <label for="cfg-port">Port</label>
+          <input id="cfg-port" type="number" min="1" max="65535" inputmode="numeric" placeholder="8787">
+          <span class="cfg-hint">needs restart</span>
+        </div>
+        <div class="cfg-field">
+          <label for="cfg-host">Bind address</label>
+          <input id="cfg-host" type="text" placeholder="0.0.0.0">
+          <span class="cfg-hint">needs restart</span>
+        </div>
+        <div class="cfg-field">
+          <label for="cfg-pollMs">Poll interval (ms)</label>
+          <input id="cfg-pollMs" type="number" min="250" max="60000" inputmode="numeric" placeholder="5000">
+          <span class="cfg-hint">needs restart</span>
+        </div>
+        <div class="cfg-field chk">
+          <label><span>Network display</span><input id="cfg-netDisplay" type="checkbox"></label>
+          <span class="cfg-hint">needs restart</span>
+        </div>
+        <div class="cfg-field chk">
+          <label><span>Use TLS</span><input id="cfg-tls" type="checkbox"></label>
+          <span class="cfg-hint">needs restart</span>
+        </div>
+        <div id="cfg-tls-paths" class="cfg-tls-paths" style="display:none">
+          <div class="cfg-field">
+            <label for="cfg-cert">Cert path</label>
+            <input id="cfg-cert" type="text" placeholder=".certs/cert.pem">
+            <span class="cfg-hint">needs restart</span>
+          </div>
+          <div class="cfg-field">
+            <label for="cfg-key">Key path</label>
+            <input id="cfg-key" type="text" placeholder=".certs/key.pem">
+            <span class="cfg-hint">needs restart</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="cfg-sec" data-section="auth" style="display:none">
+        <h3>Authentication</h3>
+        <div class="cfg-field">
+          <label for="cfg-token">Access token</label>
+          <div class="cfg-pw">
+            <input id="cfg-token" type="password" autocomplete="off" placeholder="hidden on server · enter a new value to change it">
+            <button type="button" id="cfg-token-toggle" class="cfg-link">show</button>
+          </div>
+          <span class="cfg-hint">current value is hidden for security · changing it logs out all clients · needs restart</span>
+        </div>
+        <div class="cfg-field">
+          <label for="cfg-twoFA">Two-factor</label>
+          <select id="cfg-twoFA">
+            <option value="">off</option>
+            <option value="optional">optional</option>
+            <option value="required">required</option>
+          </select>
+          <span class="cfg-hint">needs restart</span>
+        </div>
+        <div id="tf-sec" style="margin-top:12px; padding-top:12px; border-top:1px solid var(--border)">
+          <div style="display:flex; align-items:center; gap:10px; margin-bottom:8px">
+            <strong style="font-size:13px">two-factor (TOTP)</strong>
+            <span id="tf-state" style="color:#8a97a8; font-size:12px"></span>
+          </div>
+          <div id="tf-enrolled" style="display:none; align-items:center; gap:8px; flex-wrap:wrap">
+            <input type="text" id="tf-code" inputmode="numeric" maxlength="6" placeholder="6-digit code" style="width:130px">
+            <button id="tf-disable" style="background:#c62828; color:#fff; border:0; border-radius:4px; padding:6px 12px; cursor:pointer; font-size:12px">disable 2FA</button>
+            <span id="tf-err" style="color:#ff6b6b; font-size:12px"></span>
+          </div>
+          <div id="tf-not-enrolled" style="color:#8a97a8; font-size:12px">Not enrolled. Set up two-factor on the login page: log out (button below), log in with your token, and follow the QR-code prompt.</div>
+        </div>
+      </section>
+
+      <section class="cfg-sec" data-section="hosts" style="display:none">
+        <h3>Hosts</h3>
+        <div id="cfg-hosts"></div>
+        <button type="button" id="cfg-host-add" class="cfg-link">+ Add host</button>
+      </section>
     </div>
     <div class="err" id="cfg-err"></div>
-    <div id="tf-sec" style="margin-top:14px; padding-top:12px; border-top:1px solid #2a3441">
-      <div style="display:flex; align-items:center; gap:10px; margin-bottom:8px">
-        <strong style="font-size:13px">two-factor (TOTP)</strong>
-        <span id="tf-state" style="color:#8a97a8; font-size:12px"></span>
-      </div>
-      <div id="tf-enrolled" style="display:none; align-items:center; gap:8px; flex-wrap:wrap">
-        <input type="text" id="tf-code" inputmode="numeric" maxlength="6" placeholder="6-digit code" style="width:130px">
-        <button id="tf-disable" style="background:#c62828; color:#fff; border:0; border-radius:4px; padding:6px 12px; cursor:pointer; font-size:12px">disable 2FA</button>
-        <span id="tf-err" style="color:#ff6b6b; font-size:12px"></span>
-      </div>
-      <div id="tf-not-enrolled" style="color:#8a97a8; font-size:12px">Not enrolled. Set up two-factor on the login page: log out (button below), log in with your token, and follow the QR-code prompt.</div>
-    </div>
     <div class="row">
       <button id="cfg-logout" style="margin-right:auto" title="End this browser's session (with 2FA: deleted server-side)">Log out</button>
       <button id="cfg-cancel">Cancel</button>
@@ -1100,25 +1202,129 @@ $('ns-ok').onclick = async () => {
   setTimeout(() => attach(keyOf(host, name)), 400); // let tmux + pi boot a moment
 };
 
-// ---------- config editor ----------
+// ---------- config editor (friendly form) ----------
 const cfgBg = $('cfg-bg');
-function renderCfgLines() {
-  const n = $('cfg-text').value.split('\n').length;
-  const s = Array.from({ length: n }, (_, i) => i + 1).join('\n');
-  if ($('cfg-lines').textContent !== s) $('cfg-lines').textContent = s;
+const REDACTED = '__REDACTED__'; // mirrors server: token/totp are never returned in the clear
+let cfgBase = null;      // full config snapshot from GET — the save base, so no field is ever dropped
+let cfgHostDraft = [];   // working copy of the host list for this modal open
+let cfgTokenUnchanged = true;
+
+const escAttr = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+// --- hosts ---
+function renderHostRow(host, idx) {
+  const row = document.createElement('div');
+  row.className = 'cfg-host';
+  row.innerHTML =
+    '<div class="cfg-host-top"><span class="cfg-host-name"></span>' +
+    '<div class="cfg-host-actions">' +
+    '<button type="button" class="cfg-up" data-act="up" title="Move up">↑</button>' +
+    '<button type="button" class="cfg-down" data-act="down" title="Move down">↓</button>' +
+    '<button type="button" class="cfg-host-remove" data-act="remove" title="Remove">✕</button>' +
+    '</div></div>' +
+    '<div class="cfg-host-row">' +
+    '<input class="cfg-h-name" type="text" placeholder="name">' +
+    '<input class="cfg-h-ssh" type="text" placeholder="ssh (user@host)">' +
+    '<input class="cfg-h-cmd" type="text" placeholder="cmd (default: pi)">' +
+    '<label class="cfg-h-enchk"><span>on</span><input class="cfg-h-enabled" type="checkbox"></label>' +
+    '</div>';
+  const name = row.querySelector('.cfg-h-name');
+  const ssh = row.querySelector('.cfg-h-ssh');
+  const cmd = row.querySelector('.cfg-h-cmd');
+  const en = row.querySelector('.cfg-h-enabled');
+  const label = row.querySelector('.cfg-host-name');
+  const sync = () => { cfgHostDraft[idx].name = name.value; label.textContent = name.value || 'unnamed'; };
+  name.addEventListener('input', sync);
+  ssh.addEventListener('input', () => { cfgHostDraft[idx].ssh = ssh.value; });
+  cmd.addEventListener('input', () => { cfgHostDraft[idx].cmd = cmd.value; });
+  en.addEventListener('change', () => { cfgHostDraft[idx].enabled = en.checked ? undefined : false; });
+  label.textContent = host.name || 'unnamed';
+  name.value = host.name || '';
+  ssh.value = host.ssh || '';
+  cmd.value = host.cmd || '';
+  en.checked = host.enabled !== false;
+  row.querySelector('[data-act=up]').onclick = () => moveHost(idx, idx - 1);
+  row.querySelector('[data-act=down]').onclick = () => moveHost(idx, idx + 1);
+  row.querySelector('[data-act=remove]').onclick = () => removeHost(idx);
+  return row;
 }
-$('cfg-text').addEventListener('input', renderCfgLines);
-$('cfg-text').addEventListener('scroll', () => { $('cfg-lines').scrollTop = $('cfg-text').scrollTop; });
+function renderHosts() {
+  const wrap = $('cfg-hosts');
+  wrap.innerHTML = '';
+  cfgHostDraft.forEach((h, i) => wrap.appendChild(renderHostRow(h, i)));
+}
+function moveHost(from, to) {
+  if (to < 0 || to >= cfgHostDraft.length) return;
+  const m = cfgHostDraft.splice(from, 1)[0];
+  cfgHostDraft.splice(to, 0, m);
+  renderHosts();
+}
+function removeHost(idx) { cfgHostDraft.splice(idx, 1); renderHosts(); }
+function normalizeHost(h) {
+  const name = (h.name || '').trim();
+  const out = { name };
+  const ssh = (h.ssh || '').trim();
+  const cmd = (h.cmd || '').trim();
+  if (ssh) out.ssh = ssh;
+  if (cmd) out.cmd = cmd;
+  if (h.enabled === false) out.enabled = false;
+  return out;
+}
+
+// --- tls paths reveal ---
+function toggleTlsPaths() { $('cfg-tls-paths').style.display = $('cfg-tls').checked ? '' : 'none'; }
+
+// --- fill the form from a config object (GET shape) ---
+function fillForm(cfg) {
+  cfgBase = JSON.parse(JSON.stringify(cfg));
+  $('cfg-port').value = cfg.port != null ? cfg.port : '';
+  $('cfg-host').value = cfg.host || '';
+  $('cfg-pollMs').value = cfg.pollMs != null ? cfg.pollMs : '';
+  $('cfg-netDisplay').checked = !!cfg.netDisplay;
+  $('cfg-tls').checked = !!cfg.tls;
+  toggleTlsPaths();
+  $('cfg-cert').value = cfg.cert || '';
+  $('cfg-key').value = cfg.key || '';
+  $('cfg-twoFA').value = cfg.twoFA || '';
+  // the server always redacts the token → keep it masked; reveal only works after typing a new value
+  cfgTokenUnchanged = (cfg.token === REDACTED);
+  $('cfg-token').value = '';
+  cfgHostDraft = (Array.isArray(cfg.hosts) ? cfg.hosts : []).map((h) => ({ ...h }));
+  renderHosts();
+}
+
+// --- build the FULL config payload: start from the snapshot, override only edited fields ---
+function buildPayload() {
+  const p = JSON.parse(JSON.stringify(cfgBase));
+  const pv = $('cfg-port').value.trim();
+  p.port = pv === '' ? cfgBase.port : Number(pv);
+  p.host = $('cfg-host').value.trim();
+  const pmv = $('cfg-pollMs').value.trim();
+  p.pollMs = pmv === '' ? cfgBase.pollMs : Number(pmv);
+  p.netDisplay = $('cfg-netDisplay').checked;
+  p.tls = $('cfg-tls').checked;
+  p.cert = $('cfg-cert').value.trim();
+  p.key = $('cfg-key').value.trim();
+  p.twoFA = $('cfg-twoFA').value || undefined;
+  p.hosts = cfgHostDraft.map(normalizeHost);
+  // the form never edits the TOTP secret value → preserve whatever is in config.json
+  p.totp = REDACTED;
+  // token: preserve unless the user typed a new value
+  p.token = cfgTokenUnchanged ? REDACTED : $('cfg-token').value;
+  // drop empty path fields the server would not want
+  if (p.cert === '') delete p.cert;
+  if (p.key === '') delete p.key;
+  if (p.host === '') delete p.host;
+  return p;
+}
+
 $('edit-config').onclick = async () => {
   $('cfg-err').textContent = '';
-  $('cfg-text').value = 'loading…';
-  renderCfgLines();
   cfgBg.classList.add('open');
   tfRefresh();
   const { ok, d } = await api('/api/config');
-  if (!ok) { $('cfg-err').textContent = d.error || 'failed to load config'; $('cfg-text').value = ''; renderCfgLines(); return; }
-  $('cfg-text').value = d.raw;
-  renderCfgLines();
+  if (!ok) { $('cfg-err').textContent = d.error || 'failed to load config'; return; }
+  fillForm(JSON.parse(d.raw));
 };
 $('cfg-cancel').onclick = () => cfgBg.classList.remove('open');
 $('cfg-logout').onclick = async () => {
@@ -1127,15 +1333,37 @@ $('cfg-logout').onclick = async () => {
 };
 cfgBg.addEventListener('click', (e) => { if (e.target === cfgBg) cfgBg.classList.remove('open'); });
 $('cfg-save').onclick = async () => {
-  const text = $('cfg-text').value;
-  try { JSON.parse(text); } catch (e) { $('cfg-err').textContent = 'invalid JSON: ' + e.message; return; }
+  const p = buildPayload();
+  if (!Number.isInteger(p.port) || p.port < 1 || p.port > 65535) { $('cfg-err').textContent = 'enter a valid port (1–65535)'; return; }
+  if (!Number.isInteger(p.pollMs) || p.pollMs < 250) { $('cfg-err').textContent = 'poll interval must be ≥250 ms'; return; }
+  if (!p.host) { $('cfg-err').textContent = 'enter a bind address'; return; }
+  if (p.hosts.some((h) => !h.name)) { $('cfg-err').textContent = 'every host needs a name'; return; }
+  if (!cfgTokenUnchanged && !$('cfg-token').value.trim()) {
+    if (!confirm('Clear the access token? This puts the server in open (no-token) mode.')) return;
+  }
   $('cfg-save').disabled = true;
-  const { ok, d } = await api('/api/config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: text });
+  const { ok, d } = await api('/api/config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(p) });
   $('cfg-save').disabled = false;
   if (!ok) { $('cfg-err').textContent = d.error || 'failed to save'; return; }
   cfgBg.classList.remove('open');
   await refresh(); // mtime changed → server reloads hosts, cache invalidated
 };
+// one-time form bindings
+$('cfg-tls').addEventListener('change', toggleTlsPaths);
+$('cfg-token-toggle').onclick = () => {
+  const inp = $('cfg-token');
+  const showing = inp.type === 'text';
+  inp.type = showing ? 'password' : 'text';
+  $('cfg-token-toggle').textContent = showing ? 'show' : 'hide';
+};
+$('cfg-token').addEventListener('input', () => { cfgTokenUnchanged = false; });
+$('cfg-host-add').onclick = () => { cfgHostDraft.push({ name: '' }); renderHosts(); };
+// tab navigation between Server / Authentication / Hosts
+function switchCfgTab(name) {
+  document.querySelectorAll('.cfg-tab').forEach((b) => b.classList.toggle('on', b.dataset.tab === name));
+  document.querySelectorAll('.cfg-sec[data-section]').forEach((s) => { s.style.display = s.dataset.section === name ? '' : 'none'; });
+}
+document.querySelectorAll('.cfg-tab').forEach((b) => { b.onclick = () => switchCfgTab(b.dataset.tab); });
 
 // ---------- 2FA panel ----------
 async function tfRefresh() {
