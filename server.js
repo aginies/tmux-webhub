@@ -256,7 +256,14 @@ async function listHostSessions(host) {
   if (!r.ok) {
     if (r.timeout) return { name: host.name, state: 'slow', error: 'timed out', sessions: [] };
     const msg = (r.stderr || r.stdout || '').trim();
-    if (/no server running|no sessions? (exist|found)/i.test(msg)) return { name: host.name, state: elapsed > SLOW_MS ? 'slow' : 'ok', sessions: [] };
+    // SSH itself succeeded (host is reachable) but tmux has no server/sessions: this is
+    // an ONLINE host with an empty session list, not offline. tmux's message changed across
+    // versions — legacy "no server running on …" / "no sessions found", tmux 3.x
+    // "error connecting to /run/tmux/… (No such file or directory)", and "server exited
+    // unexpectedly" when the last session was killed — so match any of them. SSH failures
+    // (connection refused / timeout / permission denied / bad host) carry a different
+    // phrase and correctly fall through to 'offline' below.
+    if (/no server running|no sessions? (exist|found)|error connecting to|server exited unexpectedly/i.test(msg)) return { name: host.name, state: elapsed > SLOW_MS ? 'slow' : 'ok', sessions: [] };
     return { name: host.name, state: 'offline', error: msg.split('\n').pop() || 'unreachable', sessions: [] };
   }
   // the __NOW__ line carries the host clock (remote for ssh, wall clock for local);
