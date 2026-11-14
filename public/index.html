@@ -386,12 +386,24 @@
 <div id="cfg-bg">
   <div class="modal" id="cfg-modal">
     <h2>config.json</h2>
-    <div class="cfg-note">hosts / cmd apply immediately · port, token, tls, cert, key, pollMs, netDisplay need a server restart · changing the token logs out all clients</div>
+    <div class="cfg-note">hosts / cmd apply immediately · port, token, tls, cert, key, pollMs, netDisplay, twoFA need a server restart · changing the token logs out all clients</div>
     <div class="cfg-edit">
       <div id="cfg-lines" class="cfg-lines"></div>
       <textarea id="cfg-text" spellcheck="false" wrap="off"></textarea>
     </div>
     <div class="err" id="cfg-err"></div>
+    <div id="tf-sec" style="margin-top:14px; padding-top:12px; border-top:1px solid #2a3441">
+      <div style="display:flex; align-items:center; gap:10px; margin-bottom:8px">
+        <strong style="font-size:13px">two-factor (TOTP)</strong>
+        <span id="tf-state" style="color:#8a97a8; font-size:12px"></span>
+      </div>
+      <div id="tf-enrolled" style="display:none; align-items:center; gap:8px; flex-wrap:wrap">
+        <input type="text" id="tf-code" inputmode="numeric" maxlength="6" placeholder="6-digit code" style="width:130px">
+        <button id="tf-disable" style="background:#c62828; color:#fff; border:0; border-radius:4px; padding:6px 12px; cursor:pointer; font-size:12px">disable 2FA</button>
+        <span id="tf-err" style="color:#ff6b6b; font-size:12px"></span>
+      </div>
+      <div id="tf-not-enrolled" style="color:#8a97a8; font-size:12px">Not enrolled. Set up two-factor on the login page: log out, log in with your token, and follow the QR-code prompt.</div>
+    </div>
     <div class="row">
       <button id="cfg-cancel">Cancel</button>
       <button id="cfg-save">Save</button>
@@ -1097,6 +1109,7 @@ $('edit-config').onclick = async () => {
   $('cfg-text').value = 'loading…';
   renderCfgLines();
   cfgBg.classList.add('open');
+  tfRefresh();
   const { ok, d } = await api('/api/config');
   if (!ok) { $('cfg-err').textContent = d.error || 'failed to load config'; $('cfg-text').value = ''; renderCfgLines(); return; }
   $('cfg-text').value = d.raw;
@@ -1113,6 +1126,30 @@ $('cfg-save').onclick = async () => {
   if (!ok) { $('cfg-err').textContent = d.error || 'failed to save'; return; }
   cfgBg.classList.remove('open');
   await refresh(); // mtime changed → server reloads hosts, cache invalidated
+};
+
+// ---------- 2FA panel ----------
+async function tfRefresh() {
+  let s;
+  try { s = await (await fetch('/api/totp/status')).json(); } catch { s = { mode: null, enrolled: false }; }
+  $('tf-state').textContent = s.mode
+    ? (s.mode + (s.enrolled ? ' — enrolled' : ' — not enrolled'))
+    : 'off (set "twoFA" in config.json, restart)';
+  $('tf-enrolled').style.display = s.enrolled ? 'flex' : 'none';
+  $('tf-not-enrolled').style.display = s.enrolled ? 'none' : '';
+}
+$('tf-disable').onclick = async () => {
+  $('tf-err').textContent = '';
+  const code = $('tf-code').value.trim();
+  if (!/^\d{6}$/.test(code)) { $('tf-err').textContent = 'enter the 6-digit code'; return; }
+  const r = await fetch('/api/totp/disable', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code }),
+  });
+  const j = await r.json();
+  if (!r.ok) { $('tf-err').textContent = j.error || 'failed'; return; }
+  $('tf-code').value = '';
+  await tfRefresh();
 };
 
 // ---------- keyboard ----------

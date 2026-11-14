@@ -59,7 +59,7 @@ after(() => { if (child) child.kill('SIGTERM'); });
 test('GET / without token → login page', async () => {
   const r = await fetch(base + '/');
   assert.equal(r.status, 200);
-  assert.match(await r.text(), /access token/i);
+  assert.match(await r.text(), /token/i);
 });
 
 test('GET /assets without token → 401', async () => {
@@ -326,5 +326,116 @@ test('pi pane: activity from last session entry', { skip: !hasTmux }, async () =
     tmuxKill(name);
     try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
     try { fs.rmSync(sessDir, { recursive: true, force: true }); } catch {}
+  }
+});
+
+// ---------- TOTP two-factor ----------
+// A second server with twoFA:"required" and no secret yet: login must force
+// enrollment; afterwards the raw token is rejected everywhere and token+code works.
+test('2FA: required forces enrollment, then token+code is mandatory', async () => {
+  const crypto = require('node:crypto');
+  // minimal TOTP for the test (HMAC-SHA1, 6 digits, 30 s) — same params as the server
+  function b32decode(s) {
+    const A = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+    s = s.toUpperCase().replace(/[\s=]/g, '');
+    let bits = 0, value = 0; const out = [];
+    for (const c of s) { value = (value << 5) | A.indexOf(c); bits += 5; if (bits >= 8) { out.push((value >>> (bits - 8)) & 0xff); bits -= 8; } }
+    return Buffer.from(out);
+  }
+  function totp(secret, step) {
+    const buf = Buffer.alloc(8); buf.writeBigUInt64BE(BigInt(step));
+    const h = crypto.createHmac('sha1', b32decode(secret)).update(buf).digest();
+    const off = h[h.length - 1] & 0x0f;
+    return String((((h[off] & 0x7f) << 24) | (h[off + 1] << 16) | (h[off + 2] << 8) | h[off + 3]) % 1000000).padStart(6, '0');
+  }
+  const step = () => Math.floor(Date.now() / 30000);
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pc-2fa-'));
+  const cfg = path.join(dir, 'config.json');
+  const tok = 'testtoken2fa-' + Date.now();
+  fs.writeFileSync(cfg, JSON.stringify({ port: 0, host: '127.0.0.1', token: tok, tls: false, hosts: [], twoFA: 'required' }));
+  const port = await freePort();
+  const ch = spawn(process.execPath, [path.join(ROOT, 'server.js')], {
+    env: { ...process.env, PC_CONFIG_FILE: cfg, PC_PORT: String(port), PC_TLS: 'false' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let b2 = '';
+  const post = (u, body, headers = {}) => fetch(b2 + u, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body) });
+  try {
+    await new Promise((resolve, reject) => {
+      let out = '';
+      const timer = setTimeout(() => reject(new Error('server did not start: ' + out)), 8000);
+      const onData = (d) => { out += d; if (out.includes('tmux-webhub on')) { clearTimeout(timer); resolve(); } };
+      ch.stdout.on('data', onData);
+      ch.stderr.on('data', onData);
+      ch.on('exit', (c) => { clearTimeout(timer); reject(new Error('server exited early (' + c + '): ' + out)); });
+    });
+    b2 = `http://127.0.0.1:${port}`;
+
+    // 1. status: mode required, not enrolled
+    let d = await (await fetch(b2 + '/api/totp/status')).json();
+    assert.equal(d.mode, 'required');
+    assert.equal(d.enrolled, false);
+
+    // 2. token only → enrollment step, no session cookie
+    let r = await post('/login', { token: tok });
+    assert.equal(r.status, 200);
+    d = await r.json();
+    assert.equal(d.next, 'enroll');
+    assert.ok(!r.headers.get('set-cookie'), 'no session cookie before enrollment');
+    assert.match(d.secret, /^[A-Z2-7]{32}$/);
+    assert.match(d.otpauthUrl, /^otpauth:\/\/totp\/.*secret=/);
+    const secret = d.secret;
+
+    // 3. wrong code → 401
+    const real = totp(d.secret, step());
+    const wrong = String((Number(real) + 1) % 1000000).padStart(6, '0');
+    r = await post('/login', { token: tok, code: wrong });
+    assert.equal(r.status, 401);
+
+    // 4. right code → session cookie + secret persisted to config.json
+    r = await post('/login', { token: tok, code: totp(secret, step()) });
+    assert.equal(r.status, 200, JSON.stringify(await r.clone().json()));
+    const sc2 = r.headers.get('set-cookie') || '';
+    assert.match(sc2, /pc_token=/);
+    assert.match(sc2, /HttpOnly/);
+    const sessCookie = sc2.split(';')[0];
+    assert.equal(JSON.parse(fs.readFileSync(cfg, 'utf8')).totp, secret, 'secret saved to config.json');
+
+    // 5. session cookie works
+    r = await fetch(b2 + '/api/sessions', { headers: { Cookie: sessCookie } });
+    assert.equal(r.status, 200);
+
+    // 6. raw token no longer accepted anywhere once enrolled
+    r = await fetch(b2 + '/api/sessions', { headers: { Cookie: 'pc_token=' + encodeURIComponent(tok) } });
+    assert.equal(r.status, 401, 'raw-token cookie rejected once enrolled');
+    r = await post('/login', { token: tok });
+    assert.equal(r.status, 401, 'token-only login rejected once enrolled');
+    await new Promise((resolve, reject) => {
+      const ws = new WebSocket(b2.replace('http', 'ws') + '/ws?host=x&session=y&token=' + tok);
+      ws.on('close', (code) => (code === 4401 ? resolve() : reject(new Error('close code ' + code))));
+      ws.on('error', reject);
+    });
+
+    // 7. fresh login with token + code → new session cookie
+    r = await post('/login', { token: tok, code: totp(secret, step()) });
+    assert.equal(r.status, 200);
+    const sc3 = (r.headers.get('set-cookie') || '').split(';')[0];
+    r = await fetch(b2 + '/api/sessions', { headers: { Cookie: sc3 } });
+    assert.equal(r.status, 200);
+
+    // 8. status now shows enrolled
+    d = await (await fetch(b2 + '/api/totp/status')).json();
+    assert.equal(d.enrolled, true);
+
+    // 9. disable with a code → secret removed, token-only login works again
+    r = await post('/api/totp/disable', { code: totp(secret, step()) }, { Cookie: sc3 });
+    assert.equal(r.status, 200, JSON.stringify(await r.clone().json()));
+    assert.equal(JSON.parse(fs.readFileSync(cfg, 'utf8')).totp, undefined, 'secret removed');
+    r = await post('/login', { token: tok });
+    assert.equal(r.status, 200, 'token-only login works again after disable');
+  } finally {
+    ch.kill('SIGTERM');
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 });

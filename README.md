@@ -109,6 +109,7 @@ edits are live (picked up on the next poll, ~5 s):
   "cmd": "pi",
   "pollMs": 5000,
   "netDisplay": true,
+  "twoFA": "required",
   "hosts": [
     { "name": "localhost" },
     { "name": "station2", "ssh": "aginies@192.168.1.50" },
@@ -131,6 +132,14 @@ edits are live (picked up on the next poll, ~5 s):
   GET poll. Needs a **server restart**.
 - `netDisplay` (optional): the header bandwidth readout (default `true`).
   When `false` the server doesn't count bytes at all. Needs a **server restart**.
+- `twoFA` (optional): `"required"` or `"optional"` — enable TOTP two-factor
+  (RFC 6238, 6 digits, 30 s, ±1 step). `required` forces enrollment at login
+  while no secret is set; `optional` only asks for the code once one is.
+  Absent = 2FA off. Needs a **server restart**. The secret itself lives in
+  `totp` and is **live** (enroll/disable write it without a restart).
+- `totp` (optional): the enrolled base32 TOTP secret. Filled in automatically
+  by the login-page enrollment (QR code + confirm code) or by the ⚙ editor.
+  An invalid value is ignored (treated as not enrolled).
 - With `ssh` → `tmux list-sessions` / `attach` run over SSH
   (`ssh -o BatchMode=yes ...`, i.e. **key auth only**, no password prompts).
   Make sure `~/.ssh/known_hosts` has the host key (BatchMode refuses prompts).
@@ -200,9 +209,11 @@ fallback applies.
   **✕** in the session bar detaches (the session keeps running in tmux).
 - `⚙` (top right) opens the **config editor**: edit `config.json` in a modal
   and save. `hosts` / `cmd` apply immediately; `port`, `token`, `tls`,
-  `cert`, `key`, `pollMs`, `netDisplay` need a server restart (changing the
-  token logs out all clients). The write is atomic and JSON-validated — a
-  broken file can never be saved.
+  `cert`, `key`, `pollMs`, `netDisplay`, `twoFA` need a server restart
+  (changing the token logs out all clients). The write is atomic and
+  JSON-validated — a broken file can never be saved. The same modal has a
+  **two-factor** panel: shows the 2FA state and disables it with a 6-digit
+  code (the phone must be in hand).
 - The header shows the server's current network usage (5 s average): `↓ in · ↑ out`;
   hover for the totals since server start. Disable with `"netDisplay": false`
   (restart) — the server then doesn't count bytes at all.
@@ -229,6 +240,18 @@ fallback applies.
   source IP — the daemon's view of the connection, so behind a proxy or an
   `ssh -L` tunnel that is the proxy/tunnel's address, not each end user).
   Comparison is constant-time.
+- **Two-factor (TOTP)**: with `"twoFA": "required"` (or `"optional"`), the
+  login page enrolls a TOTP secret on first login — scan the QR code with any
+  authenticator app (or type the base32 secret), confirm with a 6-digit code,
+  and the secret is saved to `config.json`. From then on every login needs
+  **token + code**, and the raw token no longer grants access anywhere (login
+  cookie, `?token=`, WS) — it's replaced by a random session cookie (30 days,
+  in-memory, so a restart logs everyone out). Wrong codes share the token
+  rate limit. Disable from ⚙ → *two-factor* with a 6-digit code, or delete the
+  `totp` key in `config.json` (takes effect live, no restart). Recovery if the
+  phone is lost: same — delete `totp` (you have the server's filesystem).
+  The QR is rendered by a vendored copy of `qrcode-generator` (MIT) in
+  `public/vendor/` — no CDN, works offline.
 - The daemon binds to `0.0.0.0` by default so other LAN machines can reach it
   — the token is the gate. Anyone with the token can read/write every session
   (and the daemon uses the SSH keys of the user running it for remote hosts),

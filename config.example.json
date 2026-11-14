@@ -8,6 +8,8 @@
   "cmd": "pi",
   "pollMs": 5000,
   "netDisplay": true,
+  "twoFA": "required",
+  "totp": "<base32 secret — filled in automatically by the login-page enrollment, or paste one from your authenticator app>",
   "hosts": [
     { "name": "localhost" },
     { "name": "station2", "ssh": "user@host", "cmd": "pi-bolt" }

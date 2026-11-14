@@ -48,6 +48,10 @@ const CONFIG = readConfig(true);
 const HOST = process.env.PC_HOST || CONFIG.host || '0.0.0.0';
 const PORT = parseInt(process.env.PC_PORT || CONFIG.port || '8787', 10);
 const TOKEN = process.env.PC_TOKEN || (typeof CONFIG.token === 'string' ? CONFIG.token : '');
+// two-factor: "required" (login forces enrollment while no secret is set) or
+// "optional" (code step only once a secret is enrolled). Absent = 2FA off.
+// Read at startup like TOKEN (changing it needs a restart); the SECRET itself is live.
+const TWOFA = CONFIG.twoFA === 'required' || CONFIG.twoFA === 'optional' ? CONFIG.twoFA : null;
 const TLS = process.env.PC_TLS !== undefined ? process.env.PC_TLS !== 'false' : CONFIG.tls !== false;
 const CERT = path.resolve(__dirname, CONFIG.cert || '.certs/cert.pem');
 const KEY = path.resolve(__dirname, CONFIG.key || '.certs/key.pem');
@@ -382,6 +386,10 @@ function ensureCert() {
 }
 
 // ---------- auth: shared token → HttpOnly cookie (WS: cookie or ?token=) ----------
+// With a TOTP secret enrolled, the raw token no longer grants access on its own:
+// login (token + 6-digit code) issues a random session cookie instead, and the raw
+// token (cookie or ?token=) is rejected — otherwise the code step could be bypassed
+// by presenting the token directly.
 const COOKIE = 'pc_token';
 function validToken(t) {
   if (!TOKEN || !t) return false;
@@ -393,8 +401,102 @@ function cookieOf(req) {
   const m = (req.headers.cookie || '').split(';').map((s) => s.trim()).find((s) => s.startsWith(COOKIE + '='));
   return m ? decodeURIComponent(m.slice(COOKIE.length + 1)) : null;
 }
+// ---------- TOTP (RFC 6238): HMAC-SHA1, 6 digits, 30 s period, ±1 step window ----------
+const B32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+function b32decode(s) {
+  s = String(s || '').toUpperCase().replace(/[\s=]/g, '');
+  if (!s || s.length % 8 !== 0 || !/^[A-Z2-7]+$/.test(s)) return null;
+  let bits = 0, value = 0;
+  const out = [];
+  for (const c of s) {
+    value = (value << 5) | B32.indexOf(c);
+    bits += 5;
+    if (bits >= 8) { out.push((value >>> (bits - 8)) & 0xff); bits -= 8; }
+  }
+  return Buffer.from(out);
+}
+function totpCode(secret, step) {
+  const key = b32decode(secret);
+  if (!key) return null;
+  const buf = Buffer.alloc(8);
+  buf.writeBigUInt64BE(BigInt(step));
+  const h = crypto.createHmac('sha1', key).update(buf).digest();
+  const off = h[h.length - 1] & 0x0f;
+  const code = ((h[off] & 0x7f) << 24) | (h[off + 1] << 16) | (h[off + 2] << 8) | h[off + 3];
+  return String(code % 1000000).padStart(6, '0');
+}
+function validTotp(secret, code) {
+  if (!secret || !/^\d{6}$/.test(String(code || ''))) return false;
+  const step = Math.floor(Date.now() / 30000);
+  const c = String(code);
+  for (const s of [step - 1, step, step + 1]) {
+    const t = totpCode(secret, s);
+    if (t && crypto.timingSafeEqual(Buffer.from(t), Buffer.from(c))) return true;
+  }
+  return false;
+}
+function genTotpSecret() {
+  // 20 random bytes → 32 base32 chars (160 bits of entropy)
+  let bits = 0, value = 0, out = '';
+  for (const b of crypto.randomBytes(20)) {
+    value = (value << 8) | b;
+    bits += 8;
+    while (bits >= 5) { out += B32[(value >>> (bits - 5)) & 0x1f]; bits -= 5; }
+  }
+  return out;
+}
+// The enrolled secret lives in config.json ("totp") and is LIVE (enroll/disable
+// write it without a restart): stat-gated like the host list, so per-request cost
+// is zero until the file's mtime changes.
+let totpCache = { mtimeNs: null, secret: null };
+function totpSecret() {
+  try {
+    const mtimeNs = fs.statSync(CONFIG_FILE, { bigint: true }).mtimeNs;
+    if (totpCache.mtimeNs !== mtimeNs) {
+      const c = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+      // validate: an invalid/placeholder secret counts as "not enrolled" (never lock
+      // the user out — with twoFA:"required" the login page will offer enrollment)
+      let secret = null;
+      if (typeof c.totp === 'string' && c.totp.length >= 16 && c.totp.length <= 64 && b32decode(c.totp)) secret = c.totp;
+      totpCache = { mtimeNs, secret };
+    }
+  } catch { /* unreadable → keep the last good value */ }
+  return totpCache.secret;
+}
+function setTotpSecretInConfig(secret) {
+  const cfg = readConfig(false);
+  if (secret) cfg.totp = secret; else delete cfg.totp;
+  const werr = writeConfigAtomic(cfg);
+  if (werr) return werr;
+  totpCache.mtimeNs = null; // our own write: don't wait out the stat gate
+  return null;
+}
+// ---------- 2FA sessions: random cookie → in-memory map (30 days) ----------
+const SESSION_TTL_MS = 2592000 * 1000; // 30 days — same lifetime as the old raw-token cookie
+const sessions = new Map(); // session id → expiry (ms)
+function sessionCookie(id) {
+  return `${COOKIE}=${id}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${SESSION_TTL_MS / 1000}`;
+}
+function newSession() {
+  const now = Date.now();
+  for (const [k, v] of sessions) if (v < now) sessions.delete(k); // bound the map
+  const id = crypto.randomBytes(32).toString('hex');
+  sessions.set(id, now + SESSION_TTL_MS);
+  return id;
+}
+function sessionOf(req) {
+  const v = cookieOf(req);
+  if (!v) return null;
+  const exp = sessions.get(v);
+  if (!exp) return null;
+  if (exp < Date.now()) { sessions.delete(v); return null; }
+  return v;
+}
 function authed(req) {
-  return !TOKEN || validToken(cookieOf(req)); // no token configured → open (dev mode)
+  if (!TOKEN) return true; // no token configured → open (dev mode)
+  if (sessionOf(req)) return true; // 2FA session cookie
+  // raw-token cookie: only valid while no TOTP secret is enrolled (see above)
+  return totpSecret() === null && validToken(cookieOf(req));
 }
 // brute-force guard: 5 failed logins / 15 min per source IP
 const loginFails = new Map();
@@ -451,23 +553,91 @@ if (TLS) {
   }
 }
 // ---------- http routes ----------
+// pending enrollment: onboarding generates a secret, returns it (→ QR), and holds it
+// here until the user confirms with a code. Single slot, 10-min TTL — starting it
+// already required the token, so it can only ever enroll the person logging in.
+const ENROLL_TTL_MS = 10 * 60 * 1000;
+let pendingEnroll = null; // { secret, at }
+function otpauthUrl(secret, req) {
+  const host = (req.headers.host || 'tmux-webhub').split(':')[0];
+  const q = new URLSearchParams({ secret, issuer: 'tmux-webhub', algorithm: 'SHA1', digits: '6', period: '30' });
+  return `otpauth://totp/tmux-webhub:${host}?${q.toString()}`;
+}
 async function handleLogin(req, res, url, send, ip) {
   if (!TOKEN) return send(400, { error: 'token auth is not configured' });
   if (tooManyLogins(ip)) return send(429, { error: 'too many failed attempts, try again in 15 min' });
   const body = await readBody(req);
-  let token = null;
-  try { token = (JSON.parse(body || '{}') || {}).token; } catch {}
-  if (!validToken(token)) {
+  let j = {};
+  try { j = JSON.parse(body || '{}') || {}; } catch {}
+  if (!validToken(j.token)) {
     recordLoginFail(ip);
     return send(401, { error: 'wrong token' });
   }
+  const secret = totpSecret();
+  // 1. onboarding in flight: confirm the code against the pending secret, then enroll
+  if (pendingEnroll && Date.now() - pendingEnroll.at < ENROLL_TTL_MS) {
+    if (!j.code) {
+      // token resubmitted without a code (e.g. the user went back) → restart enrollment
+      pendingEnroll = { secret: genTotpSecret(), at: Date.now() };
+      loginFails.delete(ip);
+      return send(200, { next: 'enroll', secret: pendingEnroll.secret, otpauthUrl: otpauthUrl(pendingEnroll.secret, req) });
+    }
+    if (!validTotp(pendingEnroll.secret, j.code)) {
+      recordLoginFail(ip);
+      return send(401, { error: 'wrong code' });
+    }
+    const werr = setTotpSecretInConfig(pendingEnroll.secret);
+    if (werr) return send(500, { error: 'cannot save secret: ' + werr });
+    pendingEnroll = null;
+    loginFails.delete(ip);
+    return send(200, { ok: true }, { 'Set-Cookie': sessionCookie(newSession()) });
+  }
+  pendingEnroll = null; // expired or consumed
+  // 2. enrolled: the code is mandatory (the raw token alone no longer opens the door)
+  if (secret) {
+    if (!validTotp(secret, j.code)) {
+      recordLoginFail(ip);
+      return send(401, { error: 'wrong code' });
+    }
+    loginFails.delete(ip);
+    return send(200, { ok: true }, { 'Set-Cookie': sessionCookie(newSession()) });
+  }
+  // 3. not enrolled: "required" forces onboarding now; "optional" offers it (enroll flag)
+  if (TWOFA === 'required' || (TWOFA === 'optional' && j.enroll)) {
+    pendingEnroll = { secret: genTotpSecret(), at: Date.now() };
+    loginFails.delete(ip);
+    return send(200, { next: 'enroll', secret: pendingEnroll.secret, otpauthUrl: otpauthUrl(pendingEnroll.secret, req) });
+  }
+  // 4. no 2FA in effect: as before. With a mode set the cookie is a session id (the
+  //    raw token stops circulating); without one it stays the raw token.
   loginFails.delete(ip);
   return send(200, { ok: true }, {
-    'Set-Cookie': `${COOKIE}=${encodeURIComponent(TOKEN)}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=2592000`,
+    'Set-Cookie': TWOFA ? sessionCookie(newSession()) : `${COOKIE}=${encodeURIComponent(TOKEN)}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=2592000`,
   });
 }
 
-function handleLogout(res) {
+// GET /api/totp/status — public (the login page needs it before auth); reveals only
+// the mode + whether a secret is enrolled, nothing secret.
+function handleTotpStatus(res, send) {
+  return send(200, { mode: TWOFA, enrolled: totpSecret() !== null });
+}
+
+// POST /api/totp/disable {code} — authed; the code proves the phone is in hand.
+async function handleTotpDisable(req, res, send) {
+  if (req.method !== 'POST') return send(405, { error: 'method not allowed' });
+  let j = {};
+  try { j = JSON.parse((await readBody(req)) || '{}') || {}; } catch {}
+  const secret = totpSecret();
+  if (!secret) return send(400, { error: 'two-factor is not enrolled' });
+  if (!validTotp(secret, j.code)) return send(401, { error: 'wrong code' });
+  const werr = setTotpSecretInConfig(null);
+  if (werr) return send(500, { error: 'cannot save config: ' + werr });
+  return send(200, { ok: true });
+}
+
+function handleLogout(req, res) {
+  const v = cookieOf(req);
+  if (v) sessions.delete(v);
   res.writeHead(302, { 'Set-Cookie': `${COOKIE}=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0`, Location: '/' });
   res.end();
 }
@@ -554,6 +724,7 @@ async function handleApiConfig(req, res, send) {
     try {
       const cfg = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
       if (typeof cfg.token === 'string' && cfg.token) cfg.token = REDACTED;
+      if (typeof cfg.totp === 'string' && cfg.totp) cfg.totp = REDACTED;
       return send(200, { raw: JSON.stringify(cfg, null, 2) + '\n', path: CONFIG_FILE });
     } catch (e) {
       return send(500, { error: 'cannot read config: ' + e.message });
@@ -565,12 +736,21 @@ async function handleApiConfig(req, res, send) {
     let parsed;
     try { parsed = JSON.parse(body); } catch (e) { return send(400, { error: 'invalid JSON: ' + e.message }); }
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return send(400, { error: 'config must be a JSON object' });
+    if (parsed.twoFA !== undefined && parsed.twoFA !== 'required' && parsed.twoFA !== 'optional')
+      return send(400, { error: 'twoFA must be "required" or "optional"' });
+    if (parsed.totp !== undefined && parsed.totp !== REDACTED && (typeof parsed.totp !== 'string' || !/^[A-Za-z2-7]{16,64}$/.test(parsed.totp) || parsed.totp.length % 8 !== 0))
+      return send(400, { error: 'totp must be a base32 secret (16–64 chars, length a multiple of 8)' });
     // a redacted token means "unchanged" → restore the live one so saving other
     // fields doesn't wipe it (the user can still set a new value by replacing it)
     if (parsed.token === REDACTED) {
       let cur;
       try { cur = readConfig(false).token; } catch { cur = undefined; }
       if (typeof cur === 'string' && cur) parsed.token = cur; else delete parsed.token;
+    }
+    if (parsed.totp === REDACTED) {
+      let cur;
+      try { cur = readConfig(false).totp; } catch { cur = undefined; }
+      if (typeof cur === 'string' && cur) parsed.totp = cur; else delete parsed.totp;
     }
     const werr = writeConfigAtomic(parsed);
     if (werr) return send(500, { error: 'cannot write config: ' + werr });
@@ -642,7 +822,10 @@ async function handleApiDirs(req, res, url, send) {
 // static files: unauthenticated browsers get the login page for '/', other assets 401.
 // ETag (size+mtime) + Cache-Control: vendored assets are immutable, html revalidates.
 function serveStatic(req, res, url) {
-  if (!authed(req)) {
+  // the login page's QR library: the only asset an unauthenticated browser may fetch
+  // (it renders the TOTP setup QR before login)
+  const isLoginAsset = url.pathname === '/vendor/qrcode.js';
+  if (!authed(req) && !isLoginAsset) {
     if (url.pathname === '/') {
       return fs.readFile(path.join(PUBLIC_DIR, 'login.html'), (err, data) => {
         if (err) { res.writeHead(500); return res.end('login page missing'); }
@@ -690,13 +873,15 @@ const server = (TLS ? https : http).createServer(tlsOpts, async (req, res) => {
   const ip = req.socket.remoteAddress || '?';
   try {
     if (req.method === 'POST' && url.pathname === '/login') return await handleLogin(req, res, url, send, ip);
-    if (req.method === 'GET' && url.pathname === '/logout') return handleLogout(res);
+    if (req.method === 'GET' && url.pathname === '/logout') return handleLogout(req, res);
     if (url.pathname.startsWith('/api/')) {
+      if (req.method === 'GET' && url.pathname === '/api/totp/status') return handleTotpStatus(res, send); // public: login page
       if (!authed(req)) return send(401, { error: 'unauthorized' });
       if (url.pathname === '/api/sessions') return await handleApiSessions(req, res, url, send);
       if (url.pathname === '/api/sessions/rename') return await handleApiRename(req, res, send);
       if (url.pathname === '/api/config') return await handleApiConfig(req, res, send);
       if (url.pathname === '/api/hosts/toggle') return await handleHostToggle(req, res, send);
+      if (url.pathname === '/api/totp/disable') return await handleTotpDisable(req, res, send);
       if (url.pathname === '/api/dirs') return await handleApiDirs(req, res, url, send);
       return send(404, { error: 'not found' });
     }
@@ -788,8 +973,10 @@ wss.on('connection', (ws, req) => {
   wsClients++;
   refreshHosts().catch(() => {}); // a client just arrived → fresh data now
   const url = new URL(req.url, 'http://localhost');
-  // cookie (same-origin browsers) or ?token= (non-browser clients)
-  if (TOKEN && !authed(req) && !validToken(url.searchParams.get('token'))) {
+  // cookie (same-origin browsers) or ?token= (non-browser clients). With a TOTP
+  // secret enrolled the raw token is rejected here too — only the session cookie
+  // (token + code at login) gets through.
+  if (TOKEN && !authed(req) && !(totpSecret() === null && validToken(url.searchParams.get('token')))) {
     ws.close(4401, 'unauthorized'); return;
   }
   const host = hostByName(url.searchParams.get('host') || 'localhost');
@@ -900,7 +1087,8 @@ process.on('uncaughtException', (err) => {
 
 server.listen(PORT, HOST, () => {
   const proto = TLS ? 'https' : 'http';
-  console.log(`tmux-webhub on ${proto}://${HOST}:${PORT}  (pi: ${PI_CMD}, config: ${CONFIG_FILE})` + (TOKEN ? '' : '  ⚠ NO token configured — open access'));
+  const twoFaNote = TWOFA ? `  2FA: ${TWOFA}${totpSecret() ? ', enrolled' : ', not enrolled'}` : '';
+  console.log(`tmux-webhub on ${proto}://${HOST}:${PORT}  (pi: ${PI_CMD}, config: ${CONFIG_FILE})` + (TOKEN ? '' : '  ⚠ NO token configured — open access') + twoFaNote);
 });
 server.on('error', (e) => {
   if (e.code === 'EADDRINUSE') console.error(`port ${PORT} already in use (PC_PORT to change)`);
