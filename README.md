@@ -8,19 +8,32 @@ anything.
 
 ![tmux-webhub demo](https://raw.githubusercontent.com/aginies/tmux-webhub/master/demo.gif)
 
+- **Two-factor + token auth** — TLS by default; one access token gates the
+  page, the API and the WebSocket; optional TOTP two-factor (scan a QR at first
+  login) — from then on every login needs token + code, and wrong attempts are
+  rate-limited.
+- **Use it from a smartphone** — mobile layout, an on-screen virtual keyboard
+  (special keys + full QWERTY page, Shift/Ctrl/Alt with hold-to-lock) sent
+  through `tmux send-keys`, Esc / PgUp / PgDn buttons, two-finger scrollback.
+  No hardware keyboard needed.
+- **Add/remove hosts in the browser** — ⚙ → *Hosts*: "+ Add host", edit name /
+  `ssh` / `cmd`, toggle a host on/off, reorder, ✕ to remove. Local hosts and
+  remote ones over SSH (e.g. `aginies@192.168.1.50`) sit in one view; the list
+  is live-reloaded — no restart.
+- **Sessions appear by themselves** — every host is polled (default 5 s) and
+  its tmux sessions show up grouped by host with a live activity indicator; a
+  session started on any host appears on its own, nothing to sync.
+- **Pick the network interface easily** — the bind field in ⚙ suggests
+  `0.0.0.0` plus every real address of the server, so choosing the right
+  interface is a click, not an `ip addr` hunt.
 - **Attach any session** — click a session in the list and you're in. Type,
   resize, scroll the scrollback — it's a full terminal. Close the tab and the
   session keeps running in tmux.
-- **One host, many hosts** — sessions are grouped by host automatically. Local
-  hosts, or remote ones reached over SSH (e.g. `aginies@192.168.1.50`), all in
-  one view.
 - **pi / pi-bolt activity** — the ⚡ says "doing something right now". For most
   programs it follows tmux output; for pi panes it reads pi's own state, so a
   settled pi is never shown as active just because its TUI redrew.
 - **Network readout** — the header shows live bandwidth usage (5 s average), or
   is off entirely.
-- **Two-factor** — optional TOTP (scan a QR at login); then every login needs
-  token + code.
 
 ## Install
 
@@ -88,6 +101,16 @@ Then open **https://<host>:8787** in a browser and enter the token from
 `config.json`. The cookie keeps you logged in for 30 days; ⚙ → *Log out* to sign
 out (with 2FA enrolled, that also deletes the session server-side).
 
+**Two-factor (TOTP).** Set `"twoFA": "required"` (or `"optional"`) in
+`config.json` and restart. The first login enrolls it: scan the QR code with any
+authenticator app (or type the base32 secret), confirm with a 6-digit code. From
+then on every login needs **token + code**, and the raw token alone no longer
+grants access anywhere (page, API, WebSocket). Wrong codes share the token rate
+limit. Disable it from ⚙ → *two-factor* with a fresh code (the phone must be in
+hand); if the phone is lost, delete the `totp` key in `config.json`. The full
+model — TLS, cookies, CSRF, rate limiting — is in
+[docs/SECURITY.md](docs/SECURITY.md).
+
 **Prereqs:** `node` (with `node-pty` built), `tmux`, `openssl`.
 
 ## Create a session
@@ -99,6 +122,22 @@ out (with 2FA enrolled, that also deletes the session server-side).
   attaches, `pitux <name>` attaches to an existing one, `pitux ls` lists.
   Session names start with a letter/digit and contain only letters, digits,
   `.` `_` `-`.
+
+## Use from a smartphone
+
+Everything works on a phone, no hardware keyboard needed:
+
+- **Virtual keyboard (⌨)** — the ⌨ button opens a draggable, resizable
+  on-screen panel. *special* page: Tab, Enter, Ctrl+C, Alt+↑, arrows,
+  PgUp/PgDn, …; *abc* page: Esc, F1–F10, digits, full QWERTY, and Shift /
+  Ctrl / Alt — hold a modifier 2 s to lock it, tap it again to unlock. Every key
+  goes out through `tmux send-keys`, exactly like a keystroke on the host.
+- **⎋ / Pg↑ / Pg↓** — Esc, PageUp and PageDown buttons in the header, covering
+  the desktop keyboard's jobs: quit a TUI, scroll the scrollback.
+- **Two-finger scroll** — drag with two fingers to scroll the scrollback; one
+  finger is reserved for typing.
+- Touch targets are sized for fingers, inputs don't trigger iOS auto-zoom, and
+  modals open as bottom sheets above the phone's own keyboard.
 
 ## Stop / restart / daemonize
 
@@ -122,11 +161,24 @@ out (with 2FA enrolled, that also deletes the session server-side).
 
 ## Config editor
 
-The ⚙ button opens a modal to edit `config.json` in the browser. The host list
-and per-host `cmd` apply immediately; server settings (`port`, `token`, `tls`,
-`cert`, `key`, `pollMs`, `netDisplay`, `twoFA`) need a restart. The write is
-atomic and JSON-validated, so a broken file can never be saved. The same modal
-has a **two-factor** panel and a **Log out** button.
+The ⚙ button opens a modal to edit `config.json` in the browser. The write is
+atomic and JSON-validated, so a broken file can never be saved.
+
+- **Hosts** — "+ Add host" appends a row; each row has `name`, `ssh`
+  (`user@host`, empty = local), `cmd`, and an on/off switch; ↑/↓ reorder, ✕
+  removes. The host list is **live-reloaded** — a new host starts being polled
+  immediately, no restart.
+- **Bind address** — the `host` field offers `0.0.0.0` plus every real address
+  of the server (fetched live from it), so picking the right network interface
+  is a click.
+- **Token** — always masked; typing a new value replaces it.
+- **Two-factor** — shows the enrollment state; disable with a fresh 6-digit
+  code.
+- **Log out** — ends this browser's session (with 2FA: deleted server-side).
+
+The host list and per-host `cmd` apply immediately; server settings (`port`,
+`token`, `tls`, `cert`, `key`, `pollMs`, `netDisplay`, `twoFA`) need a
+restart.
 
 ## Environment variables
 
