@@ -156,8 +156,17 @@
   async function doLogin(extra) {
     const { ok, status, j } = await post('/login', { token: $('token').value.trim(), ...extra });
     if (ok && j.next === 'enroll') { showEnroll(j); return null; }
+    if (ok && j.next === 'verify') { showVerify(); return null; }
     if (ok && j.ok) { location.replace('/'); return null; }
     return { ok, status, j };
+  }
+
+  // step 2 in verify mode (already enrolled): hide the QR/secret, just ask for the code
+  function showVerify() {
+    $('enroll-ui').style.display = 'none';
+    $('code').value = '';
+    show('step-code');
+    $('code').focus();
   }
 
   $('f-token').addEventListener('submit', async (e) => {

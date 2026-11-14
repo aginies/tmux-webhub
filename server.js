@@ -619,6 +619,10 @@ async function handleLogin(req, res, url, send, ip) {
   pendingEnroll = null; // expired or consumed
   // 2. enrolled: the code is mandatory (the raw token alone no longer opens the door)
   if (secret) {
+    if (!j.code) {
+      // token valid but no code entered yet → tell the client to show the code step
+      return send(200, { next: 'verify' });
+    }
     if (!validTotp(secret, j.code)) {
       recordLoginFail(ip);
       return send(401, { error: 'wrong code' });
