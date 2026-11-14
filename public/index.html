@@ -11,6 +11,18 @@
     --dim: #8b909c; --accent: #4f8cff; --chip: #232733; --chip-hover: #2c3140;
     --green: #3fb950; --red: #f85149; --amber: #d29922;
   }
+  /* light theme */
+  :root.theme-light {
+    --bg: #f6f8fa; --panel: #ffffff; --border: #d0d7de; --text: #1f2328;
+    --dim: #656d76; --accent: #0969da; --chip: #eef1f4; --chip-hover: #e4e8ec;
+    --green: #1a7f37; --red: #cf222e; --amber: #9a6700;
+  }
+  /* high-contrast theme */
+  :root.theme-contrast {
+    --bg: #000000; --panel: #0a0a0a; --border: #ffffff; --text: #ffffff;
+    --dim: #cccccc; --accent: #00ffff; --chip: #1a1a1a; --chip-hover: #333333;
+    --green: #00ff00; --red: #ff0000; --amber: #ffff00;
+  }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
   body { background: var(--bg); color: var(--text); font: 14px/1.4 ui-sans-serif, system-ui, sans-serif; display: flex; flex-direction: column; }
@@ -27,6 +39,16 @@
     border-radius: 6px; padding: 5px 10px; cursor: pointer; font-size: 13px;
   }
   header button { padding: 3px 9px; font-size: 12.5px; }
+  /* split view: vertical only, 50/50 */
+  #termwrap.split { display: grid; grid-template-columns: 1fr 1fr; gap: 2px; height: 100%; }
+  #termwrap.split .split-pane { border: 1px solid var(--border); border-radius: 4px; overflow: hidden; display: flex; flex-direction: column; height: 100%; }
+  #termwrap.split .split-pane .split-header { display: flex; align-items: center; justify-content: space-between; padding: 2px 6px; background: var(--panel); border-bottom: 1px solid var(--border); font-size: 11px; color: var(--dim); flex: 0 0 auto; }
+  #termwrap.split .split-pane .split-header button { background: none; border: none; color: var(--red); cursor: pointer; padding: 0 4px; font-size: 14px; line-height: 1; }
+  #termwrap.split .split-pane .split-header button:hover { background: var(--chip-hover); border-radius: 3px; }
+  #termwrap.split .split-pane > div { flex: 1 1 auto; min-height: 0; }
+  #termwrap.split .split-pane .fit { height: 100%; width: 100%; }
+  #termwrap.split .split-pane .fit .xterm { height: 100%; width: 100%; }
+
   /* keyboard shortcuts: desktop shows only the ⌨ palette icon (⎋/Pg↑/Pg↓ have
      real keys); the phone media query below reveals all of them */
   #term-ctl { display: inline-flex; gap: 4px; }
@@ -97,6 +119,7 @@
   .chip:hover { background: var(--chip-hover); }
   /* --tint is inherited from the .group ancestor, so the selection ring matches the host's color */
   .chip.active { border-color: rgb(var(--tint, 79,140,255)); background: var(--chip-hover); }
+  .chip.split-select { border-color: var(--amber); animation: pc-pulse 1.5s ease-in-out infinite; }
   .chip .flash { flex: 0 0 auto; display: inline-flex; animation: pc-pulse 1.2s ease-in-out infinite; }
   .chip .ind-empty { width: 11px; flex: 0 0 auto; } /* reserves the indicator slot so chips don't shift */
   @keyframes pc-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
@@ -380,6 +403,7 @@
       <span class="tname" id="t-name">no session selected</span>
       <span class="tcwd" id="t-cwd"></span>
       <span class="tlocal" id="t-local">● also attached locally</span>
+      <button id="t-split" title="Split view (attach another session side by side)" style="display:none">⤢</button>
       <button id="t-detach" title="Detach (the session keeps running in tmux)" style="display:none">✕</button>
     </div>
     <div id="termwrap">
@@ -463,6 +487,15 @@
         <div class="cfg-field chk">
           <label><span>Network display</span><input id="cfg-netDisplay" type="checkbox"></label>
           <span class="cfg-hint">needs restart</span>
+        </div>
+        <div class="cfg-field">
+          <label for="cfg-theme">Theme</label>
+          <select id="cfg-theme">
+            <option value="">dark</option>
+            <option value="light">light</option>
+            <option value="contrast">high contrast</option>
+          </select>
+          <span class="cfg-hint">browser only</span>
         </div>
         <div class="cfg-field chk">
           <label><span>Use TLS</span><input id="cfg-tls" type="checkbox"></label>
@@ -640,6 +673,9 @@
 // ---------- state ----------
 let hosts = [];        // [{name, state, error?, sessions:[{name, attached, cwd, activity}]}]
 let active = null;     // {key, host, name, ws, dataSub}
+let splitActive = null; // {key, host, name, ws, dataSub} — split pane session
+let splitTerm = null;   // second xterm instance for split view
+let splitFit = null;    // fit addon for split terminal
 // host → sessions lookup, rebuilt once per renderChips so displayName is O(1)/chip instead
 // of an O(#hosts) hosts.find per chip (render is O(sessions × hosts) otherwise).
 let hostSessionsLookup = null;
@@ -683,6 +719,12 @@ function fitTerm() {
       }
     }, 100);
   } catch {}
+  // also fit split terminal if open
+  if (splitTerm && splitFit) {
+    try {
+      splitFit.fit();
+    } catch {}
+  }
 }
 window.addEventListener('resize', fitTerm);
 
@@ -754,6 +796,7 @@ function attach(key) {
   active = st;
   $('placeholder').style.display = 'none';
   $('t-detach').style.display = '';
+  $('t-split').style.display = '';
   // no term.reset() here: detach() above already cleared the screen when a session
   // was active, and a fresh tmux attach full-redraws it when we come from a
   // closed/detached state — a second reset was redundant
@@ -799,6 +842,7 @@ function detach() {
   term.reset(); // clean screen: stale content must not linger behind the placeholder
   $('placeholder').style.display = 'flex';
   $('t-detach').style.display = 'none';
+  $('t-split').style.display = 'none';
   $('keys-bg').classList.remove('open');
   $('rn-bg').classList.remove('open');
   $('t-name').textContent = 'no session selected';
@@ -820,6 +864,203 @@ function updateLocalBadge(s) {
   if (others > 0) { el.textContent = `● ${others} other client${others > 1 ? 's' : ''} attached`; el.style.display = 'inline'; }
   else el.style.display = 'none';
 }
+
+// ---------- split view ----------
+function openSplit() {
+  if (splitActive || splitTerm) return; // already split
+  const wrap = $('termwrap');
+  wrap.classList.add('split');
+
+  // move existing terminal into a pane
+  const pane1 = document.createElement('div');
+  pane1.className = 'split-pane';
+  pane1.dataset.pane = '1';
+  const h1 = document.createElement('div');
+  h1.className = 'split-header';
+  h1.innerHTML = `<span>${$('t-name').textContent}</span><button title="Close pane">✕</button>`;
+  h1.querySelector('button').onclick = () => {
+    // closing main pane: move terminal back to main container
+    wrap.classList.remove('split');
+    wrap.style.gridTemplateColumns = '';
+    wrap.insertBefore($('term'), pane1);
+    pane1.remove();
+    // close split pane too
+    if (splitActive) {
+      try { splitActive.dataSub.dispose(); } catch {}
+      try { splitActive.ws.close(); } catch {}
+      splitActive = null;
+    }
+    if (splitTerm) {
+      splitTerm.dispose();
+      splitTerm = null;
+    }
+    const pane2 = wrap.querySelector('.split-pane[data-pane="2"]');
+    if (pane2) pane2.remove();
+    document.querySelectorAll('.chip').forEach(c => c.classList.remove('split-select'));
+    fitTerm();
+  };
+  pane1.appendChild(h1);
+  wrap.insertBefore(pane1, $('term'));
+  pane1.appendChild($('term'));
+
+  // create second terminal
+  const pane2 = document.createElement('div');
+  pane2.className = 'split-pane';
+  pane2.dataset.pane = '2';
+  const h2 = document.createElement('div');
+  h2.className = 'split-header';
+  h2.innerHTML = '<span>select session</span><button title="Close pane">✕</button>';
+  h2.querySelector('button').onclick = () => {
+    // closing split pane: move main terminal back to main container
+    wrap.classList.remove('split');
+    wrap.style.gridTemplateColumns = '';
+    wrap.insertBefore($('term'), pane1);
+    pane1.remove();
+    pane2.remove();
+    if (splitActive) {
+      try { splitActive.dataSub.dispose(); } catch {}
+      try { splitActive.ws.close(); } catch {}
+      splitActive = null;
+    }
+    if (splitTerm) {
+      splitTerm.dispose();
+      splitTerm = null;
+    }
+    document.querySelectorAll('.chip').forEach(c => c.classList.remove('split-select'));
+    fitTerm();
+  };
+  pane2.appendChild(h2);
+  const div2 = document.createElement('div');
+  div2.className = 'fit';
+  pane2.appendChild(div2);
+  wrap.appendChild(pane2);
+
+  splitTerm = new Terminal({
+    fontFamily: 'Cascadia Code, Fira Code, Menlo, Consolas, monospace',
+    fontSize: 13,
+    lineHeight: 1.15,
+    cursorBlink: true,
+    scrollback: 5000,
+    theme: {
+      background: '#14161a',
+      foreground: '#d7dae0',
+      cursor: '#d7dae0',
+      selectionBackground: '#264f78',
+      black: '#14161a', red: '#f85149', green: '#3fb950', yellow: '#d29922',
+      blue: '#4f8cff', magenta: '#bc8cff', cyan: '#39c5cf', white: '#d7dae0',
+      brightBlack: '#565a63', brightRed: '#ff7b72', brightGreen: '#56d364', brightYellow: '#e3b341',
+      brightBlue: '#79b8ff', brightMagenta: '#d2a8ff', brightCyan: '#56d4dd', brightWhite: '#ffffff',
+    },
+  });
+  splitFit = new FitAddon.FitAddon();
+  splitTerm.loadAddon(splitFit);
+  splitTerm.open(div2);
+  // resize split terminal to fill pane
+  try {
+    splitFit.fit();
+  } catch {}
+  splitTerm.write('\x1b[90mselect a session to attach to this pane\x1b[0m\r\n');
+
+  // highlight chips to indicate split mode (exclude currently active session)
+  const activeKey = active ? active.key : null;
+  document.querySelectorAll('.chip').forEach(c => {
+    if (c.dataset.key !== activeKey) c.classList.add('split-select');
+  });
+}
+
+function closeSplit() {
+  if (!splitActive && !splitTerm) return;
+  const wrap = $('termwrap');
+  wrap.classList.remove('split');
+  wrap.style.gridTemplateColumns = '';
+
+  // move main terminal back to main container
+  const pane1 = wrap.querySelector('.split-pane[data-pane="1"]');
+  if (pane1) {
+    wrap.insertBefore($('term'), pane1);
+    pane1.remove();
+  }
+
+  // close split websocket
+  if (splitActive) {
+    try { splitActive.dataSub.dispose(); } catch {}
+    try { splitActive.ws.close(); } catch {}
+    splitActive = null;
+  }
+
+  // dispose split terminal
+  if (splitTerm) {
+    splitTerm.dispose();
+    splitTerm = null;
+  }
+  splitFit = null;
+
+  // remove split panes, restore original layout
+  wrap.querySelectorAll('.split-pane').forEach(p => p.remove());
+  document.querySelectorAll('.chip').forEach(c => c.classList.remove('split-select'));
+
+  fitTerm();
+}
+
+function attachSplit(key) {
+  if (!splitTerm) return;
+  const s = findSession(key);
+  if (!s) return;
+
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const ws = new WebSocket(`${proto}://${location.host}/ws?host=${encodeURIComponent(s.host)}&session=${encodeURIComponent(s.name)}&cols=${splitTerm.cols}&rows=${splitTerm.rows}`);
+  const st = { key, host: s.host, name: s.name, ws, term: splitTerm };
+  splitActive = st;
+
+  splitTerm.reset();
+  splitTerm.write(`\x1b[90m[attaching to ${s.host}:${s.name}]\x1b[0m\r\n`);
+
+  const inputQueue = [];
+  const INPUT_QUEUE_MAX = 1000;
+  st.dataSub = splitTerm.onData((d) => {
+    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'input', data: d }));
+    else if (ws.readyState === WebSocket.CONNECTING) {
+      if (inputQueue.length >= INPUT_QUEUE_MAX) inputQueue.shift();
+      inputQueue.push(d);
+    }
+  });
+
+  ws.onopen = () => {
+    for (const d of inputQueue.splice(0)) ws.send(JSON.stringify({ type: 'input', data: d }));
+    splitTerm.focus();
+    // resize split terminal to fill pane
+    try {
+      splitFit.fit();
+    } catch {}
+  };
+  ws.onmessage = (ev) => {
+    if (typeof ev.data === 'string') splitTerm.write(ev.data);
+  };
+  ws.onclose = (ev) => {
+    if (splitActive !== st) return;
+    splitTerm.write(`\x1b[90m[${ev.reason || 'detached'}]\x1b[0m\r\n`);
+  };
+
+  // update split pane header
+  const panes = document.querySelectorAll('.split-pane');
+  for (const p of panes) {
+    if (p.dataset.pane === '2') {
+      p.querySelector('.split-header span').textContent = `${s.host}:${s.name}`;
+      break;
+    }
+  }
+
+  // clear split-select highlighting
+  document.querySelectorAll('.chip').forEach(c => c.classList.remove('split-select'));
+}
+
+$('t-split').onclick = () => {
+  if (splitTerm) {
+    closeSplit();
+  } else {
+    openSplit();
+  }
+};
 
 // ---------- display names: explicit tmux name, else cwd basename (disambiguated per host) ----------
 // A bare-numeric name is tmux's default ("0", "1", …) — anonymous, so the cwd
@@ -1021,7 +1262,13 @@ function chipEl(s, hostState) {
   rn.title = 'rename session';
   rn.onclick = (e) => { e.stopPropagation(); openRename(key); };
   c.append(ind, nm, rn);
-  c.onclick = () => attach(key);
+  c.onclick = () => {
+    if (splitTerm && !splitActive) {
+      attachSplit(key);
+    } else {
+      attach(key);
+    }
+  };
   return c;
 }
 
@@ -1124,6 +1371,19 @@ function setPanelHidden(hidden) {
 if (localStorage.getItem('pc.panel') === 'hidden') setPanelHidden(true);
 $('toggle-panel').onclick = () => setPanelHidden(true);
 unhideBtn.onclick = () => setPanelHidden(false);
+
+// ---------- theme ----------
+function setTheme(name) {
+  document.documentElement.classList.remove('theme-light', 'theme-contrast');
+  if (name && name !== 'dark') document.documentElement.classList.add('theme-' + name);
+  localStorage.setItem('pc.theme', name || '');
+}
+function getTheme() {
+  if (document.documentElement.classList.contains('theme-light')) return 'light';
+  if (document.documentElement.classList.contains('theme-contrast')) return 'contrast';
+  return '';
+}
+setTheme(localStorage.getItem('pc.theme') || '');
 
 // ---------- cwd completion: subdirectories on the chosen host (local or ssh) ----------
 let dirsTimer = null;
@@ -1302,6 +1562,7 @@ function fillForm(cfg) {
   $('cfg-host').value = cfg.host || '';
   $('cfg-pollMs').value = cfg.pollMs != null ? cfg.pollMs : '';
   $('cfg-netDisplay').checked = !!cfg.netDisplay;
+  $('cfg-theme').value = getTheme();
   $('cfg-tls').checked = !!cfg.tls;
   toggleTlsPaths();
   $('cfg-cert').value = cfg.cert || '';
@@ -1416,6 +1677,7 @@ $('cfg-save').onclick = async () => {
 };
 // one-time form bindings
 $('cfg-tls').addEventListener('change', toggleTlsPaths);
+$('cfg-theme').addEventListener('change', () => setTheme($('cfg-theme').value));
 $('cfg-token-toggle').onclick = () => {
   const inp = $('cfg-token');
   const showing = inp.type === 'text';
