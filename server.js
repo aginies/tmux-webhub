@@ -187,6 +187,15 @@ function configTouched() { cfgStatAt = 0; tokenCache.statAt = 0; }
 
 // run a command on a host (locally, or through ssh); non-interactive, so -T is fine.
 // Remote: args are shell-quoted into ONE command string, because ssh joins argv with
+// Validate SSH host string to prevent command injection
+// Only allow: user@host, user@host:port, or just host (no shell metacharacters)
+const SSH_HOST_RE = /^[a-zA-Z0-9._-]+(:[0-9]+)?$/;
+const SSH_USER_HOST_RE = /^[a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+(:[0-9]+)?$/;
+function validateSshHost(ssh) {
+  if (!ssh || typeof ssh !== 'string') return false;
+  return SSH_HOST_RE.test(ssh) || SSH_USER_HOST_RE.test(ssh);
+}
+
 // spaces and the remote shell would otherwise re-split them (tabs in -F format etc.).
 function shellQuote(s) {
   return /^[A-Za-z0-9._~/-]*$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`;
@@ -201,8 +210,16 @@ function execFileP(file, args, opts) {
   });
 }
 function runOn(host, args, timeoutMs = CMD_TIMEOUT_MS, maxBuffer = BUF_4MB, sshOpts = SSH_OPTS) {
-  const cmd = host.ssh ? ['ssh', '-T', ...sshOptsFor(host, sshOpts), host.ssh, args.map(shellQuote).join(' ')] : args;
-  return execFileP(cmd[0], cmd.slice(1), { timeout: timeoutMs, maxBuffer });
+  if (host.ssh) {
+    // Validate SSH host string to prevent command injection
+    if (!validateSshHost(host.ssh)) {
+      return Promise.resolve({ ok: false, stdout: '', stderr: `invalid SSH host: ${host.ssh}`, timeout: false });
+    }
+    // Build SSH command with validated host and quoted arguments
+    const sshCmd = ['ssh', '-T', ...sshOptsFor(host, sshOpts), host.ssh, args.map(shellQuote).join(' ')];
+    return execFileP(sshCmd[0], sshCmd.slice(1), { timeout: timeoutMs, maxBuffer });
+  }
+  return execFileP(args[0], args.slice(1), { timeout: timeoutMs, maxBuffer });
 }
 
 // activity: for pi / pi-bolt panes the LAST entry of pi's session JSONL is the
@@ -856,6 +873,62 @@ async function handleApiConfig(req, res, send) {
     let parsed;
     try { parsed = JSON.parse(body); } catch (e) { return send(400, { error: 'invalid JSON: ' + e.message }); }
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return send(400, { error: 'config must be a JSON object' });
+    // Validate port
+    if (parsed.port !== undefined) {
+      if (!Number.isInteger(parsed.port) || parsed.port < 0 || parsed.port > 65535) {
+        return send(400, { error: 'port must be an integer between 0 and 65535' });
+      }
+    }
+    // Validate host (bind address)
+    if (parsed.host !== undefined) {
+      if (typeof parsed.host !== 'string' || !parsed.host.trim()) {
+        return send(400, { error: 'host must be a non-empty string' });
+      }
+      // Basic IP address or hostname validation
+      if (!/^[a-zA-Z0-9._:-]+$/.test(parsed.host.trim())) {
+        return send(400, { error: 'host contains invalid characters' });
+      }
+    }
+    // Validate pollMs
+    if (parsed.pollMs !== undefined) {
+      if (!Number.isInteger(parsed.pollMs) || parsed.pollMs < 250) {
+        return send(400, { error: 'pollMs must be an integer >= 250' });
+      }
+    }
+    // Validate tls
+    if (parsed.tls !== undefined && typeof parsed.tls !== 'boolean') {
+      return send(400, { error: 'tls must be a boolean' });
+    }
+    // Validate cert and key paths
+    if (parsed.cert !== undefined && (typeof parsed.cert !== 'string' || !parsed.cert.trim())) {
+      return send(400, { error: 'cert must be a non-empty string' });
+    }
+    if (parsed.key !== undefined && (typeof parsed.key !== 'string' || !parsed.key.trim())) {
+      return send(400, { error: 'key must be a non-empty string' });
+    }
+    // Validate hosts array
+    if (parsed.hosts !== undefined) {
+      if (!Array.isArray(parsed.hosts)) {
+        return send(400, { error: 'hosts must be an array' });
+      }
+      for (const h of parsed.hosts) {
+        if (typeof h !== 'object' || h === null) {
+          return send(400, { error: 'each host must be an object' });
+        }
+        if (typeof h.name !== 'string' || !h.name.trim()) {
+          return send(400, { error: 'each host must have a non-empty name' });
+        }
+        if (!NAME_RE.test(h.name.trim())) {
+          return send(400, { error: `invalid host name: ${h.name}` });
+        }
+        if (h.ssh !== undefined && (typeof h.ssh !== 'string' || !h.ssh.trim())) {
+          return send(400, { error: 'host ssh must be a non-empty string' });
+        }
+        if (h.cmd !== undefined && (typeof h.cmd !== 'string' || !h.cmd.trim())) {
+          return send(400, { error: 'host cmd must be a non-empty string' });
+        }
+      }
+    }
     if (parsed.twoFA !== undefined && parsed.twoFA !== 'required' && parsed.twoFA !== 'optional')
       return send(400, { error: 'twoFA must be "required" or "optional"' });
     if (parsed.totp !== undefined && parsed.totp !== REDACTED && (typeof parsed.totp !== 'string' || !/^[A-Za-z2-7\s=]{16,64}$/.test(parsed.totp) || !b32decode(parsed.totp)))
@@ -945,11 +1018,17 @@ async function handleApiDirs(req, res, url, send) {
   return send(200, { path, dirs: lines.slice(1) });
 }
 
-// security headers applied to all responses (clickjacking and MIME-type sniffing defense)
+// security headers applied to all responses (clickjacking, MIME-type sniffing, and referrer defense)
 const SEC_HEADERS = {
   'X-Content-Type-Options': 'nosniff',
   'X-Frame-Options': 'DENY',
+  'Referrer-Policy': 'strict-origin-when-cross-origin',
+  'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wss:",
 };
+// Add HSTS for HTTPS
+if (TLS) {
+  SEC_HEADERS['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains; preload';
+}
 
 // static files: unauthenticated browsers get the login page for '/', other assets 401.
 // ETag (size+mtime) + Cache-Control: vendored assets are immutable, html revalidates.
@@ -969,7 +1048,9 @@ function serveStatic(req, res, url) {
   }
   let p = url.pathname === '/' ? '/index.html' : url.pathname;
   try { p = decodeURIComponent(p); } catch {}
-  const full = path.normalize(path.join(PUBLIC_DIR, p));
+  // Use path.resolve and verify the resolved path starts with PUBLIC_DIR
+  // Remove leading slash so path.resolve joins correctly
+  const full = path.resolve(PUBLIC_DIR, p.replace(/^\//, ''));
   if (!full.startsWith(PUBLIC_DIR + path.sep) && full !== PUBLIC_DIR) {
     res.writeHead(404, SEC_HEADERS); return res.end('not found');
   }
@@ -1121,10 +1202,51 @@ function keyToArgv(k) {
   return [k];
 }
 const wss = new WebSocket.Server({ server, path: '/ws', maxPayload: 4 * 1024 * 1024 });
+
+// Rate limiting for WebSocket connections per IP
+const wsConnectionsByIp = new Map();
+const WS_MAX_CONNECTIONS_PER_IP = 10;
+const WS_RATE_WINDOW_MS = 60000; // 1 minute
+
+function cleanupWsRateMap() {
+  const now = Date.now();
+  for (const [ip, data] of wsConnectionsByIp) {
+    // Remove old timestamps outside the window
+    data.timestamps = data.timestamps.filter(t => now - t < WS_RATE_WINDOW_MS);
+    // Remove IPs with no recent connections
+    if (data.timestamps.length === 0) {
+      wsConnectionsByIp.delete(ip);
+    }
+  }
+}
+setInterval(cleanupWsRateMap, 60000);
+
+function isWsRateLimited(ip) {
+  const now = Date.now();
+  let data = wsConnectionsByIp.get(ip);
+  if (!data) {
+    data = { count: 0, timestamps: [] };
+    wsConnectionsByIp.set(ip, data);
+  }
+  // Remove old timestamps
+  data.timestamps = data.timestamps.filter(t => now - t < WS_RATE_WINDOW_MS);
+  if (data.timestamps.length >= WS_MAX_CONNECTIONS_PER_IP) {
+    return true;
+  }
+  data.timestamps.push(now);
+  data.count++;
+  return false;
+}
+
 wss.on('connection', (ws, req) => {
   wsClients++;
   refreshHosts().catch(() => {}); // a client just arrived → fresh data now
   const ip = req.socket.remoteAddress || '?';
+  // Rate limit WebSocket connections per IP
+  if (isWsRateLimited(ip)) {
+    ws.close(4290, 'too many WebSocket connections from this IP');
+    return;
+  }
   // sync listener: a throw here is an uncaughtException (server exit) — guard the parse
   let url;
   try { url = new URL(req.url, 'http://localhost'); } catch { ws.close(1002, 'bad request'); return; }
