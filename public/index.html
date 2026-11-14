@@ -746,8 +746,11 @@ function attach(key) {
   const s = findSession(key);
   try { fit.fit(); } catch {} // sync xterm to the container so we can pass the real size
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  const ws = new WebSocket(`${proto}://${location.host}/ws?host=${encodeURIComponent(s ? s.host : 'localhost')}&session=${encodeURIComponent(s ? s.name : key)}&cols=${term.cols}&rows=${term.rows}`);
-  const st = { key, host: s ? s.host : 'localhost', name: s ? s.name : key, ws };
+  // If the session is not found in the list (stale list), extract the session name
+  // from the key (format: host:session_name) instead of using the full key.
+  const sessionName = s ? s.name : key.split(':').pop();
+  const ws = new WebSocket(`${proto}://${location.host}/ws?host=${encodeURIComponent(s ? s.host : 'localhost')}&session=${encodeURIComponent(sessionName)}&cols=${term.cols}&rows=${term.rows}`);
+  const st = { key, host: s ? s.host : 'localhost', name: sessionName, ws };
   active = st;
   $('placeholder').style.display = 'none';
   $('t-detach').style.display = '';

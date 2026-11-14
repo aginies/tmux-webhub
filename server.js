@@ -1313,6 +1313,7 @@ wss.on('connection', (ws, req) => {
       // call would corrupt the sequence. ~5 ms each with a warm ControlMaster.
       m.keys.reduce(
         (p, k) => p.then(async () => {
+          // Use the session name from the WebSocket URL (validated at connection time)
           const r = await runOn(host, ['tmux', 'send-keys', '-t', name, ...keyToArgv(k)], 3000);
           // log, don't swallow: a dead ssh link / unknown session would otherwise
           // make the palette look broken with zero trace (journal: journalctl --user -u tmux-webhub)
