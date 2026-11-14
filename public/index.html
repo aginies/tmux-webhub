@@ -225,15 +225,31 @@
   }
   /* keyboard-like layout (gaps = keys we don't inject): F-row, Tab/Enter row,
      modifier row, arrow cluster as an inverted T bottom-right */
-  #keys-grid {
-    display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
+  #keys-tabs { display: flex; gap: 6px; margin-bottom: 8px; }
+  #keys-tabs button { font-size: 11px; padding: 2px 10px; }
+  #keys-tabs button.on { background: var(--accent); color: #fff; }
+  /* scrollable body: page 1 (special keys) or page 2 (classical keyboard) */
+  #keys-body {
     flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
     scrollbar-width: thin; scrollbar-color: var(--border) transparent;
   }
-  #keys-grid::-webkit-scrollbar { width: 6px; }
-  #keys-grid::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  #keys-body::-webkit-scrollbar { width: 6px; }
+  #keys-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  .keys-page { display: none; }
+  .keys-page.on { display: block; }
+  #keys-grid {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
+  }
   #keys-grid button { min-height: 44px; font-size: 13px; padding: 8px 4px; }
-  #keys-grid button.sent { background: var(--accent); color: #fff; } /* sent-flash: feedback the key went out */
+  /* page 2: classical keyboard — 10 columns (F-row, numbers, QWERTY) + 7 modifier keys */
+  #keys-grid2 { display: grid; grid-template-columns: repeat(10, 1fr); gap: 4px; margin-bottom: 8px; }
+  #keys-grid2 button { min-height: 30px; font-size: 11px; padding: 3px 1px; touch-action: manipulation; } /* manipulation: no double-tap zoom, scroll still works */
+  #keys-mods2 { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+  #keys-mods2 button { min-height: 34px; font-size: 11px; padding: 3px 1px; touch-action: manipulation; }
+  #keys-hint2 { font-size: 10px; color: var(--dim); text-align: center; margin-top: 6px; }
+  #keys-body button.sent { background: var(--accent); color: #fff; } /* sent-flash: feedback the key went out */
+  #keys-body button.locked { background: var(--accent); color: #fff; } /* locked modifier (2 s hold) */
+  #keys-panel { user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
 
   /* ============ mobile ============ */
   /* narrow screens: ONE line — [☰] [+New] [host groups: swipeable, fill the
@@ -298,7 +314,7 @@
     <button id="btn-esc" title="Send Esc to the session (tmux send-keys on the host)">⎋</button>
     <button id="btn-pgup" title="Page up (scrollback — or the PageUp key in TUIs like vim/less)">Pg↑</button>
     <button id="btn-pgdn" title="Page down (scrollback — or the PageDown key in TUIs like vim/less)">Pg↓</button>
-    <button id="btn-keys" title="Special keys (Ctrl+C, F1–F4, Alt+…, Shift+Tab)">⌨</button>
+    <button id="btn-keys" title="Keys: special palette + classical keyboard (hold 2 s to lock a modifier)">⌨</button>
   </span>
   <button id="edit-config" title="Edit config.json">⚙</button>
 </header>
@@ -382,9 +398,15 @@
 <div id="keys-bg">
   <div id="keys-panel">
     <div id="keys-head">
-      <span>special keys — sent with tmux send-keys</span>
+      <span>keys — sent with tmux send-keys</span>
       <button id="keys-close" title="Close">✕</button>
     </div>
+    <div id="keys-tabs">
+      <button data-page="1" class="on">special</button>
+      <button data-page="2">abc</button>
+    </div>
+    <div id="keys-body">
+    <div id="keys-page1" class="keys-page on">
     <div id="keys-grid">
       <button data-key="F1">F1</button>
       <button data-key="F2">F2</button>
@@ -406,6 +428,72 @@
       <button data-key="Left">←</button>
       <button data-key="Down">↓</button>
       <button data-key="Right">→</button>
+    </div>
+    </div>
+    <div id="keys-page2" class="keys-page">
+    <div id="keys-grid2">
+      <button data-key="F1">F1</button>
+      <button data-key="F2">F2</button>
+      <button data-key="F3">F3</button>
+      <button data-key="F4">F4</button>
+      <button data-key="F5">F5</button>
+      <button data-key="F6">F6</button>
+      <button data-key="F7">F7</button>
+      <button data-key="F8">F8</button>
+      <button data-key="F9">F9</button>
+      <button data-key="F10">F10</button>
+      <button data-key="1">1</button>
+      <button data-key="2">2</button>
+      <button data-key="3">3</button>
+      <button data-key="4">4</button>
+      <button data-key="5">5</button>
+      <button data-key="6">6</button>
+      <button data-key="7">7</button>
+      <button data-key="8">8</button>
+      <button data-key="9">9</button>
+      <button data-key="0">0</button>
+      <button data-key="q">Q</button>
+      <button data-key="w">W</button>
+      <button data-key="e">E</button>
+      <button data-key="r">R</button>
+      <button data-key="t">T</button>
+      <button data-key="y">Y</button>
+      <button data-key="u">U</button>
+      <button data-key="i">I</button>
+      <button data-key="o">O</button>
+      <button data-key="p">P</button>
+      <button data-key="a">A</button>
+      <button data-key="s">S</button>
+      <button data-key="d">D</button>
+      <button data-key="f">F</button>
+      <button data-key="g">G</button>
+      <button data-key="h">H</button>
+      <button data-key="j">J</button>
+      <button data-key="k">K</button>
+      <button data-key="l">L</button>
+      <button data-key=";" title="; :">;</button>
+      <button data-key="z">Z</button>
+      <button data-key="x">X</button>
+      <button data-key="c">C</button>
+      <button data-key="v">V</button>
+      <button data-key="b">B</button>
+      <button data-key="n">N</button>
+      <button data-key="m">M</button>
+      <button data-key="," title=", &lt; ">,</button>
+      <button data-key="." title=". &gt; ">.</button>
+      <button data-key="/" title="/ ? ">/</button>
+    </div>
+    <div id="keys-mods2">
+      <button data-key="Escape">Esc</button>
+      <button data-mod="S" title="Hold 2 s to lock">Shift</button>
+      <button data-mod="M" title="Hold 2 s to lock">Alt</button>
+      <button data-mod="C" title="Hold 2 s to lock">Ctrl</button>
+      <button data-key="Enter">Enter</button>
+      <button data-key="Delete">Suppr</button>
+      <button data-key="Insert">Ins</button>
+    </div>
+    <div id="keys-hint2">hold 2 s: lock a modifier · tap it again: unlock</div>
+    </div>
     </div>
     <div id="keys-resize" title="Drag to resize"></div>
   </div>
@@ -1051,15 +1139,21 @@ $('btn-pgup').onclick = () => pageScroll(-1);
 $('btn-pgdn').onclick = () => pageScroll(1);
 $('t-detach').onclick = detach; // ✕ in the termbar — the only detach on phones (⎋ now sends Esc)
 
-// ---------- special-key palette (⌨, phone) ----------
+// ---------- key palette (⌨) ----------
 // floating panel of keys sent via tmux send-keys (server-side) — for keys the
 // on-screen keyboard can't produce. Stays open for repeat sends (the backdrop is
 // click-through, so the terminal stays usable); closes on ✕ or ⌨ again.
-// Drag the header to move, the corner handle to resize (width only — the grid is
-// a fixed 4 columns, height follows). Geometry is remembered in localStorage.
+// Drag the header to move, the corner handle to resize (width and height).
+// Geometry is remembered in localStorage.
+// Two pages: “special” (F-row, Tab/Enter, modifiers, arrows) and “abc”
+// (classical keyboard: F1–F10, numbers, QWERTY, Esc/Shift/Alt/Ctrl/Enter/Suppr/Ins).
+// Page 2 combos: hold a modifier 2 s to lock it (it stays lit, haptic tick);
+// tap a key to send the combo (C-c, M-x, S-a); tap the locked modifier again to
+// unlock. Shift alone → literal uppercase (S-a → 'A'); with Ctrl/Alt locked,
+// shift is dropped (C-S-x is meaningless in a terminal).
 const keysBg = $('keys-bg');
 const keysPanel = $('keys-panel');
-const KEYS_MIN_W = 250, KEYS_MIN_H = 90; // min height: header + one row of keys (grid scrolls below that)
+const KEYS_MIN_W = 250, KEYS_MIN_H = 124; // min height: header + tabs + one row of keys (body scrolls below that)
 const keysMaxW = () => Math.min(560, innerWidth * 0.92);
 const keysMaxH = () => innerHeight - 8;
 let keysGeom = null;
@@ -1102,7 +1196,7 @@ function keysDrag(handle, apply) {
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
       window.removeEventListener('pointercancel', up);
-      try { localStorage.setItem('wh-keys-geom', JSON.stringify(keysGeom)); } catch {}
+      saveKeysGeom();
     };
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
@@ -1112,6 +1206,65 @@ function keysDrag(handle, apply) {
 keysDrag($('keys-head'), (g0, dx, dy) => { keysGeom.x = g0.x + dx; keysGeom.y = g0.y + dy; });
 keysDrag($('keys-resize'), (g0, dx, dy) => { keysGeom.w = g0.w + dx; keysGeom.h = g0.h + dy; });
 window.addEventListener('resize', () => { if (keysBg.classList.contains('open')) clampKeys(); });
+function saveKeysGeom() { try { localStorage.setItem('wh-keys-geom', JSON.stringify(keysGeom)); } catch {} }
+
+// ---------- page 2: classical keyboard ----------
+// letters/digits/F/specials send as-is (lowercase; a locked Shift uppercases).
+// Shift/Alt/Ctrl are LOCKABLE: hold 2 s to lock (it stays lit), tap a key to
+// send the combo, tap the locked modifier again to unlock.
+const LOCK_MS = 2000;
+const keysLocked = { C: false, M: false, S: false };
+function comboName(base) {
+  let mods = '';
+  if (keysLocked.C) mods += 'C-';
+  if (keysLocked.M) mods += 'M-';
+  if (keysLocked.S && !mods) mods = 'S-'; // shift alone; dropped under C/M
+  return mods + base;
+}
+function setLock(mod, on) {
+  keysLocked[mod] = on;
+  document.querySelector(`#keys-mods2 button[data-mod="${mod}"]`).classList.toggle('locked', on);
+  try { navigator.vibrate && navigator.vibrate(30); } catch {}
+}
+function keysPage(n) {
+  for (const p of document.querySelectorAll('.keys-page')) p.classList.toggle('on', p.id === 'keys-page' + n);
+  for (const b of $('keys-tabs').querySelectorAll('button')) b.classList.toggle('on', b.dataset.page === n);
+  if (n === '2' && keysGeom && keysGeom.w < 300) { keysGeom.w = 300; clampKeys(); saveKeysGeom(); } // 10 columns need room
+}
+$('keys-tabs').addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-page]');
+  if (b) keysPage(b.dataset.page);
+});
+for (const b of $('keys-page2').querySelectorAll('button[data-key], button[data-mod]')) {
+  b.addEventListener('pointerdown', (e) => {
+    e.preventDefault(); // no selection / context menu / click synthesis — we handle it all
+    const isMod = !!b.dataset.mod;
+    let longPressed = false;
+    const timer = isMod ? setTimeout(() => {
+      longPressed = true;
+      setLock(b.dataset.mod, !keysLocked[b.dataset.mod]);
+    }, LOCK_MS) : null;
+    const up = () => {
+      if (timer) clearTimeout(timer);
+      window.removeEventListener('pointerup', up);
+      window.removeEventListener('pointercancel', up);
+      if (longPressed) return; // the hold already toggled the lock; the release is not a tap
+      if (isMod) {
+        if (keysLocked[b.dataset.mod]) setLock(b.dataset.mod, false); // tap on a locked modifier: unlock
+        else { b.classList.add('sent'); setTimeout(() => b.classList.remove('sent'), 150); } // hint: hold to lock
+        return;
+      }
+      const name = comboName(b.dataset.key);
+      sendKeys([name]);
+      b.classList.add('sent');
+      setTimeout(() => b.classList.remove('sent'), 150);
+    };
+    window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', up);
+  });
+}
+// the 2 s hold must not bring up the browser's context menu
+keysPanel.addEventListener('contextmenu', (e) => e.preventDefault());
 for (const b of $('keys-grid').querySelectorAll('button'))
   b.onclick = () => {
     sendKeys([b.dataset.key]);

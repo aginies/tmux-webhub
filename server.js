@@ -740,12 +740,38 @@ function netRate() {
 // tmux 3.8's S-Tab is just a plain tab, so the real xterm Shift+Tab sequence
 // (\x1b[Z) is sent with -l (literal).
 const SEND_KEYS = {
-  Escape: ['Escape'], Enter: ['Enter'], Space: ['Space'], Tab: ['Tab'], BSpace: ['BSpace'],
-  Up: ['Up'], Down: ['Down'], Left: ['Left'], Right: ['Right'],
-  Pageup: ['Pageup'], Pagedown: ['Pagedown'], Home: ['Home'], End: ['End'],
-  'C-c': ['C-c'], F1: ['F1'], F2: ['F2'], F3: ['F3'], F4: ['F4'],
-  'M-m': ['M-m'], 'S-Tab': ['-l', '\x1b[Z'], 'M-Up': ['M-Up'],
+  'S-Tab': ['-l', '\x1b[Z'],
 };
+// Base keys the palette may name: single characters, or tmux's named keys.
+const KEY_BASES = new Set(['Escape', 'Enter', 'Space', 'Tab', 'BSpace', 'Up', 'Down', 'Left', 'Right', 'Pageup', 'Pagedown', 'Home', 'End', 'Delete', 'Insert', 'F1', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7', 'F8', 'F9', 'F10']);
+for (const c of 'abcdefghijklmnopqrstuvwxyz0123456789;,.\/') KEY_BASES.add(c);
+// Shift+letter/digit has no xterm key name → send the shifted character as a literal.
+const SHIFTED = { '0': ')', '1': '!', '2': '@', '3': '#', '4': '$', '5': '%', '6': '^', '7': '&', '8': '*', '9': '(' };
+// key name → tmux argv (null = reject). A name is a base key, or C-/M- (ctrl/alt,
+// stackable) + base key — tmux's own syntax, passed through as-is. S- (shift) is
+// only valid alone, on a letter or digit (→ literal, see SHIFTED); C-S-/M-S- are
+// meaningless in a terminal and rejected (the client drops shift when ctrl/alt
+// is locked).
+function keyToArgv(k) {
+  if (k in SEND_KEYS) return SEND_KEYS[k];
+  // `;` is tmux's command separator: a bare one is eaten by the command parser
+  // (tmux joins argv and re-parses it); `;;` is tmux's escape for a literal `;`.
+  if (k === ';') return [';;'];
+  if (KEY_BASES.has(k)) return [k];
+  const m = /^(([CMS]-)+)(.+)$/.exec(k); // outer group: the whole modifier sequence (inner would only keep the last)
+  if (!m) return null;
+  const mods = m[1].split('-').filter(Boolean); // e.g. 'C-M-' → ['C','M']
+  if (new Set(mods).size !== mods.length) return null; // duplicate modifier (C-C-a)
+  if (mods.includes('S') && mods.length > 1) return null; // shift only alone (C-S-x is meaningless in a terminal)
+  const base = m[3];
+  if (!KEY_BASES.has(base)) return null;
+  if (mods.length === 1 && mods[0] === 'S') {
+    if (/^[a-z]$/.test(base)) return ['-l', base.toUpperCase()];
+    if (base in SHIFTED) return ['-l', SHIFTED[base]];
+    return null;
+  }
+  return [k];
+}
 const wss = new WebSocket.Server({ server, path: '/ws', maxPayload: 4 * 1024 * 1024 });
 wss.on('connection', (ws, req) => {
   wsClients++;
@@ -776,7 +802,7 @@ wss.on('connection', (ws, req) => {
     if (m.type === 'input' && typeof m.data === 'string') term.write(m.data);
     else if (m.type === 'resize' && m.cols > 0 && m.rows > 0) {
       try { term.resize(Math.floor(m.cols), Math.floor(m.rows)); } catch {}
-    } else if (m.type === 'send-keys' && Array.isArray(m.keys) && m.keys.length > 0 && m.keys.length <= 8 && m.keys.every((k) => typeof k === 'string' && k in SEND_KEYS)) {
+    } else if (m.type === 'send-keys' && Array.isArray(m.keys) && m.keys.length > 0 && m.keys.length <= 8 && m.keys.every((k) => typeof k === 'string' && keyToArgv(k) !== null)) {
       // phone shortcuts + special-key palette: inject via `tmux send-keys` ON THE
       // HOST (ssh or local), targeting the session's active pane — what the client
       // is looking at. Immune to client-side focus loss (tapping the button blurs
@@ -787,7 +813,7 @@ wss.on('connection', (ws, req) => {
       // call would corrupt the sequence. ~5 ms each with a warm ControlMaster.
       m.keys.reduce(
         (p, k) => p.then(async () => {
-          const r = await runOn(host, ['tmux', 'send-keys', '-t', name, ...SEND_KEYS[k]], 3000);
+          const r = await runOn(host, ['tmux', 'send-keys', '-t', name, ...keyToArgv(k)], 3000);
           // log, don't swallow: a dead ssh link / unknown session would otherwise
           // make the palette look broken with zero trace (journal: journalctl --user -u tmux-webhub)
           if (!r.ok) console.error(`send-keys ${k} → ${host.name}:${name} failed: ${(r.stderr || r.stdout || (r.timeout ? 'timed out' : 'unknown')).trim().split('\n').pop()}`);
