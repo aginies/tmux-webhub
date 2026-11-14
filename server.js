@@ -47,10 +47,32 @@ function writeConfigAtomic(obj) {
 const CONFIG = readConfig(true);
 const HOST = process.env.PC_HOST || CONFIG.host || '0.0.0.0';
 const PORT = parseInt(process.env.PC_PORT || CONFIG.port || '8787', 10);
-const TOKEN = process.env.PC_TOKEN || (typeof CONFIG.token === 'string' ? CONFIG.token : '');
+// config-file access token, hot-reloaded: stat-gated re-read (like loadHosts/totpSecret)
+// so a runtime edit via PUT /api/config takes effect without a restart. PC_TOKEN env
+// always wins and is NOT hot-reloaded — it is a deployment-time setting.
+let tokenCache = { mtimeNs: null, value: '', statAt: 0 };
+function token() {
+  const env = process.env.PC_TOKEN;
+  if (env) return env;
+  const now = Date.now();
+  // time-gate the statSync like loadHosts (token() runs on every request/WS): the
+  // config file can only matter after CFG_STAT_GATE_MS, so the cached value is safe
+  // until then (per-request cost: zero). An empty value is never gated — we must notice
+  // a token being added at once so auth kicks in immediately.
+  if (tokenCache.value !== '' && now - tokenCache.statAt < CFG_STAT_GATE_MS) return tokenCache.value;
+  tokenCache.statAt = now;
+  try {
+    const mtimeNs = fs.statSync(CONFIG_FILE, { bigint: true }).mtimeNs;
+    if (tokenCache.mtimeNs !== mtimeNs) {
+      const c = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+      tokenCache = { mtimeNs, value: (typeof c.token === 'string' && c.token) ? c.token : '', statAt: now };
+    }
+  } catch { /* unreadable → keep last good value */ }
+  return tokenCache.value;
+}
 // two-factor: "required" (login forces enrollment while no secret is set) or
 // "optional" (code step only once a secret is enrolled). Absent = 2FA off.
-// Read at startup like TOKEN (changing it needs a restart); the SECRET itself is live.
+// Read at startup (changing twoFA needs a restart); the SECRET itself is hot-reloadable. TOKEN is hot-reloadable too (see token()).
 const TWOFA = CONFIG.twoFA === 'required' || CONFIG.twoFA === 'optional' ? CONFIG.twoFA : null;
 const TLS = process.env.PC_TLS !== undefined ? process.env.PC_TLS !== 'false' : CONFIG.tls !== false;
 const CERT = path.resolve(__dirname, CONFIG.cert || '.certs/cert.pem');
@@ -144,7 +166,7 @@ function hostByName(name) {
   return loadHosts().find((h) => h.name === name) || null;
 }
 // called after we write the config ourselves: don't wait out the stat gate
-function configTouched() { cfgStatAt = 0; }
+function configTouched() { cfgStatAt = 0; tokenCache.statAt = 0; }
 
 // run a command on a host (locally, or through ssh); non-interactive, so -T is fine.
 // Remote: args are shell-quoted into ONE command string, because ssh joins argv with
@@ -392,9 +414,9 @@ function ensureCert() {
 // by presenting the token directly.
 const COOKIE = 'pc_token';
 function validToken(t) {
-  if (!TOKEN || !t) return false;
+  if (!token() || !t) return false;
   const a = Buffer.from(String(t));
-  const b = Buffer.from(TOKEN);
+  const b = Buffer.from(token());
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 function cookieOf(req) {
@@ -493,7 +515,7 @@ function sessionOf(req) {
   return v;
 }
 function authed(req) {
-  if (!TOKEN) return true; // no token configured → open (dev mode)
+  if (!token()) return true; // no token configured → open (dev mode)
   if (sessionOf(req)) return true; // 2FA session cookie
   // raw-token cookie: only valid while no TOTP secret is enrolled (see above)
   return totpSecret() === null && validToken(cookieOf(req));
@@ -564,7 +586,7 @@ function otpauthUrl(secret, req) {
   return `otpauth://totp/tmux-webhub:${host}?${q.toString()}`;
 }
 async function handleLogin(req, res, url, send, ip) {
-  if (!TOKEN) return send(400, { error: 'token auth is not configured' });
+  if (!token()) return send(400, { error: 'token auth is not configured' });
   if (tooManyLogins(ip)) return send(429, { error: 'too many failed attempts, try again in 15 min' });
   const body = await readBody(req);
   let j = {};
@@ -612,7 +634,7 @@ async function handleLogin(req, res, url, send, ip) {
   //    raw token stops circulating); without one it stays the raw token.
   loginFails.delete(ip);
   return send(200, { ok: true }, {
-    'Set-Cookie': TWOFA ? sessionCookie(newSession()) : `${COOKIE}=${encodeURIComponent(TOKEN)}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=2592000`,
+    'Set-Cookie': TWOFA ? sessionCookie(newSession()) : `${COOKIE}=${encodeURIComponent(token())}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=2592000`,
   });
 }
 
@@ -976,7 +998,7 @@ wss.on('connection', (ws, req) => {
   // cookie (same-origin browsers) or ?token= (non-browser clients). With a TOTP
   // secret enrolled the raw token is rejected here too — only the session cookie
   // (token + code at login) gets through.
-  if (TOKEN && !authed(req) && !(totpSecret() === null && validToken(url.searchParams.get('token')))) {
+  if (token() && !authed(req) && !(totpSecret() === null && validToken(url.searchParams.get('token')))) {
     ws.close(4401, 'unauthorized'); return;
   }
   const host = hostByName(url.searchParams.get('host') || 'localhost');
@@ -1088,7 +1110,7 @@ process.on('uncaughtException', (err) => {
 server.listen(PORT, HOST, () => {
   const proto = TLS ? 'https' : 'http';
   const twoFaNote = TWOFA ? `  2FA: ${TWOFA}${totpSecret() ? ', enrolled' : ', not enrolled'}` : '';
-  console.log(`tmux-webhub on ${proto}://${HOST}:${PORT}  (pi: ${PI_CMD}, config: ${CONFIG_FILE})` + (TOKEN ? '' : '  ⚠ NO token configured — open access') + twoFaNote);
+  console.log(`tmux-webhub on ${proto}://${HOST}:${PORT}  (pi: ${PI_CMD}, config: ${CONFIG_FILE})` + (token() ? '' : '  ⚠ NO token configured — open access') + twoFaNote);
 });
 server.on('error', (e) => {
   if (e.code === 'EADDRINUSE') console.error(`port ${PORT} already in use (PC_PORT to change)`);
