@@ -322,7 +322,7 @@ function refreshHosts() {
     // the host list may have changed by direct file edit (not via PUT, which nulls the
     // cache): a removed host would otherwise linger forever — re-merge against `wanted`
     if (hostsCache.hosts.length !== wanted.length || !wanted.every((h) => cached.has(h.name)))
-      hostsCache = { hosts: wanted.map((h) => ({ ...cached.get(h.name), at: now })), configError };
+      hostsCache = { hosts: wanted.map((h) => ({ ...cached.get(h.name), at: now, cmd: h.cmd })), configError };
     return Promise.resolve(hostsCache.hosts);
   }
   hostsInflight = Promise.all(stale.map(listHostSessions))
@@ -330,7 +330,11 @@ function refreshHosts() {
       const freshByName = new Map(fresh.map((h) => [h.name, h]));
       const hosts = wanted.map((h) => {
         const f = freshByName.get(h.name);
-        return f ? { ...f, at: now } : cached.get(h.name);
+        // per-host cmd (config "cmd", e.g. pi-bolt) travels for the +New picker's
+        // command-field placeholder; it is stable config data, so it never churns the
+        // client's change-detection snapshot. A fresh poll strips it (listHostSessions
+        // returns only {name,state,sessions}), so re-attach it from `wanted`.
+        return { ...(f ? { ...f, at: now } : cached.get(h.name)), cmd: h.cmd };
       });
       hostsCache = { hosts, configError };
       return hosts;

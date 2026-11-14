@@ -1055,7 +1055,15 @@ function populateHostSelect() {
   }
   if ([...sel.options].some((o) => o.value === cur)) sel.value = cur;
 }
-$('new-session').onclick = () => { $('ns-err').textContent = ''; $('ns-name').value = ''; $('ns-cwd').value = ''; $('ns-cmd').value = ''; $('ns-cmd').placeholder = defaultCmd; hideDirs(); modal.classList.add('open'); $('ns-name').focus(); };
+function hostDefaultCmd(name) {
+  // placeholder for the +New command field: the selected host's per-host cmd
+  // (config "cmd"), falling back to the server's global PI_CMD
+  const h = hosts.find((x) => x.name === name);
+  const c = h && typeof h.cmd === 'string' && h.cmd.trim() ? h.cmd.trim() : defaultCmd;
+  return c;
+}
+$('new-session').onclick = () => { $('ns-err').textContent = ''; $('ns-name').value = ''; $('ns-cwd').value = ''; $('ns-cmd').value = ''; $('ns-cmd').placeholder = hostDefaultCmd($('ns-host').value); hideDirs(); modal.classList.add('open'); $('ns-name').focus(); };
+$('ns-host').addEventListener('change', () => { $('ns-cmd').placeholder = hostDefaultCmd($('ns-host').value); });
 $('ns-cancel').onclick = () => modal.classList.remove('open');
 modal.addEventListener('click', (e) => { if (e.target === modal) modal.classList.remove('open'); });
 $('ns-ok').onclick = async () => {
