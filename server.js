@@ -583,7 +583,11 @@ function authed(req) {
   if (sessionOf(req)) return true; // 2FA session cookie
   // raw-token cookie: valid while 2FA is off, or while no TOTP secret is enrolled.
   // A lingering secret with 2FA set to "off" must NOT block login (the mode wins).
-  return (TWOFA === null || totpSecret() === null) && validToken(cookieOf(req));
+  if ((TWOFA === null || totpSecret() === null) && validToken(cookieOf(req))) return true;
+  // Authorization: Bearer header (non-browser clients)
+  const auth = req.headers.authorization || '';
+  if (auth.startsWith('Bearer ') && validToken(auth.slice(7))) return true;
+  return false;
 }
 // brute-force guard: 5 failed logins / 15 min per source IP
 const loginFails = new Map();
@@ -966,6 +970,152 @@ async function handleApiConfig(req, res, send) {
   return send(405, { error: 'method not allowed' });
 }
 
+// POST /api/sessions/:host/:name/send-keys — send keys to a session
+async function handleSendKeys(req, res, host, name, send) {
+  if (req.method !== 'POST') return send(405, { error: 'method not allowed' });
+  const body = await readBody(req);
+  if (!body) return send(400, { error: 'bad request body' });
+  let parsed;
+  try { parsed = JSON.parse(body); } catch { return send(400, { error: 'invalid JSON' }); }
+  const keys = parsed.keys;
+  if (!Array.isArray(keys) || keys.length === 0 || keys.length > 8) {
+    return send(400, { error: 'keys must be an array of 1-8 key names' });
+  }
+  if (!keys.every((k) => typeof k === 'string' && keyToArgv(k) !== null)) {
+    return send(400, { error: 'invalid key name(s)' });
+  }
+  // Send keys sequentially to preserve order
+  for (const k of keys) {
+    const r = await runOn(host, ['tmux', 'send-keys', '-t', name, ...keyToArgv(k)], 3000);
+    if (!r.ok) {
+      return send(500, { error: `failed to send key ${k}: ${(r.stderr || r.stdout || 'unknown').trim().split('\n').pop()}` });
+    }
+  }
+  return send(200, { ok: true, host: host.name, name, keys });
+}
+
+// POST /api/sessions/:host/:name/resize — resize the terminal
+async function handleResizeSession(req, res, host, name, send) {
+  if (req.method !== 'POST') return send(405, { error: 'method not allowed' });
+  const body = await readBody(req);
+  if (!body) return send(400, { error: 'bad request body' });
+  let parsed;
+  try { parsed = JSON.parse(body); } catch { return send(400, { error: 'invalid JSON' }); }
+  const cols = parsed.cols;
+  const rows = parsed.rows;
+  if (!Number.isInteger(cols) || cols < 2 || cols > 1000) {
+    return send(400, { error: 'cols must be an integer between 2 and 1000' });
+  }
+  if (!Number.isInteger(rows) || rows < 2 || rows > 500) {
+    return send(400, { error: 'rows must be an integer between 2 and 500' });
+  }
+  const r = await runOn(host, ['tmux', 'resize-window', '-t', name, '-x', String(cols), '-y', String(rows)], 6000);
+  if (!r.ok) {
+    return send(500, { error: (r.stderr || r.stdout || 'failed').trim().split('\n').pop() });
+  }
+  return send(200, { ok: true, host: host.name, name, cols, rows });
+}
+
+// DELETE /api/sessions/:host/:name — kill a session
+async function handleKillSession(req, res, host, name, send) {
+  if (req.method !== 'DELETE') return send(405, { error: 'method not allowed' });
+  const r = await runOn(host, ['tmux', 'kill-session', '-t', name], 6000);
+  if (!r.ok) {
+    return send(500, { error: (r.stderr || r.stdout || 'failed').trim().split('\n').pop() });
+  }
+  invalidateHost(host.name);
+  return send(200, { ok: true, host: host.name, name });
+}
+
+// GET /api/sessions/:host/:name — get session details
+async function handleGetSession(req, res, host, name, send) {
+  if (req.method !== 'GET') return send(405, { error: 'method not allowed' });
+  await refreshHosts();
+  const snap = hostsCache || { hosts: [] };
+  const h = snap.hosts.find((x) => x.name === host.name);
+  if (!h) return send(404, { error: 'host not found' });
+  const s = (h.sessions || []).find((x) => x.name === name);
+  if (!s) return send(404, { error: 'session not found' });
+  return send(200, { host: host.name, ...s });
+}
+
+// POST /api/hosts — add a host
+async function handleAddHost(req, res, send) {
+  if (req.method !== 'POST') return send(405, { error: 'method not allowed' });
+  const body = await readBody(req);
+  if (!body) return send(400, { error: 'bad request body' });
+  let parsed;
+  try { parsed = JSON.parse(body); } catch { return send(400, { error: 'invalid JSON' }); }
+  const name = parsed.name;
+  const ssh = parsed.ssh;
+  const cmd = parsed.cmd;
+  if (typeof name !== 'string' || !NAME_RE.test(name)) {
+    return send(400, { error: 'name must match ' + NAME_RE.source });
+  }
+  if (ssh !== undefined && typeof ssh !== 'string') {
+    return send(400, { error: 'ssh must be a string' });
+  }
+  if (cmd !== undefined && typeof cmd !== 'string') {
+    return send(400, { error: 'cmd must be a string' });
+  }
+  let cfg;
+  try { cfg = readConfig(false); } catch (e) { return send(500, { error: 'cannot read config: ' + e.message }); }
+  if (!cfg.hosts) cfg.hosts = [];
+  if (cfg.hosts.find((h) => h.name === name)) {
+    return send(400, { error: 'host already exists: ' + name });
+  }
+  cfg.hosts.push({ name, ssh, cmd });
+  const werr = writeConfigAtomic(cfg);
+  if (werr) return send(500, { error: 'cannot write config: ' + werr });
+  configTouched();
+  hostsCache = null;
+  return send(200, { ok: true, host: name });
+}
+
+// DELETE /api/hosts/:name — remove a host
+async function handleRemoveHost(req, res, name, send) {
+  if (req.method !== 'DELETE') return send(405, { error: 'method not allowed' });
+  let cfg;
+  try { cfg = readConfig(false); } catch (e) { return send(500, { error: 'cannot read config: ' + e.message }); }
+  const idx = ((cfg && cfg.hosts) || []).findIndex((h) => h && h.name === name);
+  if (idx === -1) return send(404, { error: 'host not found: ' + name });
+  cfg.hosts.splice(idx, 1);
+  const werr = writeConfigAtomic(cfg);
+  if (werr) return send(500, { error: 'cannot write config: ' + werr });
+  configTouched();
+  hostsCache = null;
+  return send(200, { ok: true, host: name });
+}
+
+// PUT /api/hosts/:name — update a host
+async function handleUpdateHost(req, res, name, send) {
+  if (req.method !== 'PUT') return send(405, { error: 'method not allowed' });
+  const body = await readBody(req);
+  if (!body) return send(400, { error: 'bad request body' });
+  let parsed;
+  try { parsed = JSON.parse(body); } catch { return send(400, { error: 'invalid JSON' }); }
+  let cfg;
+  try { cfg = readConfig(false); } catch (e) { return send(500, { error: 'cannot read config: ' + e.message }); }
+  const entry = ((cfg && cfg.hosts) || []).find((h) => h && h.name === name);
+  if (!entry) return send(404, { error: 'host not found: ' + name });
+  if (parsed.ssh !== undefined) {
+    if (typeof parsed.ssh !== 'string') return send(400, { error: 'ssh must be a string' });
+    entry.ssh = parsed.ssh;
+  }
+  if (parsed.cmd !== undefined) {
+    if (typeof parsed.cmd !== 'string') return send(400, { error: 'cmd must be a string' });
+    entry.cmd = parsed.cmd;
+  }
+  if (parsed.enabled !== undefined) {
+    if (parsed.enabled) delete entry.enabled; else entry.enabled = false;
+  }
+  const werr = writeConfigAtomic(cfg);
+  if (werr) return send(500, { error: 'cannot write config: ' + werr });
+  configTouched();
+  hostsCache = null;
+  return send(200, { ok: true, host: name });
+}
+
 // POST /api/hosts/toggle {host} — flip the host's "enabled" flag in config.json
 // (click the host badge in the UI). Absent flag = enabled, so enabling deletes the
 // key to keep the file clean.
@@ -1117,6 +1267,52 @@ const server = (TLS ? https : http).createServer(tlsOpts, async (req, res) => {
       if (url.pathname === '/api/hosts/toggle') return await handleHostToggle(req, res, send);
       if (url.pathname === '/api/totp/disable') return await handleTotpDisable(req, res, send);
       if (url.pathname === '/api/dirs') return await handleApiDirs(req, res, url, send);
+      // New REST API endpoints
+      if (url.pathname === '/api/hosts') return await handleAddHost(req, res, send);
+      // Parse /api/hosts/:name
+      let hostMatch = url.pathname.match(/^\/api\/hosts\/([^/]+)$/);
+      if (hostMatch) {
+        const name = decodeURIComponent(hostMatch[1]);
+        if (!NAME_RE.test(name)) return send(400, { error: 'bad host name' });
+        if (req.method === 'DELETE') return await handleRemoveHost(req, res, name, send);
+        if (req.method === 'PUT') return await handleUpdateHost(req, res, name, send);
+        return send(405, { error: 'method not allowed' });
+      }
+      // Parse /api/sessions/:host/:name
+      let sessMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/([^/]+)$/);
+      if (sessMatch) {
+        const hostName = decodeURIComponent(sessMatch[1]);
+        const sessName = decodeURIComponent(sessMatch[2]);
+        if (!NAME_RE.test(hostName)) return send(400, { error: 'bad host name' });
+        if (!NAME_RE.test(sessName)) return send(400, { error: 'bad session name' });
+        const host = hostByName(hostName);
+        if (!host) return send(404, { error: 'host not found' });
+        if (req.method === 'GET') return await handleGetSession(req, res, host, sessName, send);
+        if (req.method === 'DELETE') return await handleKillSession(req, res, host, sessName, send);
+        return send(405, { error: 'method not allowed' });
+      }
+      // Parse /api/sessions/:host/:name/send-keys
+      let sendKeysMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/([^/]+)\/send-keys$/);
+      if (sendKeysMatch) {
+        const hostName = decodeURIComponent(sendKeysMatch[1]);
+        const sessName = decodeURIComponent(sendKeysMatch[2]);
+        if (!NAME_RE.test(hostName)) return send(400, { error: 'bad host name' });
+        if (!NAME_RE.test(sessName)) return send(400, { error: 'bad session name' });
+        const host = hostByName(hostName);
+        if (!host) return send(404, { error: 'host not found' });
+        return await handleSendKeys(req, res, host, sessName, send);
+      }
+      // Parse /api/sessions/:host/:name/resize
+      let resizeMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/([^/]+)\/resize$/);
+      if (resizeMatch) {
+        const hostName = decodeURIComponent(resizeMatch[1]);
+        const sessName = decodeURIComponent(resizeMatch[2]);
+        if (!NAME_RE.test(hostName)) return send(400, { error: 'bad host name' });
+        if (!NAME_RE.test(sessName)) return send(400, { error: 'bad session name' });
+        const host = hostByName(hostName);
+        if (!host) return send(404, { error: 'host not found' });
+        return await handleResizeSession(req, res, host, sessName, send);
+      }
       return send(404, { error: 'not found' });
     }
     if (req.method === 'GET' || req.method === 'HEAD') return serveStatic(req, res, url);
