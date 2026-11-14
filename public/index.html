@@ -52,6 +52,10 @@
   /* keyboard shortcuts: desktop shows only the ⌨ palette icon (⎋/Pg↑/Pg↓ have
      real keys); the phone media query below reveals all of them */
   #term-ctl { display: inline-flex; gap: 4px; }
+  /* hide split button on smartphones */
+  @media (max-width: 600px) {
+    #t-split { display: none !important; }
+  }
   #term-ctl button:not(#btn-keys) { display: none; }
   #term-ctl button { padding: 3px 10px; font-size: 12.5px; white-space: nowrap; }
   .net { color: var(--dim); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
