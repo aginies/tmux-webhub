@@ -416,6 +416,108 @@ test('POST /api/sessions: empty cwd → home', { skip: !hasTmux }, async () => {
   }
 });
 
+// ---------- REST API: host management (POST/PUT/DELETE /api/hosts) ----------
+// Manipulates config.json directly (no tmux needed). testhost is the local host left
+// by the config PUT test above; these add/update/remove a throwaway host and restore it.
+test('POST/PUT/DELETE /api/hosts: add, update, remove a host', async () => {
+  const name = 'pc-resthost-' + Date.now();
+  // add (no ssh → local host)
+  let r = await fetch(base + '/api/hosts', { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie }, body: JSON.stringify({ name, cmd: 'bash' }) });
+  assert.equal(r.status, 200, JSON.stringify(await r.clone().json()));
+  let cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+  assert.ok(cfg.hosts.some((h) => h.name === name), 'host added to config.json');
+
+  // duplicate name → 400
+  r = await fetch(base + '/api/hosts', { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie }, body: JSON.stringify({ name }) });
+  assert.equal(r.status, 400);
+
+  // invalid ssh string → 400 (rejected before it is ever saved)
+  r = await fetch(base + '/api/hosts', { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie }, body: JSON.stringify({ name: 'pc-badssh-' + Date.now(), ssh: 'user@host; rm -rf /' }) });
+  assert.equal(r.status, 400);
+
+  // update: change the cmd
+  r = await fetch(base + '/api/hosts/' + name, { method: 'PUT', headers: { 'Content-Type': 'application/json', Cookie: cookie }, body: JSON.stringify({ cmd: 'htop' }) });
+  assert.equal(r.status, 200, JSON.stringify(await r.clone().json()));
+  cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+  assert.equal(cfg.hosts.find((h) => h.name === name).cmd, 'htop', 'cmd updated in config.json');
+
+  // remove
+  r = await fetch(base + '/api/hosts/' + name, { method: 'DELETE', headers: { Cookie: cookie } });
+  assert.equal(r.status, 200, JSON.stringify(await r.clone().json()));
+  cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+  assert.ok(!cfg.hosts.some((h) => h.name === name), 'host removed from config.json');
+
+  // remove again → 404
+  r = await fetch(base + '/api/hosts/' + name, { method: 'DELETE', headers: { Cookie: cookie } });
+  assert.equal(r.status, 404);
+
+  // testhost must survive the round-trip
+  assert.ok(cfg.hosts.some((h) => h.name === 'testhost'), 'testhost preserved');
+});
+
+// ---------- REST API: per-session endpoints (GET / send-keys / resize / DELETE) ----------
+// These need a live tmux session on testhost (its cmd is `sleep 60` from the tilde test
+// above, so the pane outlives the checks). Skipped when tmux is absent.
+test('REST session endpoints: get, send-keys, resize, kill', { skip: !hasTmux }, async () => {
+  const name = 'pc-restsess-' + Date.now();
+  let r = await fetch(base + '/api/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie }, body: JSON.stringify({ host: 'testhost', name, cwd: '~' }) });
+  assert.equal(r.status, 200, JSON.stringify(await r.clone().json()));
+  // a plain GET forces a poll of the (just-invalidated) host so the cache is fresh
+  const prime = async () => { await fetch(base + '/api/sessions', { headers: { Cookie: cookie } }); };
+  const detail = async () => fetch(base + '/api/sessions/testhost/' + name, { headers: { Cookie: cookie } });
+  async function getUntilFound(timeoutMs = 10000) {
+    const t0 = Date.now();
+    for (;;) {
+      await prime();
+      const rr = await detail();
+      if (rr.status === 200) return rr;
+      if (Date.now() - t0 > timeoutMs) throw new Error('session never appeared in cache (last status ' + rr.status + ')');
+      await new Promise((res) => setTimeout(res, 200));
+    }
+  }
+  try {
+    await waitForCwd(name);
+
+    // GET details
+    r = await getUntilFound();
+    const d = await r.json();
+    assert.equal(d.host, 'testhost');
+    assert.equal(d.name, name);
+
+    // send-keys: a harmless key → 200
+    r = await fetch(base + '/api/sessions/testhost/' + name + '/send-keys', { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie }, body: JSON.stringify({ keys: ['Enter'] }) });
+    assert.equal(r.status, 200, JSON.stringify(await r.clone().json()));
+
+    // send-keys: invalid key → 400
+    r = await fetch(base + '/api/sessions/testhost/' + name + '/send-keys', { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie }, body: JSON.stringify({ keys: ['NotAKey'] }) });
+    assert.equal(r.status, 400);
+
+    // resize: in-range → 200
+    r = await fetch(base + '/api/sessions/testhost/' + name + '/resize', { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie }, body: JSON.stringify({ cols: 100, rows: 30 }) });
+    assert.equal(r.status, 200, JSON.stringify(await r.clone().json()));
+
+    // resize: out-of-range → 400
+    r = await fetch(base + '/api/sessions/testhost/' + name + '/resize', { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie }, body: JSON.stringify({ cols: 1, rows: 30 }) });
+    assert.equal(r.status, 400);
+
+    // kill → 200
+    r = await fetch(base + '/api/sessions/testhost/' + name, { method: 'DELETE', headers: { Cookie: cookie } });
+    assert.equal(r.status, 200, JSON.stringify(await r.clone().json()));
+
+    // GET after kill → 404 (retry until the poll reflects the kill)
+    const t0 = Date.now();
+    for (;;) {
+      await prime();
+      r = await detail();
+      if (r.status === 404) break;
+      if (Date.now() - t0 > 10000) throw new Error('session still visible after kill (status ' + r.status + ')');
+      await new Promise((res) => setTimeout(res, 200));
+    }
+  } finally {
+    tmuxKill(name);
+  }
+});
+
 // ---------- pi activity: the LAST session-JSONL entry drives the flag, not window output ----------
 // A fake `pi` (node script that sets process.title, like the real one) runs in a tmux
 // session; the test appends entries to a fake session file under $HOME and checks the

@@ -27,6 +27,11 @@ token out of stranger hands, and assume a local-network attacker.**
   proxy/tunnel's address, not each end user). Comparison is constant-time.
 - The WS upgrade is rate-limited the same way (`/login`'s guard applies there
   too), so a wrong `?token=` can't be brute-forced over the socket with 2FA off.
+- `?token=` on the WS URL is retained **only** for the pitux/mobile companion, which
+  can't set an `Authorization` header. Its residual risk is the token appearing in
+  proxy/access/`Referer` logs; enrolling 2FA closes it (the raw token is rejected at
+  the WS once a TOTP secret is set). Use the Bearer header for any client that can
+  set headers.
 
 ## Two-factor (TOTP)
 

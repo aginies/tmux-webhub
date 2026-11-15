@@ -244,12 +244,14 @@ Override the config file for deployment-time settings:
 ## Technical detail
 
 The overview above is enough to run it. For how it works under the hood, the
-full config reference, and the security model, see the docs:
+full config reference, the REST API, and the security model, see the docs:
 
 - **[docs/CONFIG.md](docs/CONFIG.md)** — every config field, env var, the
   `pitux` helper, and daemonizing.
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — how attaching, the
   session poller, SSH connection pooling, backpressure, the network readout, and
   pi activity work.
+- **[docs/API.md](docs/API.md)** — the REST API for creating, killing, resizing,
+  and sending keys to sessions, plus host management and auth.
 - **[docs/SECURITY.md](docs/SECURITY.md)** — the full security model (TLS, token
   auth, TOTP two-factor, CSRF, rate limiting, session cookies).

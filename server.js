@@ -268,8 +268,14 @@ if [ -n "$out" ]; then
         # Node reuse the cached entry — zero file I/O per poll while pi is idle
         if [ "$w" -gt 0 ] && [ $(( now - w )) -le ${ACTIVE_WINDOW_MS / 1000} ]; then
           d="$HOME/.pi/agent/sessions/-$(printf '%s/' "$c" | tr / -)-"
-          f=$(ls -t "$d"/*.jsonl 2>/dev/null | head -n1)
-          [ -n "$f" ] && pe=$(tail -n1 "$f")
+          # newest .jsonl's last line: set -- (builtin) picks the newest file,
+          # dropping the head fork; IFS=newline keeps paths with spaces intact.
+          _if=$IFS
+          IFS='
+'
+          set -- $(ls -t "$d"/*.jsonl 2>/dev/null)
+          IFS=$_if
+          [ -n "$1" ] && pe=$(tail -n1 "$1")
         else
           pe='__CACHED__'
         fi
@@ -675,7 +681,9 @@ ensureCert();
 let tlsOpts = {};
 if (TLS) {
   try {
-    tlsOpts = { cert: fs.readFileSync(CERT), key: fs.readFileSync(KEY) };
+    // Pin minVersion explicitly (Node already defaults to TLSv1.2+, but be
+    // defense-in-depth so a future Node default change can't silently weaken it).
+    tlsOpts = { cert: fs.readFileSync(CERT), key: fs.readFileSync(KEY), minVersion: 'TLSv1.2' };
   } catch (e) {
     console.error(`tmux-webhub: cannot read TLS cert/key (${e.message}).\nFix the cert/key paths in config.json (or set "tls": false).`);
     process.exit(1);
@@ -980,6 +988,22 @@ async function handleApiConfig(req, res, send) {
   return send(405, { error: 'method not allowed' });
 }
 
+// Send a batch of keys to a session's active pane, one `tmux send-keys` per key,
+// in order. One invocation per key because tmux's -l flag applies to ALL following
+// args, so a single call mixing literal and named keys would corrupt the sequence
+// (~5 ms each with a warm ControlMaster). Stops at the first failure and reports
+// which key it was. Shared by the REST send-keys endpoint and the WS send-keys
+// message (the WS path is fire-and-forget and logs rather than returning the error).
+async function sendKeysToSession(host, name, keys) {
+  for (const k of keys) {
+    const r = await runOn(host, ['tmux', 'send-keys', '-t', name, ...keyToArgv(k)], 3000);
+    if (!r.ok) {
+      return { ok: false, failedKey: k, error: (r.stderr || r.stdout || (r.timeout ? 'timed out' : 'unknown')).trim().split('\n').pop() };
+    }
+  }
+  return { ok: true };
+}
+
 // POST /api/sessions/:host/:name/send-keys — send keys to a session
 async function handleSendKeys(req, res, host, name, send) {
   if (req.method !== 'POST') return send(405, { error: 'method not allowed' });
@@ -994,12 +1018,10 @@ async function handleSendKeys(req, res, host, name, send) {
   if (!keys.every((k) => typeof k === 'string' && keyToArgv(k) !== null)) {
     return send(400, { error: 'invalid key name(s)' });
   }
-  // Send keys sequentially to preserve order
-  for (const k of keys) {
-    const r = await runOn(host, ['tmux', 'send-keys', '-t', name, ...keyToArgv(k)], 3000);
-    if (!r.ok) {
-      return send(500, { error: `failed to send key ${k}: ${(r.stderr || r.stdout || 'unknown').trim().split('\n').pop()}` });
-    }
+  // Send keys sequentially to preserve order (stops at the first failure)
+  const r = await sendKeysToSession(host, name, keys);
+  if (!r.ok) {
+    return send(500, { error: `failed to send key ${r.failedKey}: ${r.error}` });
   }
   return send(200, { ok: true, host: host.name, name, keys });
 }
@@ -1193,7 +1215,11 @@ const SEC_HEADERS = {
   'X-Content-Type-Options': 'nosniff',
   'X-Frame-Options': 'DENY',
   'Referrer-Policy': 'strict-origin-when-cross-origin',
-  'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wss:",
+  // script-src is 'self' only: all app scripts live in external files
+  // (public/app.js, public/login.js, /vendor/*.js) — no inline <script> or
+  // eval(), so 'unsafe-inline'/'unsafe-eval' are not needed. This is what makes
+  // an XSS payload (e.g. a crafted tmux/cwd name) non-executable.
+  'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wss:",
 };
 // Add HSTS for HTTPS
 if (TLS) {
@@ -1203,9 +1229,12 @@ if (TLS) {
 // static files: unauthenticated browsers get the login page for '/', other assets 401.
 // ETag (size+mtime) + Cache-Control: vendored assets are immutable, html revalidates.
 function serveStatic(req, res, url) {
-  // the login page's QR library: the only asset an unauthenticated browser may fetch
-  // (it renders the TOTP setup QR before login)
-  const isLoginAsset = url.pathname === '/vendor/qrcode.js';
+  // the login page's assets: the only things an unauthenticated browser may fetch.
+  // '/' serves login.html, which loads /login.js (form logic) + /vendor/qrcode.js
+  // (renders the TOTP setup QR before login). Both are secret-free client code, so
+  // exposing them pre-auth is safe — and required, since the login form can't work
+  // without its own script.
+  const isLoginAsset = url.pathname === '/vendor/qrcode.js' || url.pathname === '/login.js';
   if (!authed(req) && !isLoginAsset) {
     if (url.pathname === '/') {
       return fs.readFile(path.join(PUBLIC_DIR, 'login.html'), (err, data) => {
@@ -1245,6 +1274,25 @@ function serveStatic(req, res, url) {
       respond(staticCache.get(full));
     });
   });
+}
+
+// Parse /api/sessions/:host/:name and the /send-keys + /resize sub-routes.
+// Returns { hostName, sessName, action } (action: '' | 'send-keys' | 'resize')
+// or null when the pathname is not a session route.
+function parseSessionRoute(pathname) {
+  const m = pathname.match(/^\/api\/sessions\/([^/]+)\/([^/]+)(?:\/(send-keys|resize))?$/);
+  if (!m) return null;
+  return { hostName: decodeURIComponent(m[1]), sessName: decodeURIComponent(m[2]), action: m[3] || '' };
+}
+
+// Validate a parsed session route: NAME_RE on both names, then host lookup.
+// Sends the 400/404 itself; returns the host on success, null on failure.
+function resolveSession(hostName, sessName, send) {
+  if (!NAME_RE.test(hostName)) { send(400, { error: 'bad host name' }); return null; }
+  if (!NAME_RE.test(sessName)) { send(400, { error: 'bad session name' }); return null; }
+  const host = hostByName(hostName);
+  if (!host) { send(404, { error: 'host not found' }); return null; }
+  return host;
 }
 
 const server = (TLS ? https : http).createServer(tlsOpts, async (req, res) => {
@@ -1292,40 +1340,16 @@ const server = (TLS ? https : http).createServer(tlsOpts, async (req, res) => {
         if (req.method === 'PUT') return await handleUpdateHost(req, res, name, send);
         return send(405, { error: 'method not allowed' });
       }
-      // Parse /api/sessions/:host/:name
-      let sessMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/([^/]+)$/);
-      if (sessMatch) {
-        const hostName = decodeURIComponent(sessMatch[1]);
-        const sessName = decodeURIComponent(sessMatch[2]);
-        if (!NAME_RE.test(hostName)) return send(400, { error: 'bad host name' });
-        if (!NAME_RE.test(sessName)) return send(400, { error: 'bad session name' });
-        const host = hostByName(hostName);
-        if (!host) return send(404, { error: 'host not found' });
-        if (req.method === 'GET') return await handleGetSession(req, res, host, sessName, send);
-        if (req.method === 'DELETE') return await handleKillSession(req, res, host, sessName, send);
+      // Parse /api/sessions/:host/:name and the /send-keys + /resize sub-routes
+      const sess = parseSessionRoute(url.pathname);
+      if (sess) {
+        const host = resolveSession(sess.hostName, sess.sessName, send);
+        if (!host) return;
+        if (sess.action === 'send-keys') return await handleSendKeys(req, res, host, sess.sessName, send);
+        if (sess.action === 'resize') return await handleResizeSession(req, res, host, sess.sessName, send);
+        if (req.method === 'GET') return await handleGetSession(req, res, host, sess.sessName, send);
+        if (req.method === 'DELETE') return await handleKillSession(req, res, host, sess.sessName, send);
         return send(405, { error: 'method not allowed' });
-      }
-      // Parse /api/sessions/:host/:name/send-keys
-      let sendKeysMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/([^/]+)\/send-keys$/);
-      if (sendKeysMatch) {
-        const hostName = decodeURIComponent(sendKeysMatch[1]);
-        const sessName = decodeURIComponent(sendKeysMatch[2]);
-        if (!NAME_RE.test(hostName)) return send(400, { error: 'bad host name' });
-        if (!NAME_RE.test(sessName)) return send(400, { error: 'bad session name' });
-        const host = hostByName(hostName);
-        if (!host) return send(404, { error: 'host not found' });
-        return await handleSendKeys(req, res, host, sessName, send);
-      }
-      // Parse /api/sessions/:host/:name/resize
-      let resizeMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/([^/]+)\/resize$/);
-      if (resizeMatch) {
-        const hostName = decodeURIComponent(resizeMatch[1]);
-        const sessName = decodeURIComponent(resizeMatch[2]);
-        if (!NAME_RE.test(hostName)) return send(400, { error: 'bad host name' });
-        if (!NAME_RE.test(sessName)) return send(400, { error: 'bad session name' });
-        const host = hostByName(hostName);
-        if (!host) return send(404, { error: 'host not found' });
-        return await handleResizeSession(req, res, host, sessName, send);
       }
       return send(404, { error: 'not found' });
     }
@@ -1486,8 +1510,10 @@ wss.on('connection', (ws, req) => {
   // auth: cookie (same-origin browsers) or ?token= (non-browser clients). With a TOTP
   // secret enrolled the raw token is rejected here too — only the session cookie
   // (token + code at login) gets through. Prefer the `Authorization: Bearer` header
-  // over the cookie or ?token= for non-browser clients: query strings land in proxy /
-  // access logs and the Referer header, leaking the token.
+  // over ?token= for non-browser clients: query strings land in proxy / access logs
+  // and the Referer header, leaking the token. ?token= is retained only for the
+  // pitux/mobile companion (which can't set a custom header); its residual risk
+  // (token in logs) is closed by enrolling 2FA, which rejects the raw token here.
   if (token() && !authed(req) && !(totpSecret() === null && validToken(url.searchParams.get('token')))) {
     recordLoginFail(ip);
     ws.close(4401, 'unauthorized'); return;
@@ -1510,8 +1536,12 @@ wss.on('connection', (ws, req) => {
   const pending = [];
   const PENDING_MAX = 1000;
   const handleMsg = (m) => {
-    if (m.type === 'input' && typeof m.data === 'string') {
-      try { term.write(m.data); } catch {}
+    if (m.type === 'input') {
+      // input arrives as a single `data` string or a `chunks` array (the client
+      // coalesces fast typing into one frame). Both are plain text written to the
+      // pty in order; validate each piece is a string before writing.
+      const parts = Array.isArray(m.chunks) ? m.chunks : (typeof m.data === 'string' ? [m.data] : []);
+      for (const p of parts) if (typeof p === 'string') { try { term.write(p); } catch {} }
     }
     else if (m.type === 'resize' && m.cols > 0 && m.rows > 0) {
       // clamp like the WS URL path: an unbounded size would grow the remote tmux window
@@ -1528,16 +1558,11 @@ wss.on('connection', (ws, req) => {
       // One invocation per key, sequential (order preserved): tmux's -l flag
       // applies to ALL following args, so mixing literal and named keys in one
       // call would corrupt the sequence. ~5 ms each with a warm ControlMaster.
-      m.keys.reduce(
-        (p, k) => p.then(async () => {
-          // Use the session name from the WebSocket URL (validated at connection time)
-          const r = await runOn(host, ['tmux', 'send-keys', '-t', name, ...keyToArgv(k)], 3000);
-          // log, don't swallow: a dead ssh link / unknown session would otherwise
-          // make the palette look broken with zero trace (journal: journalctl --user -u tmux-webhub)
-          if (!r.ok) console.error(`send-keys ${k} → ${host.name}:${name} failed: ${(r.stderr || r.stdout || (r.timeout ? 'timed out' : 'unknown')).trim().split('\n').pop()}`);
-        }),
-        Promise.resolve()
-      ).catch((e) => console.error(`send-keys → ${host.name}:${name} failed: ${e.message}`));
+      sendKeysToSession(host, name, m.keys).then((r) => {
+        // log, don't swallow: a dead ssh link / unknown session would otherwise
+        // make the palette look broken with zero trace (journal: journalctl --user -u tmux-webhub)
+        if (!r.ok) console.error(`send-keys ${r.failedKey} → ${host.name}:${name} failed: ${r.error}`);
+      }).catch((e) => console.error(`send-keys → ${host.name}:${name} failed: ${e.message}`));
     }
   };
   ws.on('message', (msg) => {
