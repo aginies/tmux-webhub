@@ -59,6 +59,13 @@
       canvas.addEventListener('dblclick', (e) => this.onDblClick(e));
       canvas.addEventListener('pointerleave', () => this.setHover(null, null));
       window.addEventListener('resize', () => this.resize());
+      // map controls (+ / − / All): zoom about the view center, fit the whole town
+      const ctl = document.getElementById('town-ctl');
+      if (ctl) {
+        ctl.querySelector('#town-zin').addEventListener('click', () => this.zoomBy(1.5));
+        ctl.querySelector('#town-zout').addEventListener('click', () => this.zoomBy(1 / 1.5));
+        ctl.querySelector('#town-zall').addEventListener('click', () => this.fitCamera(false));
+      }
     }
 
     /* ---------- lifecycle ---------- */
@@ -413,6 +420,16 @@
       // desk-level view: at z >= 1.6 the pods are big enough to read
       const z = clamp(Math.min(w * 0.9 / (b.w * TT), (h - 60) * 0.9 / ((b.h + 2) * TT)), 1.6, 2.6);
       this.target = { x: b.x * TT + (b.w * TT) / 2, y: b.y * TT + (b.h * TT) / 2, z };
+      this.needsRedraw = true;
+    }
+
+    // zoom about the current view center (cam.x, cam.y is the world point at
+    // screen center) — used by the + / − map buttons; eases like every other
+    // camera move (instant under prefers-reduced-motion)
+    zoomBy(f) {
+      if (!this.town) return;
+      const nz = clamp(this.cam.z * f, Z_MIN, Z_MAX);
+      this.target = { x: this.cam.x, y: this.cam.y, z: nz };
       this.needsRedraw = true;
     }
 
