@@ -889,6 +889,8 @@ if (window.TownView) {
       if ([...sel.options].some((o) => o.value === host)) sel.value = host;
       $('new-session').click();
     },
+    // click host name: toggle polling on/off in config.json
+    toggleHost: (host) => toggleHost(host),
   });
   window.__townview = townView; // debug handle
   view = localStorage.getItem('pc.view') || (innerWidth < 640 ? 'list' : 'town');

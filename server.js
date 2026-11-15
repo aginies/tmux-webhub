@@ -260,8 +260,24 @@ st=$?
 if [ -n "$out" ]; then
   printf '%s\\n' "$out" | while IFS='\t' read -r n a c w cmd; do
     pe=''
-    # tiny live preview: the pane's last 6 lines, base64 (one token, no tabs)
-    cap=$(tmux capture-pane -p -t "$n" -S -6 2>/dev/null | base64 | tr -d '\n')
+    # tiny live preview: the pane's last 6 lines, base64 (one token, no tabs).
+    # $1 carries the previous poll's window_activity per session ("name:w" tokens):
+    # window_activity unchanged ⇒ no output since the last poll ⇒ the pane cannot
+    # have changed ⇒ emit the sentinel and let Node reuse the cached capture (the
+    # __CACHED__ trick above) — no capture-pane/base64 forks while the window is idle.
+    cap='__CAPCACHED__'
+    prevw=''
+    # newline-separated "name:w" tokens: session names may contain spaces, so the
+    # for-loop splits on newlines only (same IFS trick as the pi case below)
+    _if=$IFS
+    IFS='
+'
+    for tok in $1; do
+      case $tok in "$n":*) prevw=\${tok#*:} ;;
+    esac
+    done
+    IFS=$_if
+    [ -n "$prevw" ] && [ "$prevw" = "$w" ] || cap=$(tmux capture-pane -p -t "$n" -S -6 2>/dev/null | base64 | tr -d '\\n')
     case "$cmd" in
       pi|pi-bolt)
         # a session-file append always coincides with window output, so a stale window
@@ -297,6 +313,12 @@ const PI_CACHED = '__CACHED__';
 // pi panes: cache keyed by host then by pane key, so pruning a host's stale panes scans
 // only that host's entries (O(sessions in host)) instead of the whole flat cache.
 const piLastCache = new Map(); // hostName → (paneKey → last JSONL line)
+// pane previews: the poll script emits this sentinel when a session's window_activity is
+// unchanged since the last poll (no output ⇒ the pane cannot have changed); Node then
+// reuses the base64 capture cached from the last fresh poll — no capture-pane/base64
+// forks while the window is idle. Keyed by host then session name.
+const CAP_CACHED = '__CAPCACHED__';
+const capCache = new Map(); // hostName → (sessionName → { w, cap })
 
 // pi / pi-bolt: the last session entry says what pi is doing right now.
 // A final assistant message (no toolCall) means the run settled → idle. Anything
@@ -327,16 +349,22 @@ async function listHostSessions(host) {
   const t0 = Date.now();
   let r;
   let remoteNow = 0;
+  // previous poll's window_activity per session ("name:w" tokens) — lets the script
+  // skip capture-pane for windows that produced no output since then (see CAP_CACHED)
+  let capMap = capCache.get(host.name);
+  let prevWList = '';
+  if (capMap) for (const [n, e] of capMap) prevWList += n + ':' + e.w + '\n'; // newline-separated: names may contain spaces
+  const listArgs = ['sh', '-c', LIST_SH, 'sh', prevWList];
   if (host.ssh) {
-    r = await runOn(host, ['sh', '-c', LIST_SH], CMD_TIMEOUT_MS, BUF_4MB, POLL_SSH_OPTS);
+    r = await runOn(host, listArgs, CMD_TIMEOUT_MS, BUF_4MB, POLL_SSH_OPTS);
     // a stale ControlMaster socket (crash, or the master died out-of-band) fails the
     // command with "Control socket connect ..." — unlink it and retry once with a fresh master
     if (!r.ok && /control socket|master process has not completed/i.test(r.stderr || '')) {
       try { fs.unlinkSync(cmPath(host.ssh)); } catch {}
-      r = await runOn(host, ['sh', '-c', LIST_SH], CMD_TIMEOUT_MS, BUF_4MB, POLL_SSH_OPTS);
+      r = await runOn(host, listArgs, CMD_TIMEOUT_MS, BUF_4MB, POLL_SSH_OPTS);
     }
   } else {
-    r = await execFileP('sh', ['-c', LIST_SH], { timeout: CMD_TIMEOUT_MS, maxBuffer: BUF_4MB });
+    r = await execFileP('sh', listArgs.slice(1), { timeout: CMD_TIMEOUT_MS, maxBuffer: BUF_4MB });
   }
   const elapsed = Date.now() - t0;
   if (!r.ok) {
@@ -360,6 +388,7 @@ async function listHostSessions(host) {
     else if (line.trim()) rows.push(line);
   }
   const seenCache = new Set();
+  const seenCaps = new Set();
   const sessions = rows.map((line) => {
     const [name, attached, pth, act, cmd, piLast, cap] = line.split('\t');
     const actSec = parseInt(act, 10) || 0;
@@ -378,11 +407,21 @@ async function listHostSessions(host) {
       if (!hm) { hm = new Map(); piLastCache.set(host.name, hm); }
       hm.set(cacheKey, piEntry);
     } else if (hostMap) hostMap.delete(cacheKey);
-    // decode the tiny pane preview (base64 → the last 6 lines of the pane)
+    // decode the tiny pane preview (base64 → the last 6 lines of the pane); the
+    // __CAPCACHED__ sentinel reuses the capture from the last fresh poll (the window
+    // produced no output since then, so the pane is unchanged)
     let preview = '';
-    if (cap) {
+    if (cap === CAP_CACHED) {
+      const e = capMap && capMap.get(name);
+      if (e) { try { preview = Buffer.from(e.cap, 'base64').toString('utf8').trim(); } catch { preview = ''; } }
+    } else if (cap) {
       try { preview = Buffer.from(cap, 'base64').toString('utf8').trim(); } catch { preview = ''; }
+      // created lazily here (capMap above is null on the first poll); the reference is
+      // kept so later fresh rows append to the same map instead of overwriting it
+      if (!capMap) { capMap = new Map(); capCache.set(host.name, capMap); }
+      capMap.set(name, { w: actSec, cap });
     }
+    seenCaps.add(name);
     return {
       name,
       attached: parseInt(attached, 10) || 0,
@@ -397,6 +436,12 @@ async function listHostSessions(host) {
     for (const k of hostMap.keys())
       if (!seenCache.has(k)) hostMap.delete(k);
     if (hostMap.size === 0) piLastCache.delete(host.name); // hygiene: bounded by host count
+  }
+  // same for the cached pane captures
+  if (capMap) {
+    for (const k of capMap.keys())
+      if (!seenCaps.has(k)) capMap.delete(k);
+    if (capMap.size === 0) capCache.delete(host.name);
   }
   // host connection state: ok / slow (>2 s to answer, or timed out) / offline
   const state = elapsed > SLOW_MS ? 'slow' : 'ok';

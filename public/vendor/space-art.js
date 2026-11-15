@@ -994,8 +994,14 @@
       return canvas;
     },
 
-    // Detailed Sci-Fi Astronauts in Pressurized EVA Suits with Reflective Visors
-    townCharacter: (look, dir, frame, pose, eyesClosed) => {
+    // Detailed Sci-Fi Astronauts in Pressurized EVA Suits with Reflective Visors.
+    // Cached: town.js calls this per agent per frame (drawPod/drawWalker/drawNapper/…).
+    // The original art bundle (town-art.js c8/r9) keys its sprite cache
+    // look|dir|frame|pose|eyes — this override must too; re-rendering a canvas on
+    // every call was the largest per-frame CPU cost in the Space view.
+    townCharacter: (() => {
+      const cache = new Map();
+      const render = (look, dir, frame, pose, eyesClosed) => {
       const canvas = document.createElement('canvas');
       canvas.width = 20; canvas.height = 24;
       const ctx = canvas.getContext('2d');
@@ -1163,10 +1169,21 @@
       }
 
       return canvas;
-    },
+      };
+      return (look, dir, frame, pose, eyesClosed) => {
+        // same key shape as the original cached impl (R0(look)|dir|frame|pose|eyes)
+        const key = `${look && look.skin}${look && look.hair}${look && look.shirt}${look && look.pants}${look && look.style}${look && (look.outfit ?? "")}${look && (look.accessory ?? "")}|${dir}|${frame}|${pose}|${eyesClosed ? 1 : 0}`;
+        let c = cache.get(key);
+        if (!c) { c = render(look, dir, frame, pose, eyesClosed); cache.set(key, c); }
+        return c;
+      };
+    })(),
 
-    // Holographic Terminal Screens
-    townScreen: (state, frame) => {
+    // Holographic Terminal Screens (cached: town.js calls this per pod per frame;
+    // variants are state × frame — working 0-6, idle 0-1, done, off)
+    townScreen: (() => {
+      const cache = new Map();
+      const render = (state, frame) => {
       const canvas = document.createElement('canvas');
       canvas.width = 14; canvas.height = 9;
       const ctx = canvas.getContext('2d');
@@ -1192,6 +1209,13 @@
       }
 
       return canvas;
-    }
+      };
+      return (state, frame) => {
+        const key = state + '|' + frame;
+        let c = cache.get(key);
+        if (!c) { c = render(state, frame); cache.set(key, c); }
+        return c;
+      };
+    })()
   });
 })();

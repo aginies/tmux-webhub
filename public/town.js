@@ -71,36 +71,36 @@
       this.spaceTraffic = [
         {
           id: 'falcon',
-          x: -80, y: 140,
-          vx: 110, vy: 18,
-          speed: 120,
-          targetAngle: 0.15,
-          angle: 0.15,
+          x: 520, y: 640,
+          vx: 130, vy: -15,
+          speed: 135,
+          targetAngle: -0.12,
+          angle: -0.12,
           timer: 0,
           interval: 4,
-          trailColor: 'rgba(0, 229, 255, 0.45)',
+          trailColor: 'rgba(0, 229, 255, 0.75)',
         },
         {
           id: 'xwing',
-          x: 1350, y: 180,
-          vx: -145, vy: -20,
-          speed: 150,
-          targetAngle: Math.PI + 0.1,
-          angle: Math.PI + 0.1,
+          x: 820, y: 700,
+          vx: -160, vy: 25,
+          speed: 165,
+          targetAngle: Math.PI + 0.15,
+          angle: Math.PI + 0.15,
           timer: 0,
           interval: 3.2,
-          trailColor: 'rgba(244, 63, 94, 0.45)',
+          trailColor: 'rgba(244, 63, 94, 0.8)',
         },
         {
           id: 'enterprise',
-          x: 120, y: -60,
-          vx: 55, vy: 50,
-          speed: 80,
-          targetAngle: 0.75,
-          angle: 0.75,
+          x: 620, y: 520,
+          vx: 85, vy: 20,
+          speed: 95,
+          targetAngle: 0.25,
+          angle: 0.25,
           timer: 0,
           interval: 6,
-          trailColor: 'rgba(56, 189, 248, 0.4)',
+          trailColor: 'rgba(56, 189, 248, 0.75)',
         },
       ];
 
@@ -113,7 +113,7 @@
           x: rand(), y: rand(),
           size: rand() < 0.65 ? 1 : rand() < 0.88 ? 2 : 3,
           color: rand() < 0.22 ? '#00e5ff' : rand() < 0.38 ? '#bd93f9' : rand() < 0.52 ? '#f1fa8c' : rand() < 0.68 ? '#8be9fd' : '#ffffff',
-          freq: 1.5 + rand() * 3.5,
+          freq: 0.35 + rand() * 0.85, // gentle, slow cosmic twinkle
           phase: rand() * Math.PI * 2,
           spike: rand() > 0.85,
         });
@@ -166,6 +166,27 @@
           stars: makeGalaxy(8765, 140),
         },
       ];
+
+      // precompute the dimmed outer-halo stop (was a per-frame regex in drawGalaxies)
+      for (const g of this.galaxies) g.haloColor2 = g.haloColor.replace(/[\d.]+\)$/, '0.1)');
+
+      // Pre-baked pod glow sprites (drawPod): a createRadialGradient + 'lighter' fill per
+      // working/active pod per frame was the priciest fill in the pod loop. The two
+      // variants are static — bake each once at 2x (80x80 → 40x40 world units) and draw
+      // with globalAlpha = pulse*0.55; the compositing result is identical.
+      const bakeGlow = (rgb) => {
+        const c = document.createElement('canvas');
+        c.width = 80; c.height = 80;
+        const gc = c.getContext('2d');
+        const gg = gc.createRadialGradient(40, 40, 0, 40, 40, 40);
+        gg.addColorStop(0, 'rgba(' + rgb + ',1)');
+        gg.addColorStop(1, 'rgba(' + rgb + ',0)');
+        gc.fillStyle = gg;
+        gc.fillRect(0, 0, 80, 80);
+        return c;
+      };
+      this.glowWorking = bakeGlow('0,180,255');
+      this.glowActive = bakeGlow('0,229,255');
 
       canvas.addEventListener('wheel', (e) => this.onWheel(e), { passive: false });
       canvas.addEventListener('pointerdown', (e) => this.onPointerDown(e));
@@ -310,9 +331,18 @@
         b.plus = { x: cx + 44, y: cy - 3, s: 18 };
         g.drawImage(TA.paintTownFacade(b, theme), b.x * TT, (b.y + b.h) * TT);
         roofs.push({ host: b.hostKey, c: TA.paintTownRoof(b, theme, this.hostOff(b.hostKey)), x: b.x * TT - 4, y: b.y * TT - 12, b });
-        b.rooms.forEach((r) => r.cells.forEach((cell) => { if (cell.deskKey) cells.set(cell.deskKey, { cell, b }); }));
+        b.rooms.forEach((r) => r.cells.forEach((cell) => {
+          if (cell.deskKey) cells.set(b.hostKey + ':' + cell.deskKey, { cell, b, name: cell.deskKey });
+        }));
       });
-      this.town = { layout, base, M, sp, cells, roofs, Wp, Hp };
+
+      // Orbital Storage Starship / Data Vault to the left of the Town Hall
+      const shipW = 560, shipH = 215;
+      const shipX = center.x * TT - shipW - 40;
+      const shipY = center.y * TT + 10;
+      const storageShip = { x: shipX, y: shipY, w: shipW, h: shipH, items: [], hostItems: [] };
+
+      this.town = { layout, base, M, sp, cells, roofs, Wp, Hp, storageShip };
       this.nav.clear(); // navigation grids are bound to the building objects
       this.reanchorNaps();
       this.setupBus();
@@ -645,9 +675,8 @@
         const drinks = this.coolerSpots(b);
         const foods = this.foodSpots(b);
         const idle = [];
-        for (const [name, info] of this.town.cells) {
+        for (const [key, info] of this.town.cells) {
           if (info.b.hostKey !== b.hostKey) continue;
-          const key = b.hostKey + ':' + name;
           const s = this.sessions.get(key);
           if (s && !s.activity) idle.push(key);
         }
@@ -674,8 +703,7 @@
     }
 
     deskFeet(key) {
-      const s = this.sessions.get(key);
-      const info = s && this.town && this.town.cells.get(s.name);
+      const info = this.town && this.town.cells.get(key);
       if (!info) return null;
       const Y = info.cell.y * TT;
       const seat = TA.townSeat(info.cell, 0);
@@ -933,6 +961,17 @@
       this.needsRedraw = true;
     }
 
+    zoomToStorageShip() {
+      if (!this.town || !this.town.storageShip) return;
+      const s = this.town.storageShip;
+      this.target = {
+        x: Math.round(s.x + s.w / 2),
+        y: Math.round(s.y + s.h / 2),
+        z: 1.35,
+      };
+      this.needsRedraw = true;
+    }
+
     // zoom about the current view center (cam.x, cam.y is the world point at
     // screen center) — used by the + / − map buttons; eases like every other
     // camera move (instant under prefers-reduced-motion)
@@ -960,15 +999,27 @@
         else if ((nap.phase === 'activity' || nap.phase === 'waiting-bus') && nap.p) { px = nap.p.spot.x; py = nap.p.spot.y; }
         else { const r = this.napPos(nap, performance.now() / 1000); px = r[0]; py = r[1]; }
         if (wx >= px - 15 && wx <= px + 15 && wy >= py - 16 && wy <= py + 10) {
-          const s = this.sessions.get(key);
-          const info = s && this.town.cells.get(s.name);
-          if (info) return { name: s.name, info, key };
+          const info = this.town.cells.get(key);
+          if (info) return { name: info.name, info, key };
         }
       }
-      for (const [name, info] of this.town.cells) {
+      for (const [key, info] of this.town.cells) {
         const X = (info.cell.x + 1) * TT, Y = info.cell.y * TT;
         if (wx >= X - 32 && wx <= X + 84 && wy >= Y - 15 && wy <= Y + 102) {
-          return { name, info, key: info.b.hostKey + ':' + name };
+          return { name: info.name, info, key };
+        }
+      }
+      return null;
+    }
+
+    // The Host badge sign above each starship: clicking toggles polling on/off
+    signAt(wx, wy) {
+      if (!this.town) return null;
+      for (const r of this.town.roofs) {
+        const b = r.b;
+        const x = Math.round(b.x * TT + (b.w * TT) / 2), y = Math.round(b.y * TT - 34);
+        if (wx >= x - 130 && wx <= x + 130 && wy >= y - 32 && wy <= y + 24) {
+          return b.hostKey;
         }
       }
       return null;
@@ -1081,6 +1132,36 @@
     onClick(e) {
       const rect = this.cv.getBoundingClientRect();
       const [wx, wy] = this.screenToWorld(e.clientX - rect.left, e.clientY - rect.top);
+      // Check storage ship manifest session pills or host items or starship hull
+      if (this.town && this.town.storageShip) {
+        const s = this.town.storageShip;
+        if (s.items) {
+          for (const item of s.items) {
+            if (wx >= item.x && wx <= item.x + item.w && wy >= item.y && wy <= item.y + item.h) {
+              this.api.attach(item.key);
+              return;
+            }
+          }
+        }
+        if (s.hostItems) {
+          for (const item of s.hostItems) {
+            if (wx >= item.x && wx <= item.x + item.w && wy >= item.y && wy <= item.y + item.h) {
+              if (this.api.toggleHost) this.api.toggleHost(item.host);
+              return;
+            }
+          }
+        }
+        if (wx >= s.x - 14 && wx <= s.x + s.w + 14 && wy >= s.y - 4 && wy <= s.y + s.h + 8) {
+          this.zoomToStorageShip();
+          return;
+        }
+      }
+      // Check starship host callsign sign badge to toggle polling
+      const signHost = this.signAt(wx, wy);
+      if (signHost) {
+        if (this.api.toggleHost) this.api.toggleHost(signHost);
+        return;
+      }
       const pod = this.podAt(wx, wy);
       if (pod) { this.api.attach(pod.key); return; }
       const plus = this.plusAt(wx, wy);
@@ -1094,6 +1175,35 @@
     updateHover(e) {
       const rect = this.cv.getBoundingClientRect();
       const [wx, wy] = this.screenToWorld(e.clientX - rect.left, e.clientY - rect.top);
+      // Check storage ship manifest session pills or starship hull
+      if (this.town && this.town.storageShip) {
+        const s = this.town.storageShip;
+        if (s.items) {
+          for (const item of s.items) {
+            if (wx >= item.x && wx <= item.x + item.w && wy >= item.y && wy <= item.y + item.h) {
+              this.setHover({ type: 'manifest-session', key: item.key, host: item.host }, e);
+              return;
+            }
+          }
+        }
+        if (s.hostItems) {
+          for (const item of s.hostItems) {
+            if (wx >= item.x && wx <= item.x + item.w && wy >= item.y && wy <= item.y + item.h) {
+              this.setHover({ type: 'host-sign', host: item.host }, e);
+              return;
+            }
+          }
+        }
+        if (wx >= s.x - 14 && wx <= s.x + s.w + 14 && wy >= s.y - 4 && wy <= s.y + s.h + 8) {
+          this.setHover({ type: 'storage-ship' }, e);
+          return;
+        }
+      }
+      const signHost = this.signAt(wx, wy);
+      if (signHost) {
+        this.setHover({ type: 'host-sign', host: signHost }, e);
+        return;
+      }
       const pod = this.podAt(wx, wy);
       const plus = pod ? null : this.plusAt(wx, wy);
       const b = pod || plus ? null : this.buildingAt(wx, wy);
@@ -1113,6 +1223,13 @@
           const st = s ? (s.activity ? 'active' : 'idle') : '—';
           tip.innerHTML = '<b></b><span class="dim"> · ' + hover.info.b.hostKey + ' · ' + st + (s && s.cwd ? ' · ' + s.cwd : '') + '</span>';
           tip.firstChild.textContent = hover.name;
+        } else if (hover.type === 'manifest-session') {
+          const s = this.sessions.get(hover.key);
+          const st = s ? (s.activity ? 'active' : 'idle') : '—';
+          tip.innerHTML = '<b></b><span class="dim"> · ' + hover.host + ' · ' + st + ' · click to attach</span>';
+          tip.firstChild.textContent = hover.key.split(':').pop();
+        } else if (hover.type === 'storage-ship') {
+          tip.innerHTML = '<b>📦 Orbital Sessions</b><span class="dim"> · click to zoom & focus</span>';
         } else if (hover.type === 'plus') {
           tip.innerHTML = '<b>+ new session</b><span class="dim"> on ' + hover.host + '</span>';
         } else if (hover.type === 'center') {
@@ -1135,6 +1252,8 @@
 
     hoverId(hover) {
       if (hover.type === 'pod') return 'pod:' + hover.key;
+      if (hover.type === 'manifest-session') return 'ms:' + hover.key;
+      if (hover.type === 'storage-ship') return 'storage-ship';
       if (hover.type === 'plus') return 'plus:' + hover.host;
       if (hover.type === 'center') return 'center';
       return 'b:' + hover.b.hostKey;
@@ -1218,9 +1337,7 @@
       ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
       ctx.fillStyle = '#030509';
       ctx.fillRect(0, 0, w, h);
-      this.drawSkyStars(ctx, w, h, t);
-      this.drawGalaxies(ctx, w, h, t);
-      this.drawSpaceTraffic(ctx, t);
+      this.drawSkyLayer(ctx, w, h, t);
       if (!this.town) {
         ctx.fillStyle = '#858faa';
         ctx.font = '12px ' + 'Silkscreen, monospace';
@@ -1247,8 +1364,8 @@
       const list = [];
       const bubbles = [];
       const frame = REDUCED ? 0 : Math.floor(t * 6);
-      for (const [name, info] of T.cells) {
-        const key = info.b.hostKey + ':' + name;
+      for (const [key, info] of T.cells) {
+        const name = info.name;
         const s = this.sessions.get(key);
         const state = s ? (s.activity ? 'working' : 'idle') : 'off';
         const nap = this.naps.get(key);
@@ -1301,6 +1418,12 @@
 
       // ⚙ badge on the command citadel center (settings)
       this.drawCenterBadge();
+
+      // Orbital Storage Starship with live host/session manifest
+      this.drawStorageShip(ctx, t);
+
+      // Iconic Sci-Fi Space Traffic: Falcon, X-Wing, Enterprise soaring through space!
+      this.drawSpaceTraffic(ctx, t);
 
       // hover / active highlights
       if (this.hover && this.hover.type === 'pod') {
@@ -1407,19 +1530,16 @@
 
       // holographic live preview: floating tactical projection after the desktop (lower) with radiant light beam
       const isActive = key === this.activeKey;
-      if (s && s.preview) this.drawPreview(X + slot.chairX, Y, s.preview, name, state === 'working' || isActive, t);
+      if (s && s.preview) this.drawPreview(X + slot.chairX, Y, s.preview, key, state === 'working' || isActive, t);
 
-      // glow: working (blue), active session (accent, steady)
+      // glow: working (blue), active session (accent, steady) — pre-baked sprites,
+      // the pulse modulates globalAlpha instead of rebuilding a gradient per frame
       if (state === 'working' || isActive) {
-        const rgb = isActive ? '0,229,255' : '0,180,255';
         const pulse = REDUCED ? 0.5 : state === 'working' ? 0.5 + 0.08 * Math.sin(t * 23 + hash(name) % 7) : 0.55;
-        const g = ctx.createRadialGradient(cx, Y + 12, 0, cx, Y + 12, 20);
-        g.addColorStop(0, 'rgba(' + rgb + ',' + (pulse * 0.55).toFixed(3) + ')');
-        g.addColorStop(1, 'rgba(' + rgb + ',0)');
         ctx.save();
         ctx.globalCompositeOperation = 'lighter';
-        ctx.fillStyle = g;
-        ctx.fillRect(cx - 20, Y - 8, 40, 40);
+        ctx.globalAlpha = pulse * 0.55;
+        ctx.drawImage(isActive ? this.glowActive : this.glowWorking, cx - 20, Y - 8, 40, 40);
         ctx.restore();
       }
       if (isActive) {
@@ -1431,7 +1551,7 @@
 
     // holographic screen projection: live session lines projected after the desktop (lower)
     // with a glowing radiant light cone shooting down from the console table.
-    drawPreview(mx, Y, preview, name, active = false, t = performance.now() / 1000) {
+    drawPreview(mx, Y, preview, cacheKey, active = false, t = performance.now() / 1000) {
       const { ctx } = this;
       const W = 104, H = 52, pad = 4.0, fs = 6.8, lh = 7.6;
 
@@ -1441,7 +1561,7 @@
       const emitY = Y + 34;
 
       // Relaxed refresh rate for projection effects (stepped at 10 FPS to minimize CPU cycles)
-      const nameHash = hash(name);
+      const nameHash = hash(cacheKey);
       const animStep = Math.floor(t * 10);
       const waveShimmer = 0.88 + 0.12 * Math.sin(animStep * 0.35 + nameHash);
       const microFlicker = ((animStep + nameHash) % 23 === 0) ? 0.75 : 1.0;
@@ -1470,7 +1590,7 @@
       ctx.fillRect(cx - 5, emitY, 10, 1.5);
 
       // Cache the text and HUD panel on an offscreen canvas; only redraw when preview text changes!
-      let cached = this.previewCache.get(name);
+      let cached = this.previewCache.get(cacheKey);
       if (!cached || cached.raw !== preview) {
         const lines = preview.split('\n').map((l) => l.replace(/\s+$/, '')).filter((l) => l.length > 0);
         const shown = lines.slice(-6);
@@ -1513,7 +1633,7 @@
         });
 
         cached = { raw: preview, canvas: off };
-        this.previewCache.set(name, cached);
+        this.previewCache.set(cacheKey, cached);
       }
 
       // Blit cached holographic tactical display screen
@@ -1592,6 +1712,180 @@
       ctx.beginPath();
       ctx.arc(cx, cy, 2, 0, Math.PI * 2);
       ctx.fill();
+      ctx.restore();
+    }
+
+    // Orbital Storage Starship / Data Vault to the left of the Town Hall
+    drawStorageShip(ctx, t) {
+      if (!this.town || !this.town.storageShip) return;
+      const ship = this.town.storageShip;
+      const { x, y, w, h } = ship;
+
+      ctx.save();
+
+      // 1. Heavy Industrial Cargo / Data-Vault Freighter Hull
+      ctx.fillStyle = '#141c2b';
+      ctx.beginPath();
+      ctx.moveTo(x + 24, y);
+      ctx.lineTo(x + w - 24, y);
+      ctx.lineTo(x + w, y + 24);
+      ctx.lineTo(x + w, y + h - 20);
+      ctx.lineTo(x + w - 30, y + h);
+      ctx.lineTo(x + 30, y + h);
+      ctx.lineTo(x, y + h - 20);
+      ctx.lineTo(x, y + 24);
+      ctx.closePath();
+      ctx.fill();
+
+      // Heavy durasteel outer border
+      ctx.strokeStyle = '#334155';
+      ctx.lineWidth = 3;
+      ctx.stroke();
+
+      // Glowing cyan deflector trim
+      ctx.strokeStyle = 'rgba(0, 229, 255, 0.7)';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+
+      // Cargo Container Pods on Left & Right Flanks
+      // Left cargo pod
+      ctx.fillStyle = '#1e293b';
+      ctx.fillRect(x - 12, y + 35, 14, h - 70);
+      ctx.strokeStyle = '#475569';
+      ctx.strokeRect(x - 12, y + 35, 14, h - 70);
+      ctx.fillStyle = '#f59e0b';
+      for (let hy = y + 42; hy < y + h - 45; hy += 12) {
+        ctx.fillRect(x - 10, hy, 10, 2);
+      }
+
+      // Right docking clamp module
+      ctx.fillStyle = '#1e293b';
+      ctx.fillRect(x + w - 2, y + 35, 14, h - 70);
+      ctx.strokeStyle = '#475569';
+      ctx.strokeRect(x + w - 2, y + 35, 14, h - 70);
+      ctx.fillStyle = '#f59e0b';
+      for (let hy = y + 42; hy < y + h - 45; hy += 12) {
+        ctx.fillRect(x + w, hy, 10, 2);
+      }
+
+      // Sublight Engine Thrusters at Bottom Stern
+      ctx.fillStyle = '#00e5ff';
+      ctx.fillRect(x + 50, y + h - 4, 30, 4);
+      ctx.fillRect(x + w - 80, y + h - 4, 30, 4);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(x + 58, y + h - 2, 14, 2);
+      ctx.fillRect(x + w - 72, y + h - 2, 14, 2);
+
+      // Title Banner Header (Top)
+      ctx.fillStyle = 'rgba(10, 16, 28, 0.95)';
+      ctx.fillRect(x + 10, y + 8, w - 20, 24);
+      ctx.strokeStyle = 'rgba(0, 229, 255, 0.5)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x + 10, y + 8, w - 20, 24);
+
+      ctx.font = '700 13px "JetBrains Mono", monospace';
+      ctx.fillStyle = '#00e5ff';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('📦 ORBITAL SESSIONS // MANIFEST', x + 18, y + 20);
+
+      // Total session count badge
+      let totalSessions = this.sessions.size;
+      ctx.textAlign = 'right';
+      ctx.font = '700 12px "JetBrains Mono", monospace';
+      ctx.fillStyle = '#f1fa8c';
+      ctx.fillText(totalSessions + ' ACTIVE SESSIONS', x + w - 18, y + 20);
+      ctx.textAlign = 'left';
+
+      // 2. Holographic Manifest Display (One Row Per Host)
+      const hosts = this.town.layout.buildings.map(b => b.hostKey);
+      const rowH = Math.floor((h - 44) / Math.max(1, hosts.length));
+      const items = [];
+      const hostItems = [];
+
+      hosts.forEach((hKey, idx) => {
+        const rowY = y + 36 + idx * rowH;
+        const off = this.hostOff(hKey);
+        const isHostHover = this.hover && this.hover.type === 'host-sign' && this.hover.host === hKey;
+
+        // Row background strip
+        ctx.fillStyle = idx % 2 === 0 ? 'rgba(15, 23, 42, 0.65)' : 'rgba(10, 16, 28, 0.65)';
+        ctx.fillRect(x + 10, rowY, w - 20, rowH - 2);
+
+        // Host name tag area (clickable to toggle polling)
+        if (isHostHover) {
+          ctx.fillStyle = 'rgba(0, 229, 255, 0.15)';
+          this.rr(x + 12, rowY + 2, 126, rowH - 6, 3);
+          ctx.fill();
+          ctx.strokeStyle = '#00e5ff';
+          ctx.lineWidth = 1;
+          this.rr(x + 12, rowY + 2, 126, rowH - 6, 3);
+          ctx.stroke();
+        }
+
+        // Host status dot & name
+        ctx.fillStyle = off ? '#ef4444' : '#10b981';
+        ctx.beginPath();
+        ctx.arc(x + 24, rowY + rowH / 2 - 1, 4.5, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.font = '700 13px "JetBrains Mono", monospace';
+        ctx.fillStyle = off ? '#64748b' : isHostHover ? '#00e5ff' : '#38bdf8';
+        ctx.fillText(hKey.toUpperCase(), x + 36, rowY + rowH / 2 - 1);
+        hostItems.push({ host: hKey, x: x + 12, y: rowY + 2, w: 126, h: rowH - 6 });
+
+        // Find sessions for this host
+        const prefix = hKey + ':';
+        const hostSessions = [];
+        for (const [key, s] of this.sessions) {
+          if (key.startsWith(prefix)) hostSessions.push({ key, name: s.name, activity: s.activity });
+        }
+
+        // Render session pills
+        let pillX = x + 148;
+        if (hostSessions.length === 0) {
+          ctx.font = 'italic 11px "JetBrains Mono", monospace';
+          ctx.fillStyle = '#64748b';
+          ctx.fillText(off ? '(offline / polling disabled)' : '(idle / no sessions)', pillX, rowY + rowH / 2 - 1);
+        } else {
+          ctx.font = '600 11.5px "JetBrains Mono", monospace';
+          for (const s of hostSessions) {
+            const label = s.name;
+            const tw = ctx.measureText(label).width;
+            const pw = tw + 18, ph = 20;
+            const py = rowY + (rowH - ph) / 2 - 1;
+
+            if (pillX + pw > x + w - 16) break;
+
+            const isHover = this.hover && this.hover.type === 'manifest-session' && this.hover.key === s.key;
+            const isActive = s.key === this.activeKey;
+
+            // Pill box
+            ctx.fillStyle = isActive ? 'rgba(0, 229, 255, 0.28)' : isHover ? 'rgba(56, 189, 248, 0.24)' : 'rgba(8, 12, 22, 0.88)';
+            this.rr(pillX, py, pw, ph, 4);
+            ctx.fill();
+
+            ctx.strokeStyle = isActive ? '#00e5ff' : isHover ? '#38bdf8' : 'rgba(0, 229, 255, 0.45)';
+            ctx.lineWidth = 1;
+            this.rr(pillX, py, pw, ph, 4);
+            ctx.stroke();
+
+            // Activity dot inside pill
+            ctx.fillStyle = s.activity ? '#10b981' : '#64748b';
+            ctx.fillRect(pillX + 5, py + ph / 2 - 2, 4, 4);
+
+            // Text
+            ctx.fillStyle = isActive ? '#00e5ff' : '#f8fafc';
+            ctx.fillText(label, pillX + 13, py + ph / 2);
+
+            items.push({ key: s.key, x: pillX, y: py, w: pw, h: ph, host: hKey });
+            pillX += pw + 8;
+          }
+        }
+      });
+
+      ship.items = items;
+      ship.hostItems = hostItems;
       ctx.restore();
     }
 
@@ -1733,6 +2027,33 @@
       ctx.fillRect(scanX - 10, beamY - 1.5, 20, 3);
     }
 
+    // The cosmic sky (2 full-screen nebulae, 240 twinkling stars, a meteor and two
+    // rotating spiral galaxies ≈ 6 gradients + 520 stars + spiral paths) is the most
+    // expensive part of the frame, yet it changes slowly: galaxy rotation ≈ 0.05 rad/s,
+    // star twinkle ≤ 1.2 Hz, camera parallax ≤ 0.15. Render it to an offscreen canvas
+    // at ~10 fps and blit — visually indistinguishable, ~6x less gradient/star work.
+    drawSkyLayer(ctx, w, h, t) {
+      if (!this.skyStars) return; // no sky (non-space theme)
+      let sky = this._skyCv;
+      const dw = Math.round(w * this.dpr), dh = Math.round(h * this.dpr);
+      if (!sky || sky.width !== dw || sky.height !== dh) {
+        sky = this._skyCv = document.createElement('canvas');
+        sky.width = dw; sky.height = dh;
+        this._skyLastT = -1; // new size → force a re-render
+      }
+      if ((this._skyLastT ?? -1) >= 0 && t - this._skyLastT < 0.1) {
+        ctx.drawImage(sky, 0, 0, w, h); // blit the ≤100 ms-old sky
+        return;
+      }
+      const sctx = sky.getContext('2d');
+      sctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+      sctx.clearRect(0, 0, w, h); // transparent — the #030509 background stays on the main canvas
+      this.drawSkyStars(sctx, w, h, t);
+      this.drawGalaxies(sctx, w, h, t);
+      this._skyLastT = t;
+      ctx.drawImage(sky, 0, 0, w, h);
+    }
+
     // deep-space sky starfield with twinkling, colored stars, nebulae and meteors
     drawSkyStars(ctx, w, h, t) {
       if (!this.skyStars) return;
@@ -1799,7 +2120,7 @@
         // Outer diffuse galactic haze
         const outerHalo = ctx.createRadialGradient(0, 0, g.radius * 0.2, 0, 0, g.radius);
         outerHalo.addColorStop(0, g.haloColor);
-        outerHalo.addColorStop(0.65, g.haloColor.replace(/[\d.]+\)$/, '0.1)'));
+        outerHalo.addColorStop(0.65, g.haloColor2); // precomputed dimmed stop (no per-frame regex)
         outerHalo.addColorStop(1, 'transparent');
         ctx.fillStyle = outerHalo;
         ctx.beginPath();
@@ -1864,21 +2185,34 @@
     updateSpaceTraffic(t) {
       if (!this.spaceTraffic || !this.cv) return;
       const w = this.cv.clientWidth, h = this.cv.clientHeight;
+      if (!w || !h) return;
       const dt = this.trafficLastT ? Math.min(0.1, t - this.trafficLastT) : 0.016;
       this.trafficLastT = t;
+
+      const z = (this.cam && this.cam.z) || 1;
+      const camx = (this.cam && this.cam.x) || 700;
+      const camy = (this.cam && this.cam.y) || 700;
+
+      // Wrap boundaries relative to camera viewport so ships ALWAYS fly through current view
+      const halfW = (w / 2) / z + 120;
+      const halfH = (h / 2) / z + 100;
+      const minX = camx - halfW;
+      const maxX = camx + halfW;
+      const minY = camy - halfH;
+      const maxY = camy + halfH;
 
       for (const ship of this.spaceTraffic) {
         ship.timer += dt;
         if (ship.timer >= ship.interval) {
           ship.timer = 0;
           ship.interval = 3 + Math.random() * 4;
-          // Random heading wandering through open space
+          // Random heading wandering through space
           ship.targetAngle = Math.random() * Math.PI * 2;
         }
 
         // Steer angle smoothly towards targetAngle
         let diff = (ship.targetAngle - ship.angle + Math.PI * 3) % (Math.PI * 2) - Math.PI;
-        ship.angle += Math.sign(diff) * Math.min(Math.abs(diff), 1.2 * dt);
+        ship.angle += Math.sign(diff) * Math.min(Math.abs(diff), 1.6 * dt);
 
         // Update velocity and position
         ship.vx = Math.cos(ship.angle) * ship.speed;
@@ -1886,12 +2220,29 @@
         ship.x += ship.vx * dt;
         ship.y += ship.vy * dt;
 
-        // Wrap around viewport with fresh angle
-        const pad = 120;
-        if (ship.x < -pad) { ship.x = w + pad - 20; ship.targetAngle = Math.PI - 0.3 + Math.random() * 0.6; ship.angle = ship.targetAngle; }
-        else if (ship.x > w + pad) { ship.x = -pad + 20; ship.targetAngle = -0.3 + Math.random() * 0.6; ship.angle = ship.targetAngle; }
-        if (ship.y < -pad) { ship.y = h + pad - 20; ship.targetAngle = -Math.PI / 2 - 0.4 + Math.random() * 0.8; ship.angle = ship.targetAngle; }
-        else if (ship.y > h + pad) { ship.y = -pad + 20; ship.targetAngle = Math.PI / 2 - 0.4 + Math.random() * 0.8; ship.angle = ship.targetAngle; }
+        // Wrap around visible viewport edges
+        if (ship.x < minX) {
+          ship.x = maxX - 10;
+          ship.y = minY + Math.random() * (maxY - minY);
+          ship.targetAngle = Math.PI - 0.4 + Math.random() * 0.8;
+          ship.angle = ship.targetAngle;
+        } else if (ship.x > maxX) {
+          ship.x = minX + 10;
+          ship.y = minY + Math.random() * (maxY - minY);
+          ship.targetAngle = -0.4 + Math.random() * 0.8;
+          ship.angle = ship.targetAngle;
+        }
+        if (ship.y < minY) {
+          ship.y = maxY - 10;
+          ship.x = minX + Math.random() * (maxX - minX);
+          ship.targetAngle = -Math.PI / 2 - 0.4 + Math.random() * 0.8;
+          ship.angle = ship.targetAngle;
+        } else if (ship.y > maxY) {
+          ship.y = minY + 10;
+          ship.x = minX + Math.random() * (maxX - minX);
+          ship.targetAngle = Math.PI / 2 - 0.4 + Math.random() * 0.8;
+          ship.angle = ship.targetAngle;
+        }
       }
     }
 
@@ -1908,15 +2259,16 @@
         ctx.save();
         ctx.translate(sx, sy);
         ctx.rotate(ship.angle);
+        ctx.scale(1.6, 1.6); // Prominent, majestic scale
 
         // Sublight / ion / warp engine plume trail behind the ship
-        const trailLen = 28 + Math.sin(t * 18 + ship.x) * 6;
+        const trailLen = 38 + Math.sin(t * 18 + ship.x) * 8;
         const trailGrad = ctx.createLinearGradient(-trailLen, 0, 0, 0);
         trailGrad.addColorStop(0, 'transparent');
-        trailGrad.addColorStop(0.5, ship.trailColor);
+        trailGrad.addColorStop(0.4, ship.trailColor);
         trailGrad.addColorStop(1, '#ffffff');
         ctx.fillStyle = trailGrad;
-        ctx.fillRect(-trailLen, -3, trailLen, 6);
+        ctx.fillRect(-trailLen, -3.5, trailLen, 7);
 
         // Draw the spaceship sprite centered
         ctx.drawImage(sprite, -sprite.width / 2, -sprite.height / 2);
