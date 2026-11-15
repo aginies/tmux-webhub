@@ -1244,7 +1244,10 @@ function serveStatic(req, res, url) {
   // (renders the TOTP setup QR before login). Both are secret-free client code, so
   // exposing them pre-auth is safe — and required, since the login form can't work
   // without its own script.
-  const isLoginAsset = url.pathname === '/vendor/qrcode.js' || url.pathname === '/login.js';
+  const isLoginAsset = url.pathname === '/vendor/qrcode.js' ||
+                       url.pathname === '/login.js' ||
+                       url.pathname === '/herdr-world-logo.svg' ||
+                       url.pathname.startsWith('/fonts/');
   if (!authed(req) && !isLoginAsset) {
     if (url.pathname === '/') {
       return fs.readFile(path.join(PUBLIC_DIR, 'login.html'), (err, data) => {

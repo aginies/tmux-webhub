@@ -184,7 +184,7 @@ function connectTerminal(key, host, name, term, onOpen) {
     flushTimer = null;
     if (!buf.length || ws.readyState !== WebSocket.OPEN) return; // keep buf until open
     const chunks = buf; buf = [];
-    ws.send(JSON.stringify({ type: 'input', chunks }));
+    ws.send(JSON.stringify({ type: 'input', data: chunks.join(''), chunks }));
   };
   st.dataSub = term.onData((d) => {
     buf.push(d);
@@ -777,6 +777,7 @@ async function refresh() {
     if (typeof d.pi === 'string' && d.pi) defaultCmd = d.pi;
     if (d.net) setNetReadout(d.net); else $('net').textContent = ''; // netDisplay: false
     hosts = d.hosts || [];
+    if (townView) townView.connected = true;
     if (townView && view === 'town') townView.update(hosts, active && active.key);
     renderChips();
     populateHostSelect();
@@ -788,6 +789,7 @@ async function refresh() {
     }
   } catch {
     netFails++;
+    if (townView) townView.connected = false;
     setConnBanner(netFails >= 2
       ? `⚠ server unreachable (${netFails} failed polls) — showing stale data`
       : '⚠ reconnecting…');
@@ -819,6 +821,8 @@ document.addEventListener('visibilitychange', () => {
     }
   }
 });
+window.addEventListener('online', () => { if (townView) { townView.connected = true; townView.needsRedraw = true; } });
+window.addEventListener('offline', () => { if (townView) { townView.connected = false; townView.needsRedraw = true; } });
 
 // ---------- panel toggle ----------
 const header = $('header');
@@ -897,16 +901,18 @@ function setView(v) {
   // them on the way out and remember them to restore on the way back.
   const tw = $('termwin');
   if (view === 'town' && v !== 'town') {
-    townWinGeo = { left: tw.style.left, top: tw.style.top, width: tw.style.width, height: tw.style.height };
-    tw.style.left = tw.style.top = tw.style.width = tw.style.height = '';
+    townWinGeo = { left: tw.style.left, top: tw.style.top, width: tw.style.width, height: tw.style.height, right: tw.style.right, bottom: tw.style.bottom };
+    tw.style.left = tw.style.top = tw.style.width = tw.style.height = tw.style.right = tw.style.bottom = '';
   } else if (view !== 'town' && v === 'town' && townWinGeo) {
     tw.style.left = townWinGeo.left; tw.style.top = townWinGeo.top;
     tw.style.width = townWinGeo.width; tw.style.height = townWinGeo.height;
+    tw.style.right = townWinGeo.right; tw.style.bottom = townWinGeo.bottom;
   }
   view = v;
   localStorage.setItem('pc.view', v);
   document.body.classList.toggle('view-town', v === 'town');
-  $('view-toggle').textContent = v === 'town' ? 'List' : 'Town';
+  $('view-toggle').textContent = v === 'town' ? 'List' : 'Space';
+  if ($('town-view-toggle')) $('town-view-toggle').textContent = v === 'town' ? 'List' : 'Space';
   if (townView) {
     if (v === 'town') { townView.update(hosts, active && active.key); townView.start(); }
     else townView.stop();
