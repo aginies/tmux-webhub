@@ -581,10 +581,26 @@
 
     initialCamera() {
       if (!this.town) return;
-      const b = this.town.layout.buildings[0];
+      const L = this.town.layout;
+      const c = L.center;
+      if (c) {
+        // Main square: the town center and the bus stop on the road below it,
+        // with the host buildings (the sessions) in view. Shows a part of the
+        // town — the central area — not all of it, and the bus is visible by
+        // default. Wheel/pinch to zoom, click empty ground to fit-all.
+        const cx = (c.x + c.w / 2) * TT;
+        const top = c.y * TT;
+        const bottom = Math.max(...L.buildings.map((b) => (b.y + b.h) * TT), top + 500);
+        const cy = (top + bottom) / 2;
+        const w = this.cv.clientWidth, h = this.cv.clientHeight;
+        const z = clamp(Math.min(w / 1800, (h - 60) / (bottom - top + 120)), 0.55, 1.0);
+        this.cam = { x: cx, y: cy, z };
+        this.target = null;
+        this.needsRedraw = true;
+        return;
+      }
+      const b = L.buildings[0];
       if (!b) { this.fitCamera(true); return; }
-      // Street level on the first host's building: show a part of the town,
-      // not all of it. Wheel/pinch to zoom, click empty ground to fit-all.
       this.cam = { x: b.x * TT + (b.w * TT) / 2, y: b.y * TT + (b.h * TT) / 2 + 6, z: 1 };
       this.target = null;
       this.needsRedraw = true;
@@ -1262,21 +1278,21 @@
       const { ctx } = this;
       const off = this.hostOff(b.hostKey);
       const label = b.hostKey;
-      ctx.font = '700 10px Silkscreen, monospace';
+      ctx.font = '700 14px Silkscreen, monospace';
       const tw = ctx.measureText(label).width;
-      const x = b.x * TT + (b.w * TT) / 2, y = b.y * TT - 22;
+      const x = b.x * TT + (b.w * TT) / 2, y = b.y * TT - 24;
       ctx.fillStyle = off ? 'rgba(10,13,20,.72)' : 'rgba(16,21,33,.78)';
-      ctx.fillRect(x - tw / 2 - 8, y - 11, tw + 16, 17);
+      ctx.fillRect(x - tw / 2 - 10, y - 15, tw + 20, 24);
       ctx.strokeStyle = off ? 'rgba(133,143,170,.35)' : 'rgba(167,181,218,.4)';
       ctx.lineWidth = 1;
-      ctx.strokeRect(x - tw / 2 - 8, y - 11, tw + 16, 17);
+      ctx.strokeRect(x - tw / 2 - 10, y - 15, tw + 20, 24);
       ctx.fillStyle = off ? '#5b6478' : '#f5f7ff';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(label, x, y - 2);
+      ctx.fillText(label, x, y - 3);
       // state dot (not the only signal: the label text and the roof shade carry it too)
       ctx.fillStyle = off ? '#5b6478' : '#54d17a';
-      ctx.fillRect(x - tw / 2 - 4, y - 5, 3, 3);
+      ctx.fillRect(x - tw / 2 - 5, y - 6, 4, 4);
       ctx.textAlign = 'left';
       ctx.textBaseline = 'alphabetic';
     }
