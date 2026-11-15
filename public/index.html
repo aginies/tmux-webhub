@@ -198,13 +198,24 @@
     position: relative; z-index: 5;
     background: rgba(16,21,33,.82); backdrop-filter: blur(6px);
   }
+  /* the scene reacts to the selected skin, applied the moment the theme
+     changes: night town by default, a bright "day" town under light,
+     a crisper one under contrast (classic stays night, like town) */
+  :root.theme-light body.view-town #townwrap canvas { filter: brightness(1.45) saturate(.78) contrast(.94); }
+  :root.theme-contrast body.view-town #townwrap canvas { filter: contrast(1.25) brightness(1.1); }
+  :root.theme-light body.view-town header { background: rgba(238,242,250,.85); }
+  :root.theme-contrast body.view-town header { background: rgba(255,255,255,.92); }
   body.view-town #hosts { display: none; }
-  body.view-town #main { position: relative; z-index: 2; }
+  /* #main only exists in Town view to anchor the floating terminal window:
+     it must not sit above the canvas and swallow its pointer events
+     (pan / zoom / click-to-attach all live on the canvas) */
+  body.view-town #main { position: relative; z-index: 2; pointer-events: none; }
   body.view-town #conn { position: relative; z-index: 3; }
   /* terminal as a floating Town-skinned window over the scene */
   #termwin { flex: 1 1 auto; min-height: 0; min-width: 0; display: flex; flex-direction: column; position: relative; z-index: 2; }
   body.view-town #termwin {
     position: absolute; right: 12px; bottom: 12px; z-index: 4;
+    pointer-events: auto; /* #main is pointer-events:none — re-enable for the window */
     width: min(780px, calc(100% - 24px)); height: min(580px, calc(100% - 24px));
     display: none;
     border: 1px solid var(--border); border-radius: 12px; overflow: hidden;

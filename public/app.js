@@ -723,8 +723,12 @@ function setTheme(name) {
   if (name === 'classic' || name === 'light' || name === 'contrast')
     document.documentElement.classList.add('theme-' + name);
   localStorage.setItem('pc.theme', name);
-  // keep the main terminal's palette in sync (xterm re-renders on a live theme change)
-  try { term.options.theme = getTermTheme(name); } catch {}
+  // keep the main terminal's palette in sync (xterm re-renders on a live theme
+  // change); in the Town view the terminal window is always dark-scoped
+  try {
+    const inTown = document.body.classList.contains('view-town');
+    term.options.theme = getTermTheme(inTown ? 'town' : name);
+  } catch {}
 }
 function getTheme() {
   if (document.documentElement.classList.contains('theme-classic')) return 'classic';
