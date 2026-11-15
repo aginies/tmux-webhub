@@ -430,6 +430,9 @@ $('t-full').onclick = () => {
 // Moving: drag the termbar (buttons excluded). Resizing: drag the corner
 // grip. Both are clamped so the window can't be lost off-screen, and both
 // are inactive on phones (the window is a fullscreen sheet there).
+// setView() clears the inline styles while the List view is showing (and
+// restores them on the way back) — see townWinGeo there.
+let townWinGeo = null;
 (function () {
   const win = $('termwin'), bar = $('termbar'), grip = $('term-resize');
   const phone = () => matchMedia('(max-width: 640px)').matches;
@@ -871,6 +874,18 @@ if (window.TownView) {
 }
 function setView(v) {
   if (v === 'town' && !townView) v = 'list'; // no art bundle → list only
+  // The town floating window carries inline left/top/width/height from
+  // move/resize — those are only valid in Town view. The List view's flex
+  // layout must own the geometry (the terminal fills the space), so clear
+  // them on the way out and remember them to restore on the way back.
+  const tw = $('termwin');
+  if (view === 'town' && v !== 'town') {
+    townWinGeo = { left: tw.style.left, top: tw.style.top, width: tw.style.width, height: tw.style.height };
+    tw.style.left = tw.style.top = tw.style.width = tw.style.height = '';
+  } else if (view !== 'town' && v === 'town' && townWinGeo) {
+    tw.style.left = townWinGeo.left; tw.style.top = townWinGeo.top;
+    tw.style.width = townWinGeo.width; tw.style.height = townWinGeo.height;
+  }
   view = v;
   localStorage.setItem('pc.view', v);
   document.body.classList.toggle('view-town', v === 'town');
@@ -1223,6 +1238,21 @@ window.addEventListener('keydown', (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'b') { e.preventDefault(); setPanelHidden(!header.classList.contains('hidden')); }
   // Esc detaches only when the terminal is NOT focused (Esc is a normal key inside TUIs)
   if (e.key === 'Escape' && active && !term.isActive) detach();
+});
+
+// ---------- keyboard focus in Town view ----------
+// The map, the map buttons and the window chrome are not focusable — clicking
+// them sends keyboard focus to <body>, and physical typing then silently stops
+// working (the ⌨ virtual keyboard still works: it goes server-side). In Town
+// view the terminal is the star: any click that is not aimed at an open dialog
+// returns keyboard focus to the terminal, so typing always works.
+document.addEventListener('click', (e) => {
+  if (view !== 'town' || !active) return;
+  if (e.target.closest('input, textarea, select')) return; // a real input keeps the keyboard
+  // a dialog is open — or was just opened by this very click (the button that
+  // opens it sits OUTSIDE the backdrop, so test the backdrop, not the target)
+  if (document.querySelector('#modal-bg.open, #cfg-bg.open, #rn-bg.open')) return;
+  term.focus();
 });
 
 // ---------- phone shortcuts (⎋ / Pg↑ / Pg↓, right of +New) ----------
