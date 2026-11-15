@@ -6,8 +6,9 @@
  * LICENSES/herdr-world-MIT.txt). The render pipeline mirrors herdr-world's
  * film (makeTown/drawPod): a static base canvas (ground, landscape, town
  * center, building interiors + facades) plus a per-frame dynamic layer
- * (screens, seated agents, glows, roofs that fade when the camera is inside
- * a building).
+ * (seated agents, desks, monitors, glows) under a light glass roof, so the
+ * people working at the desks stay visible at every zoom (the film's
+ * default shots run roofless for exactly this reason).
  *
  * The scene is a night town: always the dark void, whatever the selected skin.
  *
@@ -103,11 +104,17 @@
       }
       this.sessions = sessions;
       this.hosts = hosts;
+      const hostSig = JSON.stringify(sigHosts);
       const sig = JSON.stringify([sigHosts, sigRooms]);
       if (sig !== this.specSig) {
+        const first = !this.town;
+        const hostsChanged = this.hostSig !== hostSig;
         this.specSig = sig;
+        this.hostSig = hostSig;
         this.buildTown(hosts);
-        if (this.town) this.fitCamera(true);
+        // sessions coming and going must not yank the camera; a new/lost
+        // host (or the very first build) re-centres on the street
+        if (this.town && (first || hostsChanged)) this.initialCamera();
       }
       this.needsRedraw = true;
     }
@@ -192,6 +199,17 @@
 
     /* ---------- camera ---------- */
 
+    initialCamera() {
+      if (!this.town) return;
+      const b = this.town.layout.buildings[0];
+      if (!b) { this.fitCamera(true); return; }
+      // Street level on the first host's building: show a part of the town,
+      // not all of it. Wheel/pinch to zoom, click empty ground to fit-all.
+      this.cam = { x: b.x * TT + (b.w * TT) / 2, y: b.y * TT + (b.h * TT) / 2 + 6, z: 1 };
+      this.target = null;
+      this.needsRedraw = true;
+    }
+
     fitCamera(instant) {
       if (!this.town) return;
       const L = this.town.layout;
@@ -207,7 +225,7 @@
 
     zoomToBuilding(b) {
       const w = this.cv.clientWidth, h = this.cv.clientHeight;
-      // z >= 1.6: the roof is fully faded there, so the desks are guaranteed visible
+      // desk-level view: at z >= 1.6 the pods are big enough to read
       const z = clamp(Math.min(w * 0.9 / (b.w * TT), (h - 60) * 0.9 / ((b.h + 2) * TT)), 1.6, 2.6);
       this.target = { x: b.x * TT + (b.w * TT) / 2, y: b.y * TT + (b.h * TT) / 2, z };
       this.needsRedraw = true;
@@ -224,7 +242,7 @@
       if (!this.town) return null;
       for (const [name, info] of this.town.cells) {
         const X = (info.cell.x + 1) * TT, Y = info.cell.y * TT;
-        if (wx >= X - 6 && wx <= X + 46 && wy >= Y - 6 && wy <= Y + 58) {
+        if (wx >= X - 6 && wx <= X + 56 && wy >= Y - 6 && wy <= Y + 58) {
           return { name, info, key: info.b.hostKey + ':' + name };
         }
       }
@@ -393,14 +411,11 @@
       this.draw(t);
     };
 
-    roofAlpha(b) {
-      // Street level (camera far / outside): the town wears its roofs. Zoomed in
-      // with the camera inside a building: the roof fades away to reveal the
-      // desks (the film's "peek inside" — its default shots run roofless).
-      const { x, y, z } = this.cam;
-      const bx0 = b.x * TT, bx1 = (b.x + b.w) * TT, by0 = b.y * TT, by1 = (b.y + b.h) * TT;
-      if (x < bx0 || x > bx1 || y < by0 || y > by1) return 1;
-      return clamp((1.6 - z) / 0.7, 0, 1); // z<=0.9 opaque, z>=1.6 gone
+    roofAlpha() {
+      // Glass roof: the building keeps its silhouette, but the desks and the
+      // agents working at them stay visible at every zoom (the film's default
+      // shots run roofless for exactly this reason).
+      return 0.16;
     }
 
     draw(t) {
@@ -438,12 +453,13 @@
       }
       list.sort((a, b) => a[0] - b[0]).forEach((e) => e[1]());
 
-      // roofs (fade when the camera is inside the building)
+      // roofs (light glass — the desks stay visible underneath)
+      const ra = this.roofAlpha();
       for (const r of T.roofs) {
-        const a = this.roofAlpha(r.b);
-        if (a < 0.999) { ctx.save(); ctx.globalAlpha = a; }
+        ctx.save();
+        ctx.globalAlpha = ra;
         ctx.drawImage(r.c, r.x, r.y);
-        if (a < 0.999) ctx.restore();
+        ctx.restore();
       }
 
       // host signs above the buildings
@@ -454,7 +470,7 @@
         const X = (this.hover.info.cell.x + 1) * TT, Y = this.hover.info.cell.y * TT;
         ctx.strokeStyle = 'rgba(122,162,247,.9)';
         ctx.lineWidth = 2 / z;
-        ctx.strokeRect(X - 7, Y - 5, 50, 62);
+        ctx.strokeRect(X - 7, Y - 5, 62, 62);
       }
       ctx.restore();
     }
@@ -465,18 +481,24 @@
       const X = (cell.x + 1) * TT, Y = cell.y * TT;
       const slot = TA.townDeskSlots(cell.seats)[0]; // solo seat, top (faces the viewer)
       const cx = X + slot.chairX + 7;
+      const sp = this.town.sp;
 
-      // screen
-      const screenFrame = state === 'working' ? frame % 7 : state === 'idle' ? frame % 2 : 0;
-      ctx.drawImage(TA.townScreen(state, screenFrame), X + slot.chairX, Y + 13);
-
-      // seated agent (a pure function of the session name)
+      // seated agent — a pure function of the session name (film's drawPod:
+      // person first, then the table over the lower body, then the device)
       if (state !== 'off') {
-        const typing = state === 'working' && !REDUCED ? Math.floor(t * 7 + hash(name + key.length)) % 2 : 0;
-        const c = TA.townCharacter(TA.townLookFor(name), 'down', typing, 'sit', false);
+        const typing = state === 'working' && !REDUCED ? Math.floor(t * 7 + hash(name)) % 2 : 0;
+        const c = TA.townCharacter(TA.townLookFor(name), 'down', typing, 'sit', state === 'idle');
         const cw = c.width * AS, ch = c.height * AS;
         ctx.drawImage(c, cx - cw / 2, Y + 25 - ch, cw, ch);
       }
+
+      // table over the agent's lower body (also baked in the base canvas)
+      const table = sp.tableSmall[this.deskColor(name)];
+      if (table) ctx.drawImage(table, X + 14, Y + 17);
+
+      // monitor on the desk — the session state is readable on it
+      const screenFrame = state === 'working' ? frame % 7 : state === 'idle' ? frame % 2 : 0;
+      ctx.drawImage(TA.townScreen(state, screenFrame), X + slot.chairX, Y + 13);
 
       // glow: working (blue), active session (accent, steady)
       const isActive = key === this.activeKey;
@@ -495,7 +517,7 @@
       if (isActive) {
         ctx.strokeStyle = 'rgba(169,194,255,.55)';
         ctx.lineWidth = 1.5;
-        ctx.strokeRect(X - 6.5, Y - 4.5, 49, 61);
+        ctx.strokeRect(X - 6.5, Y - 4.5, 61, 61);
       }
     }
 
