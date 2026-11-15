@@ -868,7 +868,17 @@ setTheme(localStorage.getItem('pc.theme') || 'town');
 let townView = null;
 let view = 'list';
 if (window.TownView) {
-  townView = new TownView($('town'), { attach: (k) => attach(k) });
+  townView = new TownView($('town'), {
+    attach: (k) => attach(k),
+    // town center (top building) opens the settings panel
+    openSettings: () => { $('edit-config').click(); },
+    // "+" at a building's reception: +New with that host preselected
+    newSession: (host) => {
+      const sel = $('ns-host');
+      if ([...sel.options].some((o) => o.value === host)) sel.value = host;
+      $('new-session').click();
+    },
+  });
   window.__townview = townView; // debug handle
   view = localStorage.getItem('pc.view') || (innerWidth < 640 ? 'list' : 'town');
 }

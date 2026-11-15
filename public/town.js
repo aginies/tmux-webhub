@@ -200,6 +200,9 @@
         g.drawImage(sp.chair, cx - 7, cy - 14);
         g.drawImage(TA.townCharacter(TA.townLookFor('you'), 'down', 0, 'sit', false), cx - 7, cy - 11);
         g.drawImage(sp.counter, cx - 41, cy);
+        // "+" new-session button: right of the reception counter, where the
+        // receptionist sits. Clicking it opens +New with this host preselected.
+        b.plus = { x: cx + 44, y: cy - 3, s: 18 };
         g.drawImage(TA.paintTownFacade(b, theme), b.x * TT, (b.y + b.h) * TT);
         roofs.push({ host: b.hostKey, c: TA.paintTownRoof(b, theme, this.hostOff(b.hostKey)), x: b.x * TT - 4, y: b.y * TT - 12, b });
         b.rooms.forEach((r) => r.cells.forEach((cell) => { if (cell.deskKey) cells.set(cell.deskKey, { cell, b }); }));
@@ -472,6 +475,27 @@
       return null;
     }
 
+    // The "+" new-session button at a building's reception (a little click
+    // padding so it's easy to hit at desk-level zoom).
+    plusAt(wx, wy) {
+      if (!this.town) return null;
+      for (const b of this.town.layout.buildings) {
+        const p = b.plus;
+        if (!p) continue;
+        if (wx >= p.x - 4 && wx <= p.x + p.s + 4 && wy >= p.y - 4 && wy <= p.y + p.s + 4) return b.hostKey;
+      }
+      return null;
+    }
+
+    // The town center (the top building, with the clock tower): opens settings.
+    centerAt(wx, wy) {
+      if (!this.town) return null;
+      const c = this.town.layout.center;
+      if (!c) return null;
+      if (wx >= c.x * TT && wx <= (c.x + c.w) * TT && wy >= c.y * TT && wy <= (c.y + c.h) * TT) return c;
+      return null;
+    }
+
     onWheel(e) {
       if (!this.on) return;
       e.preventDefault();
@@ -552,21 +576,26 @@
       const [wx, wy] = this.screenToWorld(e.clientX - rect.left, e.clientY - rect.top);
       const pod = this.podAt(wx, wy);
       if (pod) { this.api.attach(pod.key); return; }
+      const plus = this.plusAt(wx, wy);
+      if (plus) { if (this.api.newSession) this.api.newSession(plus); return; }
       const b = this.buildingAt(wx, wy);
-      if (b) this.zoomToBuilding(b);
-      else this.fitCamera(false);
+      if (b) { this.zoomToBuilding(b); return; }
+      if (this.centerAt(wx, wy)) { if (this.api.openSettings) this.api.openSettings(); return; }
+      this.fitCamera(false);
     }
 
     updateHover(e) {
       const rect = this.cv.getBoundingClientRect();
       const [wx, wy] = this.screenToWorld(e.clientX - rect.left, e.clientY - rect.top);
       const pod = this.podAt(wx, wy);
-      const b = pod ? null : this.buildingAt(wx, wy);
-      this.setHover(pod ? { type: 'pod', ...pod } : b ? { type: 'building', b } : null, e);
+      const plus = pod ? null : this.plusAt(wx, wy);
+      const b = pod || plus ? null : this.buildingAt(wx, wy);
+      const c = pod || plus || b ? null : this.centerAt(wx, wy);
+      this.setHover(pod ? { type: 'pod', ...pod } : plus ? { type: 'plus', host: plus } : b ? { type: 'building', b } : c ? { type: 'center' } : null, e);
     }
 
     setHover(hover, e) {
-      const changed = JSON.stringify(this.hoverKey()) !== JSON.stringify(hover ? (hover.type === 'pod' ? hover.key : hover.b.hostKey) : null);
+      const changed = JSON.stringify(this.hoverKey()) !== JSON.stringify(hover ? this.hoverId(hover) : null);
       this.hover = hover;
       this.cv.style.cursor = hover ? 'pointer' : 'grab';
       const tip = this.tip;
@@ -577,6 +606,10 @@
           const st = s ? (s.activity ? 'active' : 'idle') : '—';
           tip.innerHTML = '<b></b><span class="dim"> · ' + hover.info.b.hostKey + ' · ' + st + (s && s.cwd ? ' · ' + s.cwd : '') + '</span>';
           tip.firstChild.textContent = hover.name;
+        } else if (hover.type === 'plus') {
+          tip.innerHTML = '<b>+ new session</b><span class="dim"> on ' + hover.host + '</span>';
+        } else if (hover.type === 'center') {
+          tip.innerHTML = '<b>⚙ settings</b><span class="dim"> · click to open config</span>';
         } else {
           const h = (this.hosts || []).find((x) => x.name === hover.b.hostKey);
           const n = h && h.sessions ? h.sessions.length : 0;
@@ -593,8 +626,15 @@
       if (changed) this.needsRedraw = true;
     }
 
+    hoverId(hover) {
+      if (hover.type === 'pod') return 'pod:' + hover.key;
+      if (hover.type === 'plus') return 'plus:' + hover.host;
+      if (hover.type === 'center') return 'center';
+      return 'b:' + hover.b.hostKey;
+    }
+
     hoverKey() {
-      return this.hover ? (this.hover.type === 'pod' ? this.hover.key : this.hover.b.hostKey) : null;
+      return this.hover ? this.hoverId(this.hover) : null;
     }
 
     /* ---------- render ---------- */
@@ -698,6 +738,11 @@
       // host signs above the buildings
       for (const r of T.roofs) this.drawSign(r.b);
 
+      // "+" new-session buttons at each reception, and the ⚙ badge on the
+      // town center (settings) — drawn over the roof so they stay crisp
+      for (const b of T.layout.buildings) this.drawPlus(b);
+      this.drawCenterBadge();
+
       // hover / active highlights
       if (this.hover && this.hover.type === 'pod') {
         const X = (this.hover.info.cell.x + 1) * TT, Y = this.hover.info.cell.y * TT;
@@ -796,6 +841,72 @@
         ctx.lineWidth = 1.5;
         ctx.strokeRect(X - 6.5, Y - 4.5, 61, 61);
       }
+    }
+
+    drawPlus(b) {
+      const { ctx } = this;
+      const p = b.plus;
+      if (!p) return;
+      const hover = this.hover && this.hover.type === 'plus' && this.hover.host === b.hostKey;
+      const off = this.hostOff(b.hostKey);
+      const s = p.s, r = 4;
+      ctx.save();
+      ctx.globalAlpha = off ? 0.4 : 1;
+      ctx.beginPath();
+      ctx.moveTo(p.x + r, p.y);
+      ctx.arcTo(p.x + s, p.y, p.x + s, p.y + s, r);
+      ctx.arcTo(p.x + s, p.y + s, p.x, p.y + s, r);
+      ctx.arcTo(p.x, p.y + s, p.x, p.y, r);
+      ctx.arcTo(p.x, p.y, p.x + s, p.y, r);
+      ctx.closePath();
+      ctx.fillStyle = hover ? 'rgba(122,162,247,.95)' : 'rgba(20,26,40,.92)';
+      ctx.fill();
+      ctx.strokeStyle = hover ? '#cdd9ff' : 'rgba(122,162,247,.85)';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      const mx = p.x + s / 2, my = p.y + s / 2, a = s * 0.27;
+      ctx.strokeStyle = hover ? '#0a0e18' : '#9db4e8';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(mx - a, my); ctx.lineTo(mx + a, my);
+      ctx.moveTo(mx, my - a); ctx.lineTo(mx, my + a);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    drawCenterBadge() {
+      const { ctx } = this;
+      const c = this.town.layout.center;
+      if (!c) return;
+      const hover = this.hover && this.hover.type === 'center';
+      const cx = (c.x + c.w / 2) * TT, cy = c.y * TT + 12;
+      const R = 8;
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(cx, cy, R + 3, 0, Math.PI * 2);
+      ctx.fillStyle = hover ? 'rgba(122,162,247,.95)' : 'rgba(20,26,40,.88)';
+      ctx.fill();
+      ctx.strokeStyle = hover ? '#cdd9ff' : 'rgba(167,181,218,.6)';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      const gc = hover ? '#0a0e18' : '#c9d4f0';
+      ctx.strokeStyle = gc;
+      ctx.fillStyle = gc;
+      ctx.lineWidth = 1.5;
+      for (let i = 0; i < 8; i++) {
+        const a = i * Math.PI / 4;
+        ctx.beginPath();
+        ctx.moveTo(cx + Math.cos(a) * (R - 2), cy + Math.sin(a) * (R - 2));
+        ctx.lineTo(cx + Math.cos(a) * (R + 1), cy + Math.sin(a) * (R + 1));
+        ctx.stroke();
+      }
+      ctx.beginPath();
+      ctx.arc(cx, cy, R - 2, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(cx, cy, 2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
     }
 
     drawSign(b) {
