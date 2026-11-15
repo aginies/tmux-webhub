@@ -46,6 +46,8 @@
       this.target = null;
       this.hover = null;
       this.naps = new Map(); // 'host:name' -> nap state (idle agents take the sofa)
+      this.ambient = new Map(); // 'amb:host' -> { key, hostKey, name, b, home, cycle }
+      this.ambientNaps = new Map(); // 'amb:host' -> nap state (ambient workers, always idle)
       this.nav = new Map();  // hostKey -> TA.TownNavigation (A* through the building)
       this.needsRedraw = true;
       this.raf = null;
@@ -210,6 +212,36 @@
       this.town = { layout, base, M, sp, cells, roofs, Wp, Hp };
       this.nav.clear(); // navigation grids are bound to the building objects
       this.reanchorNaps();
+      this.syncAmbientDefs();
+    }
+
+    // one ambient (extra) idle worker per online host — keeps the town alive
+    // even when few sessions are running. They never sit at a desk; they just
+    // cycle: home -> front desk (✓) -> activity (water / nap) -> repeat.
+    syncAmbientDefs() {
+      if (!this.town) { this.ambient.clear(); this.ambientNaps.clear(); return; }
+      const next = new Map();
+      for (const b of this.town.layout.buildings) {
+        if (this.hostOff(b.hostKey)) continue;
+        const key = 'amb:' + b.hostKey;
+        const prev = this.ambient.get(key);
+        const cx = b.doorX * TT;
+        // home: a lobby spot to the right of the reception counter
+        const home = { x: cx + 26, y: (b.counter.y + 2) * TT - 8 };
+        next.set(key, {
+          key, hostKey: b.hostKey,
+          name: 'w' + (hash(b.hostKey) % 97),
+          b, home,
+          cycle: prev ? prev.cycle : 0,
+        });
+      }
+      this.ambient = next;
+      // re-anchor the ambient nap state to the new geometry (or drop it)
+      for (const key of [...this.ambientNaps.keys()]) {
+        if (!this.ambient.has(key)) { this.ambientNaps.delete(key); continue; }
+        const nap = this.ambientNaps.get(key);
+        this.ambientNaps.set(key, { ...nap, b: this.ambient.get(key).b, p: nap.p ? { ...nap.p, b: this.ambient.get(key).b } : null });
+      }
     }
 
     /* ---------- idle agents: front-desk check-in (✓), then nap / water / bus ---------- */
@@ -276,6 +308,34 @@
       return plan;
     }
 
+    // the idle plan for one ambient worker's current cycle. Naps take a sofa
+    // spot not already claimed by a session agent this cycle; otherwise water.
+    ambientPlan(a, sessionPlan) {
+      const activity = this.activityFor(a.name + '#' + a.cycle);
+      const sofa = this.sofaSpots(a.b);
+      const taken = new Set();
+      if (sessionPlan) for (const p of sessionPlan.values()) if (p.b === a.b && p.spot) taken.add(p.spot.x + ',' + p.spot.y);
+      let act = activity, spot = null;
+      if (act === 'water') spot = { ...this.coolerPos(a.b) };
+      else {
+        for (const s of sofa) if (!taken.has(s.x + ',' + s.y)) { spot = s; break; }
+        if (!spot) { act = 'water'; spot = { ...this.coolerPos(a.b) }; }
+      }
+      return { activity: act, spot, b: a.b };
+    }
+
+    // start the first cycle of any ambient worker that isn't cycling yet
+    syncAmbient(plan) {
+      if (!this.town) return;
+      const t = performance.now() / 1000;
+      for (const [key, a] of this.ambient) {
+        if (this.ambientNaps.has(key)) continue;
+        const p = this.ambientPlan(a, plan);
+        const fp = this.frontPos(a.b);
+        this.ambientNaps.set(key, this.makeWalk(key, 'to-front', [[a.home.x, a.home.y], [fp.x, fp.y]], p, a.b));
+      }
+    }
+
     deskFeet(key) {
       const s = this.sessions.get(key);
       const info = s && this.town && this.town.cells.get(s.name);
@@ -287,6 +347,19 @@
         feet: [seat.cx, Y + 25],
         entry: [(seat.entry.x + 0.5) * TT, (seat.entry.y + 0.5) * TT],
       };
+    }
+
+    // the display name for an agent key (a session, or an ambient worker)
+    agentName(key) {
+      const s = this.sessions.get(key);
+      if (s) return s.name;
+      const a = this.ambient.get(key);
+      return a ? a.name : null;
+    }
+
+    agentLook(key) {
+      const name = this.agentName(key);
+      return TA.townLookFor(name || 'you');
     }
 
     buildWalk(b, waypoints) {
@@ -339,24 +412,30 @@
       return Math.max(0.4, nap.walk.total / 90); // ~90 px/s stroll, like the film's moves
     }
 
-    startWalk(key, phase, waypoints, p, b) {
-      const at = this.deskFeet(key);
-      const bb = b || (at && at.b);
-      this.naps.set(key, {
+    // build a nap-state object for a walk (used by both session agents and
+    // ambient workers, which live in different maps)
+    makeWalk(key, phase, waypoints, p, b) {
+      return {
         phase, // 'to-front' | 'checking' | 'to-activity' | 'activity' | 'to-desk'
         start: performance.now() / 1000,
         from: waypoints[0],
         to: waypoints[waypoints.length - 1],
         p: p || null, // { activity, spot, b } — the idle plan entry
-        b: bb,
-        walk: this.buildWalk(bb, waypoints),
-      });
+        b,
+        walk: this.buildWalk(b, waypoints),
+      };
+    }
+
+    startWalk(key, phase, waypoints, p, b) {
+      const at = this.deskFeet(key);
+      this.naps.set(key, this.makeWalk(key, phase, waypoints, p, b || (at && at.b)));
     }
 
     syncNaps() {
       if (!this.town) { this.naps.clear(); return; }
       const t = performance.now() / 1000;
       const plan = this.idlePlan();
+      this.syncAmbient(plan);
       const posOf = (key) => {
         const nap = this.naps.get(key);
         if (!nap) return null;
@@ -698,27 +777,39 @@
       }
 
       // walks / timers that finished: advance the idle lifecycle
-      // (to-front -> checking -> to-activity -> activity; to-desk -> seated)
-      if (this.naps.size) {
-        for (const [key, nap] of [...this.naps]) {
+      // (to-front -> checking -> to-activity -> activity; to-desk -> seated).
+      // Session agents stay at 'activity' until active again; ambient workers
+      // cycle to a fresh activity after their linger time.
+      const advance = (map, isAmbient) => {
+        for (const [key, nap] of [...map]) {
           const dur = this.walkDur(nap);
           if (nap.phase === 'to-front' && t - nap.start >= dur) {
-            this.naps.set(key, { ...nap, phase: 'checking', start: t });
+            map.set(key, { ...nap, phase: 'checking', start: t });
           } else if (nap.phase === 'checking' && t - nap.start >= this.checkMs() / 1000) {
             const fp = this.frontPos(nap.b);
             const p = nap.p;
-            if (p && p.spot) this.startWalk(key, 'to-activity', [[fp.x, fp.y], [p.spot.x, p.spot.y]], p, nap.b);
+            if (p && p.spot) map.set(key, this.makeWalk(key, 'to-activity', [[fp.x, fp.y], [p.spot.x, p.spot.y]], p, nap.b));
             else {
               const at = this.deskFeet(key);
-              if (at) this.startWalk(key, 'to-desk', [[fp.x, fp.y], at.entry, at.feet], null, nap.b);
+              if (at) map.set(key, this.makeWalk(key, 'to-desk', [[fp.x, fp.y], at.entry, at.feet], null, nap.b));
             }
           } else if (nap.phase === 'to-activity' && t - nap.start >= dur) {
-            this.naps.set(key, { ...nap, phase: 'activity', start: t });
+            map.set(key, { ...nap, phase: 'activity', start: t });
           } else if (nap.phase === 'to-desk' && t - nap.start >= dur) {
-            this.naps.delete(key);
+            map.delete(key);
+          } else if (isAmbient && nap.phase === 'activity' && t - nap.start >= this.activityMs(nap.p.activity) / 1000) {
+            const a = this.ambient.get(key);
+            if (a) {
+              a.cycle++;
+              const p = this.ambientPlan(a, this.idlePlan());
+              const fp = this.frontPos(a.b);
+              map.set(key, this.makeWalk(key, 'to-front', [[nap.p.spot.x, nap.p.spot.y], [fp.x, fp.y]], p, a.b));
+            }
           }
         }
-      }
+      };
+      if (this.naps.size) advance(this.naps, false);
+      if (this.ambientNaps.size) advance(this.ambientNaps, true);
 
       const animate = !REDUCED && (this.town ? this.sessions.size : 0) > 0;
       if (REDUCED && !this.needsRedraw) return;
@@ -780,6 +871,17 @@
           }
         }
       }
+      // ambient workers (the extra idle workers, one per host)
+      for (const [key, nap] of this.ambientNaps) {
+        if (!this.ambient.has(key)) continue;
+        if (nap.phase === 'checking' || nap.phase === 'activity') {
+          const pos = nap.phase === 'checking' ? this.frontPos(nap.b) : (nap.p && nap.p.spot);
+          if (pos) list.push([pos.y + 8, () => this.drawAgentAt(key, nap, pos, bubbles)]);
+        } else {
+          const r = this.napPos(nap, t);
+          if (r[3] < 1) list.push([r[1] + 2, () => this.drawWalker(key, nap, r, t)]);
+        }
+      }
       list.sort((a, b) => a[0] - b[0]).forEach((e) => e[1]());
 
       // roofs (light glass — the desks stay visible underneath)
@@ -820,12 +922,11 @@
     }
 
     drawNapper(key, nap, bubbles) {
-      const s = this.sessions.get(key);
-      if (!s) return;
+      const look = this.agentLook(key);
       const spot = (nap.p && nap.p.spot) || nap.spot;
       if (!spot) return;
       const { ctx } = this;
-      const c = TA.townCharacter(TA.townLookFor(s.name), 'down', 0, 'stand', true); // eyes closed
+      const c = TA.townCharacter(look, 'down', 0, 'stand', true); // eyes closed
       const w = c.width * AS, h = c.height * AS;
       const x = spot.x, y = spot.y;
       ctx.fillStyle = 'rgba(0,0,0,.18)';
@@ -842,11 +943,10 @@
     // an agent standing still at a spot: checking in at the front desk (✓) or
     // at the water cooler (coffee). Naps are drawn by drawNapper instead.
     drawAgentAt(key, nap, pos, bubbles) {
-      const s = this.sessions.get(key);
-      if (!s) return;
+      const look = this.agentLook(key);
       const { ctx } = this;
       const x = pos.x, y = pos.y;
-      const c = TA.townCharacter(TA.townLookFor(s.name), 'down', 0, 'stand', false);
+      const c = TA.townCharacter(look, 'down', 0, 'stand', false);
       const w = c.width * AS, h = c.height * AS;
       ctx.fillStyle = 'rgba(0,0,0,.2)';
       ctx.fillRect(Math.round(x) - 5, Math.round(y) - 1, 10, 3);
@@ -856,12 +956,11 @@
     }
 
     drawWalker(key, nap, r, t) {
-      const s = this.sessions.get(key);
-      if (!s) return;
+      const look = this.agentLook(key);
       const { ctx } = this;
       const [x, y, dir] = r;
       const wf = Math.floor(t * 9) % 4; // the film's 4-frame walk cycle at 9 fps
-      const c = TA.townCharacter(TA.townLookFor(s.name), dir, wf, 'stand', false);
+      const c = TA.townCharacter(look, dir, wf, 'stand', false);
       const w = c.width * AS, h = c.height * AS;
       const bob = wf % 2 ? -1 : 0;
       ctx.fillStyle = 'rgba(0,0,0,.22)';
