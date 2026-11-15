@@ -39,6 +39,14 @@ anything.
 
 ## Install
 
+> **Shortcut:** once the package is installed, run **`tmux-webhub setup`** — it
+> creates `~/.tmux-webhub/config.json` (generated token, cert paths pinned
+> there), writes a correct systemd **user** unit pointing at your install, enables
+> it (+ optional linger), and prints the URL + token. Re-run it any time to
+> regenerate the unit (`--dry-run` previews, `--yes` is non-interactive); on an
+> existing install it **migrates** your current config (token/hosts/2FA/cert)
+> rather than resetting it. The steps below are the manual equivalent.
+
 ### 1. Install the server
 
 ```sh
@@ -151,11 +159,17 @@ Everything works on a phone, no hardware keyboard needed:
 - **Stop:** `Ctrl+C`, or `pkill -f 'node server.js'`.
 - **Restart** with new server settings: stop, edit `config.json` (or the ⚙
   editor), start again.
-- **Keep it alive** without a terminal:
+- **Keep it alive** without a terminal — the easy way is the wizard, which
+  writes a correct unit (right `ExecStart`/`WorkingDirectory` for your install)
+  and enables it:
+  ```sh
+  tmux-webhub setup
+  ```
+  Or a plain background process:
   ```sh
   setsid nohup node server.js >> tmux-webhub.log 2>&1 &
   ```
-  or with a systemd **user** unit (the repo ships `deploy/tmux-webhub.service`):
+  Or a systemd **user** unit by hand (the repo ships `deploy/tmux-webhub.service`):
   ```sh
   mkdir -p ~/.config/systemd/user
   cp deploy/tmux-webhub.service ~/.config/systemd/user/
@@ -165,6 +179,31 @@ Everything works on a phone, no hardware keyboard needed:
   loginctl enable-linger $USER    # start at boot, survive logout
   journalctl --user -u tmux-webhub -f   # logs
   ```
+
+## Uninstall
+
+```sh
+tmux-webhub uninstall
+```
+
+Stops + disables + removes the systemd user unit, offers to disable linger, runs
+`npm uninstall -g tmux-webhub` (npm installs only), and removes the config dir
+`~/.tmux-webhub`. The config-dir removal is **prompted** — it deletes the access
+token, the TOTP 2FA secret (enrollment is wiped) and the TLS cert (regenerated on
+next run). `--yes` is non-interactive; `--keep-config` keeps the config dir. For a
+git checkout it prints the `rm -rf <checkout>` for you to run — it never deletes
+a repo on its own.
+
+By hand:
+
+```sh
+systemctl --user disable --now tmux-webhub
+rm ~/.config/systemd/user/tmux-webhub.service
+systemctl --user daemon-reload
+loginctl disable-linger $USER        # optional — other user services may rely on it
+npm uninstall -g tmux-webhub         # npm installs only
+rm -rf ~/.tmux-webhub                # token + 2FA secret + TLS cert
+```
 
 ## Config editor
 

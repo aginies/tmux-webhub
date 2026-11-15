@@ -9,6 +9,7 @@
   },
   "files": [
     "server.js",
+    "setup.js",
     "public/",
     "pitux",
     "config.example.json",

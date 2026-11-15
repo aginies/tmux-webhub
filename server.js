@@ -10,6 +10,16 @@ const { execFile, execFileSync } = require('child_process');
 const WebSocket = require('ws');
 const pty = require('node-pty');
 
+// ---------- subcommands ----------
+// Dispatch BEFORE the fatal config load below, so `setup`/`uninstall` work even
+// when no config.json exists yet (setup is what creates it). setup.js manages its
+// own process.exit; the `return` keeps the server from starting.
+const _sub = process.argv[2];
+if (_sub === 'setup' || _sub === 'uninstall') {
+  require('./setup.js').main(_sub, process.argv.slice(3));
+  return;
+}
+
 // ---------- config (single file: server settings + hosts) ----------
 const CONFIG_FILE = process.env.PC_CONFIG_FILE || path.join(__dirname, 'config.json');
 // session-name rule — the SINGLE source of truth. There is no shared module (no build

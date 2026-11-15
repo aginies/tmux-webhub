@@ -1,11 +1,16 @@
 # tmux-webhub — systemd unit (user scope by default)
 #
+# Easiest install: run `tmux-webhub setup` — it detects your install and writes
+# a correct copy of this unit (right ExecStart/WorkingDirectory/PC_CONFIG_FILE)
+# to ~/.config/systemd/user/, then enables it. This file is the manual-install
+# sample for when you'd rather do it by hand.
+#
 # Why a user unit: the server attaches to *your* tmux sessions and uses
 # *your* ssh keys, so it must run as your user. A user unit does that
 # without any User=/Group= plumbing, and with linger it starts at boot
 # and survives logout.
 #
-# Install:
+# Manual install:
 #   mkdir -p ~/.config/systemd/user
 #   cp deploy/tmux-webhub.service ~/.config/systemd/user/
 #   $EDITOR ~/.config/systemd/user/tmux-webhub.service   # set WorkingDirectory (and ExecStart if needed)
