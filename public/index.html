@@ -201,11 +201,11 @@
   body.view-town #town-ctl { display: flex; }
   #town-ctl button {
     width: 38px; height: 38px; padding: 0; font-size: 17px; line-height: 1;
-    background: rgba(16,21,33,.85); backdrop-filter: blur(6px);
-    color: var(--text, #f5f7ff); border: 1px solid rgba(167,181,218,.22); border-radius: 8px;
+    background: rgba(10, 15, 24, 0.94);
+    color: var(--text, #f5f7ff); border: 1px solid rgba(0, 229, 255, 0.35); border-radius: 8px;
     box-shadow: 0 4px 14px rgba(0,0,0,.35);
   }
-  #town-ctl button:hover { background: rgba(27,34,50,.95); }
+  #town-ctl button:hover { background: rgba(0, 229, 255, 0.15); border-color: rgba(0, 229, 255, 0.85); }
   #town-ctl #town-zall, #town-ctl #town-view-toggle { font-size: 10px; font-weight: 700; letter-spacing: .04em; }
   #town-tip {
     position: fixed; z-index: 30; pointer-events: none;
@@ -222,8 +222,8 @@
   }
   body.view-town header > * { pointer-events: auto; }
   body.view-town #net:not(:empty) {
-    background: rgba(16,21,33,.85); backdrop-filter: blur(6px);
-    border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px;
+    background: rgba(10, 15, 24, 0.94);
+    border: 1px solid rgba(0, 229, 255, 0.35); border-radius: 6px; padding: 4px 8px;
     box-shadow: 0 4px 14px rgba(0,0,0,.35);
   }
   /* the scene reacts to the selected skin, applied the moment the theme

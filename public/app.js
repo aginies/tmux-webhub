@@ -779,8 +779,10 @@ async function refresh() {
     hosts = d.hosts || [];
     if (townView) townView.connected = true;
     if (townView && view === 'town') townView.update(hosts, active && active.key);
-    renderChips();
-    populateHostSelect();
+    if (view === 'list') {
+      renderChips();
+      populateHostSelect();
+    }
     setConnBanner(d.configError ? `⚠ config.json unreadable (${d.configError}) — showing last good host list` : null);
     if (active) {
       const s = findSession(active.key);
@@ -917,7 +919,10 @@ function setView(v) {
   if ($('town-view-toggle')) $('town-view-toggle').textContent = v === 'town' ? 'List' : 'Space';
   if (townView) {
     if (v === 'town') { townView.update(hosts, active && active.key); townView.start(); }
-    else townView.stop();
+    else { townView.stop(); renderChips(); populateHostSelect(); }
+  } else if (v === 'list') {
+    renderChips();
+    populateHostSelect();
   }
   // surfaces over Town wear the Town skin: the terminal is always dark-scoped there
   try { term.options.theme = getTermTheme(v === 'town' ? 'town' : getTheme()); } catch {}

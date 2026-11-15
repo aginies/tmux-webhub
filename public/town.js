@@ -281,6 +281,41 @@
       this.holoBeamActive = bakeBeam(true);
       this.holoBeamWorking = bakeBeam(false);
 
+      // Pre-baked settings gear badges (drawCenterBadge)
+      const bakeCenterBadge = (hover) => {
+        const c = document.createElement('canvas');
+        c.width = 26; c.height = 26;
+        const bc = c.getContext('2d');
+        const cx = 13, cy = 13, R = 8;
+        bc.beginPath();
+        bc.arc(cx, cy, R + 3, 0, Math.PI * 2);
+        bc.fillStyle = hover ? 'rgba(122,162,247,.95)' : 'rgba(20,26,40,.88)';
+        bc.fill();
+        bc.strokeStyle = hover ? '#cdd9ff' : 'rgba(167,181,218,.6)';
+        bc.lineWidth = 1.5;
+        bc.stroke();
+        const gc = hover ? '#0a0e18' : '#c9d4f0';
+        bc.strokeStyle = gc;
+        bc.fillStyle = gc;
+        bc.lineWidth = 1.5;
+        for (let i = 0; i < 8; i++) {
+          const a = (i * Math.PI) / 4;
+          bc.beginPath();
+          bc.moveTo(cx + Math.cos(a) * (R - 2), cy + Math.sin(a) * (R - 2));
+          bc.lineTo(cx + Math.cos(a) * (R + 1), cy + Math.sin(a) * (R + 1));
+          bc.stroke();
+        }
+        bc.beginPath();
+        bc.arc(cx, cy, R - 2, 0, Math.PI * 2);
+        bc.stroke();
+        bc.beginPath();
+        bc.arc(cx, cy, 2, 0, Math.PI * 2);
+        bc.fill();
+        return c;
+      };
+      this.centerBadgeNormal = bakeCenterBadge(false);
+      this.centerBadgeHover = bakeCenterBadge(true);
+
       // Pre-baked space traffic engine plume trails (drawSpaceTraffic)
       for (const ship of this.spaceTraffic) {
         const tc = document.createElement('canvas');
@@ -1557,13 +1592,14 @@
       }
       list.sort((a, b) => a[0] - b[0]).forEach((e) => e[1]());
 
-      // roofs (light glass — the desks stay visible underneath)
+      // roofs (light glass — the desks stay visible underneath, batched without save/restore)
       const ra = this.roofAlpha();
+      ctx.globalAlpha = ra;
       for (const r of T.roofs) {
-        ctx.save();
-        ctx.globalAlpha = ra;
         ctx.drawImage(r.c, r.x, r.y);
-        ctx.restore();
+      }
+      ctx.globalAlpha = 1;
+      for (const r of T.roofs) {
         this.drawStationEffects(r.b, t);
       }
 
@@ -1690,14 +1726,12 @@
       if (s && s.preview) this.drawPreview(X + slot.chairX, Y, s.preview, key, state === 'working' || isActive, t);
 
       // glow: working (blue), active session (accent, steady) — pre-baked sprites,
-      // the pulse modulates globalAlpha instead of rebuilding a gradient per frame
+      // the pulse modulates globalAlpha directly without save/restore or pipeline flushes
       if (state === 'working' || isActive) {
         const pulse = REDUCED ? 0.5 : state === 'working' ? 0.5 + 0.08 * Math.sin(t * 23 + hash(name) % 7) : 0.55;
-        ctx.save();
-        ctx.globalCompositeOperation = 'lighter';
         ctx.globalAlpha = pulse * 0.55;
         ctx.drawImage(isActive ? this.glowActive : this.glowWorking, cx - 20, Y - 8, 40, 40);
-        ctx.restore();
+        ctx.globalAlpha = 1;
       }
       if (isActive) {
         ctx.strokeStyle = 'rgba(0, 229, 255, 0.75)';
@@ -1724,11 +1758,10 @@
       const microFlicker = ((animStep + nameHash) % 23 === 0) ? 0.75 : 1.0;
       const holoAlpha = waveShimmer * microFlicker;
 
-      ctx.save();
-
       // Blit pre-baked holographic projection light beam
       ctx.globalAlpha = holoAlpha;
       ctx.drawImage(active ? this.holoBeamActive : this.holoBeamWorking, projX, emitY);
+      ctx.globalAlpha = 1;
 
       // Console emitter lens / projector head with pulsing flare
       ctx.fillStyle = '#ffffff';
@@ -1792,8 +1825,6 @@
       const scanOffset = ((animStep * 2 + nameHash * 5) % (H - 4)) + 2;
       ctx.fillStyle = active ? 'rgba(0, 229, 255, 0.22)' : 'rgba(0, 180, 255, 0.12)';
       ctx.fillRect(projX + 1, projY + scanOffset, W - 2, 2);
-
-      ctx.restore();
     }
 
     drawPlus(b) {
@@ -1803,8 +1834,7 @@
       const hover = this.hover && this.hover.type === 'plus' && this.hover.host === b.hostKey;
       const off = this.hostOff(b.hostKey);
       const s = p.s, r = 4;
-      ctx.save();
-      ctx.globalAlpha = off ? 0.4 : 1;
+      if (off) ctx.globalAlpha = 0.4;
       ctx.beginPath();
       ctx.moveTo(p.x + r, p.y);
       ctx.arcTo(p.x + s, p.y, p.x + s, p.y + s, r);
@@ -1824,7 +1854,7 @@
       ctx.moveTo(mx - a, my); ctx.lineTo(mx + a, my);
       ctx.moveTo(mx, my - a); ctx.lineTo(mx, my + a);
       ctx.stroke();
-      ctx.restore();
+      if (off) ctx.globalAlpha = 1;
     }
 
     drawCenterBadge() {
@@ -1833,33 +1863,8 @@
       if (!c) return;
       const hover = this.hover && this.hover.type === 'center';
       const cx = (c.x + c.w / 2) * TT, cy = c.y * TT + 12;
-      const R = 8;
-      ctx.save();
-      ctx.beginPath();
-      ctx.arc(cx, cy, R + 3, 0, Math.PI * 2);
-      ctx.fillStyle = hover ? 'rgba(122,162,247,.95)' : 'rgba(20,26,40,.88)';
-      ctx.fill();
-      ctx.strokeStyle = hover ? '#cdd9ff' : 'rgba(167,181,218,.6)';
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
-      const gc = hover ? '#0a0e18' : '#c9d4f0';
-      ctx.strokeStyle = gc;
-      ctx.fillStyle = gc;
-      ctx.lineWidth = 1.5;
-      for (let i = 0; i < 8; i++) {
-        const a = i * Math.PI / 4;
-        ctx.beginPath();
-        ctx.moveTo(cx + Math.cos(a) * (R - 2), cy + Math.sin(a) * (R - 2));
-        ctx.lineTo(cx + Math.cos(a) * (R + 1), cy + Math.sin(a) * (R + 1));
-        ctx.stroke();
-      }
-      ctx.beginPath();
-      ctx.arc(cx, cy, R - 2, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.arc(cx, cy, 2, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.restore();
+      const badge = hover ? this.centerBadgeHover : this.centerBadgeNormal;
+      if (badge) ctx.drawImage(badge, cx - 13, cy - 13);
     }
 
     // Pre-bake static cargo carrier hull for Orbital Sessions (saves ~40 drawing ops per frame)
@@ -2048,8 +2053,6 @@
       const ship = this.town.storageShip;
       const { x, y, w, h } = ship;
 
-      ctx.save();
-
       // 1. Blit pre-baked cargo freighter hull
       if (ship.hullCanvas) {
         ctx.drawImage(ship.hullCanvas, x - (ship.hullOffsetX || 14), y);
@@ -2083,8 +2086,6 @@
           ctx.strokeRect(p.x, p.y, p.w, p.h);
         }
       }
-
-      ctx.restore();
     }
 
     // rounded-rect path (single radius or [tl, tr, br, bl])
