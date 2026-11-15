@@ -672,6 +672,8 @@ const MIME = {
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
   '.ico': 'image/x-icon',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
 };
 // in-memory static buffer cache: non-vendor files are no-cache, so every load used to
 // stat + read from disk; now the disk read happens only when size/mtime changed

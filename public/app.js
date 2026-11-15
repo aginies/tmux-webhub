@@ -26,7 +26,17 @@ const api = async (url, opts) => {
 // Single source of truth for the xterm palette per UI theme. Both the main and
 // split terminals read from here; the CSS custom properties above style the chrome.
 const TERM_THEMES = {
-  dark: {
+  // town (default): Tokyo Night, matching the herdr-world terminal palette
+  town: {
+    background: '#0b0d12', foreground: '#c9cdd6', cursor: '#7aa2f7',
+    selectionBackground: '#2a3a5f',
+    black: '#15161e', red: '#f7768e', green: '#9ece6a', yellow: '#e0af68',
+    blue: '#7aa2f7', magenta: '#bb9af7', cyan: '#7dcfff', white: '#a9b1d6',
+    brightBlack: '#414868', brightRed: '#ff9e9e', brightGreen: '#b8e991', brightYellow: '#f0c987',
+    brightBlue: '#9db8ff', brightMagenta: '#d0b8ff', brightCyan: '#9fdcff', brightWhite: '#c0caf5',
+  },
+  // classic dark: the pre-Town palette
+  classic: {
     background: '#14161a', foreground: '#d7dae0', cursor: '#d7dae0',
     selectionBackground: '#264f78',
     black: '#14161a', red: '#f85149', green: '#3fb950', yellow: '#d29922',
@@ -51,7 +61,7 @@ const TERM_THEMES = {
     brightBlue: '#8080ff', brightMagenta: '#ff80ff', brightCyan: '#80ffff', brightWhite: '#ffffff',
   },
 };
-const getTermTheme = (name) => TERM_THEMES[name] || TERM_THEMES.dark;
+const getTermTheme = (name) => TERM_THEMES[name] || TERM_THEMES.town;
 
 const term = new Terminal({
   cursorBlink: true,
@@ -699,19 +709,24 @@ $('toggle-panel').onclick = () => setPanelHidden(true);
 unhideBtn.onclick = () => setPanelHidden(false);
 
 // ---------- theme ----------
+// town (default, no class) | classic (theme-classic) | light | contrast.
+// Saved values from the old UI: '' (dark) and 'dark' both map to town.
 function setTheme(name) {
-  document.documentElement.classList.remove('theme-light', 'theme-contrast');
-  if (name && name !== 'dark') document.documentElement.classList.add('theme-' + name);
-  localStorage.setItem('pc.theme', name || '');
+  if (!name || name === 'dark') name = 'town';
+  document.documentElement.classList.remove('theme-classic', 'theme-light', 'theme-contrast');
+  if (name === 'classic' || name === 'light' || name === 'contrast')
+    document.documentElement.classList.add('theme-' + name);
+  localStorage.setItem('pc.theme', name);
   // keep the main terminal's palette in sync (xterm re-renders on a live theme change)
   try { term.options.theme = getTermTheme(name); } catch {}
 }
 function getTheme() {
+  if (document.documentElement.classList.contains('theme-classic')) return 'classic';
   if (document.documentElement.classList.contains('theme-light')) return 'light';
   if (document.documentElement.classList.contains('theme-contrast')) return 'contrast';
-  return '';
+  return 'town';
 }
-setTheme(localStorage.getItem('pc.theme') || '');
+setTheme(localStorage.getItem('pc.theme') || 'town');
 
 // ---------- cwd completion: subdirectories on the chosen host (local or ssh) ----------
 let dirsTimer = null;
