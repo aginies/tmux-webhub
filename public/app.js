@@ -210,7 +210,12 @@ function attach(key) {
   // from the key (format: host:session_name) instead of using the full key.
   const sessionName = s ? s.name : key.split(':').pop();
   const host = s ? s.host : 'localhost';
-  const st = connectTerminal(key, host, sessionName, term, () => { fitTerm(); term.focus(); });
+  const st = connectTerminal(key, host, sessionName, term, () => {
+    fitTerm(); term.focus();
+    // re-assert after layout settles: on slow/remote hosts the WS can open before
+    // the container is painted, and the first focus() is then dropped by the browser
+    setTimeout(() => { if (active === st) term.focus(); }, 60);
+  });
   active = st;
   if (view === 'town' && townView) { $('termwin').classList.add('attached'); townView.activeKey = key; townView.needsRedraw = true; }
   $('placeholder').style.display = 'none';
@@ -381,6 +386,8 @@ function attachSplit(key) {
 
   const st = connectTerminal(key, s.host, s.name, splitTerm, () => {
     splitTerm.focus();
+    // re-assert after layout settles (same as the primary terminal)
+    setTimeout(() => { if (splitActive === st) splitTerm.focus(); }, 60);
     // resize split terminal to fill pane
     try { splitFit.fit(); } catch {}
   });
@@ -1250,20 +1257,25 @@ window.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && active && !term.isActive) detach();
 });
 
-// ---------- keyboard focus in Town view ----------
-// The map, the map buttons and the window chrome are not focusable — clicking
-// them sends keyboard focus to <body>, and physical typing then silently stops
-// working (the ⌨ virtual keyboard still works: it goes server-side). In Town
-// view the terminal is the star: any click that is not aimed at an open dialog
-// returns keyboard focus to the terminal, so typing always works.
+// ---------- keyboard focus (both views) ----------
+// The map, the map buttons, the sidebar and the window chrome are not
+// focusable — clicking them sends keyboard focus to <body>, and physical typing
+// then silently stops working (the ⌨ virtual keyboard still works: it goes
+// server-side). The terminal is the star in both views: any click that is not
+// aimed at a real input or an open dialog returns keyboard focus to the
+// terminal, so typing always works. (In Town view this also covers the map and
+// the floating window's chrome; in List view it covers the sidebar and header.)
 document.addEventListener('click', (e) => {
-  if (view !== 'town' || !active) return;
+  if (!active) return;
   if (e.target.closest('input, textarea, select')) return; // a real input keeps the keyboard
   // a dialog is open — or was just opened by this very click (the button that
   // opens it sits OUTSIDE the backdrop, so test the backdrop, not the target)
-  if (document.querySelector('#modal-bg.open, #cfg-bg.open, #rn-bg.open')) return;
+  if (document.querySelector('#modal-bg.open, #cfg-bg.open, #rn-bg.open, #keys-bg.open')) return;
   term.focus();
 });
+// clicking the terminal itself (its xterm surface) must keep / restore focus —
+// mousedown fires before the browser's default focus move, so re-assert here.
+$('term').addEventListener('mousedown', () => { if (active) term.focus(); });
 
 // ---------- phone shortcuts (⎋ / Pg↑ / Pg↓, right of +New) ----------
 // phones have no Esc / PageUp / PageDown keys. ⎋ is injected server-side with
