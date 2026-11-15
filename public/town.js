@@ -1103,22 +1103,27 @@
     }
 
     // tiny live preview: the session's last lines, floating above the monitor.
-    // A small dark terminal with a few lines of the live pane text.
+    // A small dark terminal with a few lines of the live pane text. Drawn at a
+    // constant size on screen (it is drawn in world space, so scale by 1/z) so
+    // it stays readable whether the town is zoomed in or out; above z=1 it grows
+    // with the scene so it tracks the worker.
     drawPreview(mx, Y, preview, name) {
       const { ctx } = this;
-      const W = 46, H = 30, pad = 2, fs = 5, lh = 5;
+      const s = Math.max(1 / this.cam.z, 1);
+      const W = 54 * s, H = 34 * s, pad = 3 * s, fs = 6 * s, lh = 6 * s;
       // last non-empty lines
       const lines = preview.split('\n').map((l) => l.replace(/\s+$/, '')).filter((l) => l.length > 0);
       const shown = lines.slice(-5);
       if (!shown.length) return;
       const maxChars = Math.floor((W - pad * 2) / (fs * 0.62));
-      // position: above the monitor (mx is the monitor's left edge)
-      const x = mx - 15, y = Y - 18 - H;
+      // position: above the monitor (mx is the monitor's left edge); the offset
+      // is scaled too, so the gap stays constant on screen
+      const x = mx - 15 * s, y = Y - 18 * s - H;
       // background + border
       ctx.save();
       ctx.fillStyle = 'rgba(10,12,20,0.92)';
       ctx.strokeStyle = 'rgba(120,140,180,0.5)';
-      ctx.lineWidth = 1;
+      ctx.lineWidth = Math.max(1, 1 * s);
       ctx.beginPath();
       ctx.rect(x + 0.5, y + 0.5, W, H);
       ctx.fill();
@@ -1126,9 +1131,9 @@
       // a little pointer down to the monitor
       ctx.fillStyle = 'rgba(10,12,20,0.92)';
       ctx.beginPath();
-      ctx.moveTo(mx + 3, y + H);
-      ctx.lineTo(mx + 9, y + H);
-      ctx.lineTo(mx + 6, y + H + 3);
+      ctx.moveTo(mx + 3 * s, y + H);
+      ctx.lineTo(mx + 9 * s, y + H);
+      ctx.lineTo(mx + 6 * s, y + H + 3 * s);
       ctx.closePath();
       ctx.fill();
       // text
