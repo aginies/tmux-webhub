@@ -46,8 +46,7 @@
       this.target = null;
       this.hover = null;
       this.naps = new Map(); // 'host:name' -> nap state (idle agents take the sofa)
-      this.ambient = new Map(); // 'amb:host' -> { key, hostKey, name, b, home, cycle }
-      this.ambientNaps = new Map(); // 'amb:host' -> nap state (ambient workers, always idle)
+      this.lastSessions = new Map(); // 'host:name' -> { name, b, entry, feet } (last desk state, for departures)
       this.bus = null; // { route, stop, roadY, cycleMs, haltMs, speed, riders }
       this.busRode = new Set(); // agent keys riding the current bus (hidden while aboard)
       this.nav = new Map();  // hostKey -> TA.TownNavigation (A* through the building)
@@ -214,7 +213,6 @@
       this.town = { layout, base, M, sp, cells, roofs, Wp, Hp };
       this.nav.clear(); // navigation grids are bound to the building objects
       this.reanchorNaps();
-      this.syncAmbientDefs();
       this.setupBus();
     }
 
@@ -235,7 +233,7 @@
       }
       this.bus = {
         route, stop,
-        roadY: stop.wait.y,
+        roadY: stop.wait.y - 18, // on the street (above the sidewalk stop)
         cycleMs: 22000, // between arrivals
         haltMs: 3500,   // how long it halts at the stop
         speed: 300,     // px / s
@@ -290,7 +288,6 @@
         }
       };
       board(this.naps);
-      board(this.ambientNaps);
     }
 
     // advance the bus: board riders when it halts, release them when it leaves
@@ -303,35 +300,6 @@
       if (this._busVisible && !isVisible) { this.bus.riders = []; this.busRode.clear(); }
       this._busHalt = isHalt;
       this._busVisible = isVisible;
-    }
-
-    // one ambient (extra) idle worker per online host — keeps the town alive
-    // even when few sessions are running. They never sit at a desk; they just
-    // cycle: home -> front desk (✓) -> activity (water / nap) -> repeat.
-    syncAmbientDefs() {
-      if (!this.town) { this.ambient.clear(); this.ambientNaps.clear(); return; }
-      const next = new Map();
-      for (const b of this.town.layout.buildings) {
-        if (this.hostOff(b.hostKey)) continue;
-        const key = 'amb:' + b.hostKey;
-        const prev = this.ambient.get(key);
-        const cx = b.doorX * TT;
-        // home: a lobby spot to the right of the reception counter
-        const home = { x: cx + 26, y: (b.counter.y + 2) * TT - 8 };
-        next.set(key, {
-          key, hostKey: b.hostKey,
-          name: 'w' + (hash(b.hostKey) % 97),
-          b, home,
-          cycle: prev ? prev.cycle : 0,
-        });
-      }
-      this.ambient = next;
-      // re-anchor the ambient nap state to the new geometry (or drop it)
-      for (const key of [...this.ambientNaps.keys()]) {
-        if (!this.ambient.has(key)) { this.ambientNaps.delete(key); continue; }
-        const nap = this.ambientNaps.get(key);
-        this.ambientNaps.set(key, { ...nap, b: this.ambient.get(key).b, p: nap.p ? { ...nap.p, b: this.ambient.get(key).b } : null });
-      }
     }
 
     /* ---------- idle agents: front-desk check-in (✓), then nap / water / bus ---------- */
@@ -405,34 +373,6 @@
       return plan;
     }
 
-    // the idle plan for one ambient worker's current cycle. Naps take a sofa
-    // spot not already claimed by a session agent this cycle; otherwise water.
-    ambientPlan(a, sessionPlan) {
-      const activity = this.activityFor(a.name + '#' + a.cycle);
-      const sofa = this.sofaSpots(a.b);
-      const taken = new Set();
-      if (sessionPlan) for (const p of sessionPlan.values()) if (p.b === a.b && p.spot) taken.add(p.spot.x + ',' + p.spot.y);
-      let act = activity, spot = null;
-      if (act === 'water') spot = { ...this.coolerPos(a.b) };
-      else {
-        for (const s of sofa) if (!taken.has(s.x + ',' + s.y)) { spot = s; break; }
-        if (!spot) { act = 'water'; spot = { ...this.coolerPos(a.b) }; }
-      }
-      return { activity: act, spot, b: a.b };
-    }
-
-    // start the first cycle of any ambient worker that isn't cycling yet
-    syncAmbient(plan) {
-      if (!this.town) return;
-      const t = performance.now() / 1000;
-      for (const [key, a] of this.ambient) {
-        if (this.ambientNaps.has(key)) continue;
-        const p = this.ambientPlan(a, plan);
-        const fp = this.frontPos(a.b);
-        this.ambientNaps.set(key, this.makeWalk(key, 'to-front', [[a.home.x, a.home.y], [fp.x, fp.y]], p, a.b));
-      }
-    }
-
     deskFeet(key) {
       const s = this.sessions.get(key);
       const info = s && this.town && this.town.cells.get(s.name);
@@ -446,12 +386,13 @@
       };
     }
 
-    // the display name for an agent key (a session, or an ambient worker)
+    // the display name for an agent key (a session name, or a stored name for
+    // a departure agent whose session was killed)
     agentName(key) {
       const s = this.sessions.get(key);
       if (s) return s.name;
-      const a = this.ambient.get(key);
-      return a ? a.name : null;
+      const nap = this.naps.get(key);
+      return nap && nap.name ? nap.name : null;
     }
 
     agentLook(key) {
@@ -509,8 +450,7 @@
       return Math.max(0.4, nap.walk.total / 90); // ~90 px/s stroll, like the film's moves
     }
 
-    // build a nap-state object for a walk (used by both session agents and
-    // ambient workers, which live in different maps)
+    // build a nap-state object for a walk (session agents)
     makeWalk(key, phase, waypoints, p, b) {
       return {
         phase, // 'to-front' | 'checking' | 'to-activity' | 'activity' | 'to-desk'
@@ -532,7 +472,27 @@
       if (!this.town) { this.naps.clear(); return; }
       const t = performance.now() / 1000;
       const plan = this.idlePlan();
-      this.syncAmbient(plan);
+      // killed sessions: their agent checks in at the front desk, then takes
+      // the bus (whether it was at the desk or already idle)
+      const current = new Set(this.sessions.keys());
+      for (const [key, info] of [...this.lastSessions]) {
+        if (current.has(key)) continue; // still alive
+        this.lastSessions.delete(key);
+        if (!this.bus) { this.naps.delete(key); continue; } // no bus: agent leaves
+        const b = this.town.layout.buildings.find((x) => x.hostKey === info.b.hostKey) || this.town.layout.buildings[0];
+        if (!b) continue;
+        const fp = this.frontPos(b);
+        const p = { activity: 'bus', spot: this.bus.stop.wait, b };
+        const existing = this.naps.get(key);
+        if (existing) {
+          // already idle: redirect from the current position to the front desk
+          const r = this.napPos(existing, t);
+          this.naps.set(key, { ...this.makeWalk(key, 'to-front', [[r[0], r[1]], [fp.x, fp.y]], p, b), name: info.name, leaving: true });
+        } else {
+          // at the desk: walk out
+          this.naps.set(key, { ...this.makeWalk(key, 'to-front', [info.feet, info.entry, [fp.x, fp.y]], p, b), name: info.name, leaving: true });
+        }
+      }
       const posOf = (key) => {
         const nap = this.naps.get(key);
         if (!nap) return null;
@@ -543,7 +503,10 @@
       };
       for (const key of [...this.naps.keys()]) {
         const s = this.sessions.get(key);
-        if (!s) { this.naps.delete(key); continue; }
+        if (!s) {
+          if (this.naps.get(key).leaving) continue; // departure: session gone, keep the walk
+          this.naps.delete(key); continue;
+        }
         const nap = this.naps.get(key);
         const p = plan.get(key);
         const at = this.deskFeet(key);
@@ -581,7 +544,13 @@
         const fp = this.frontPos(at.b);
         this.startWalk(key, 'to-front', [at.feet, at.entry, [fp.x, fp.y]], p, at.b);
       }
+      // remember each live session's desk state (for departure detection)
+      for (const key of current) {
+        const at = this.deskFeet(key);
+        if (at) this.lastSessions.set(key, { name: key.split(':').pop(), b: at.b, entry: at.entry, feet: at.feet });
+      }
       if (REDUCED) for (const [key, nap] of [...this.naps]) {
+        if (nap.leaving) { this.naps.delete(key); continue; } // no animating bus to board
         const toBus = nap.p && nap.p.activity === 'bus';
         if (nap.phase === 'to-front' || nap.phase === 'checking' || nap.phase === 'to-activity')
           this.naps.set(key, { phase: toBus ? 'waiting-bus' : 'activity', start: t, p: nap.p, b: nap.b });
@@ -596,6 +565,7 @@
       const t = performance.now() / 1000;
       const plan = this.idlePlan();
       for (const [key, nap] of [...this.naps]) {
+        if (nap.leaving) continue; // departure agents keep their own walk
         const s = this.sessions.get(key);
         const at = s && this.deskFeet(key);
         if (!s || !at) { this.naps.delete(key); continue; }
@@ -876,9 +846,8 @@
 
       // walks / timers that finished: advance the idle lifecycle
       // (to-front -> checking -> to-activity -> activity; to-desk -> seated).
-      // Session agents stay at 'activity' until active again; ambient workers
-      // cycle to a fresh activity after their linger time.
-      const advance = (map, isAmbient) => {
+      // Session agents stay at 'activity' until active again.
+      const advance = (map) => {
         for (const [key, nap] of [...map]) {
           const dur = this.walkDur(nap);
           if (nap.phase === 'to-front' && t - nap.start >= dur) {
@@ -900,22 +869,13 @@
             map.set(key, { ...nap, phase, start: t });
           } else if (nap.phase === 'to-desk' && t - nap.start >= dur) {
             map.delete(key);
-          } else if (isAmbient && nap.phase === 'activity' && t - nap.start >= this.activityMs(nap.p.activity) / 1000) {
-            const a = this.ambient.get(key);
-            if (a) {
-              a.cycle++;
-              const p = this.ambientPlan(a, this.idlePlan());
-              const fp = this.frontPos(a.b);
-              map.set(key, this.makeWalk(key, 'to-front', [[nap.p.spot.x, nap.p.spot.y], [fp.x, fp.y]], p, a.b));
-            }
           }
         }
       };
-      if (this.naps.size) advance(this.naps, false);
-      if (this.ambientNaps.size) advance(this.ambientNaps, true);
+      if (this.naps.size) advance(this.naps);
       this.updateBus(t);
 
-      const animate = !REDUCED && !!this.town && (this.sessions.size > 0 || this.ambient.size > 0 || !!this.bus);
+      const animate = !REDUCED && !!this.town && (this.sessions.size > 0 || !!this.bus);
       if (REDUCED && !this.needsRedraw) return;
       if (!animate && !this.needsRedraw && !this.target) return;
       this.needsRedraw = false;
@@ -968,22 +928,17 @@
         if (nap) {
           if (nap.phase === 'checking' || nap.phase === 'activity' || nap.phase === 'waiting-bus') {
             const pos = nap.phase === 'checking' ? this.frontPos(nap.b) : (nap.p && nap.p.spot);
-            if (pos) list.push([pos.y + 8, () => this.drawAgentAt(key, nap, pos, bubbles)]);
+            if (pos) {
+              // naps lie down on the sofa; everything else stands
+              if (nap.phase === 'activity' && nap.p && nap.p.activity === 'nap')
+                list.push([pos.y + 8, () => this.drawNapper(key, nap, bubbles)]);
+              else
+                list.push([pos.y + 8, () => this.drawAgentAt(key, nap, pos, bubbles)]);
+            }
           } else {
             const r = this.napPos(nap, t);
             if (r[3] < 1) list.push([r[1] + 2, () => this.drawWalker(key, nap, r, t)]);
           }
-        }
-      }
-      // ambient workers (the extra idle workers, one per host)
-      for (const [key, nap] of this.ambientNaps) {
-        if (!this.ambient.has(key)) continue;
-        if (nap.phase === 'checking' || nap.phase === 'activity' || nap.phase === 'waiting-bus') {
-          const pos = nap.phase === 'checking' ? this.frontPos(nap.b) : (nap.p && nap.p.spot);
-          if (pos) list.push([pos.y + 8, () => this.drawAgentAt(key, nap, pos, bubbles)]);
-        } else {
-          const r = this.napPos(nap, t);
-          if (r[3] < 1) list.push([r[1] + 2, () => this.drawWalker(key, nap, r, t)]);
         }
       }
       // the bus stop and the bus (on the street, depth-sorted by feet y)
@@ -1254,7 +1209,6 @@
     busWaiting() {
       const isWait = (nap) => nap && nap.phase === 'waiting-bus';
       for (const nap of this.naps.values()) if (isWait(nap)) return true;
-      for (const nap of this.ambientNaps.values()) if (isWait(nap)) return true;
       return false;
     }
 
