@@ -45,6 +45,8 @@
       this.cam = { x: 0, y: 0, z: 1 };
       this.target = null;
       this.hover = null;
+      this.naps = new Map(); // 'host:name' -> nap state (idle agents take the sofa)
+      this.nav = new Map();  // hostKey -> TA.TownNavigation (A* through the building)
       this.needsRedraw = true;
       this.raf = null;
       this.pointers = new Map();
@@ -116,6 +118,7 @@
         // host (or the very first build) re-centres on the street
         if (this.town && (first || hostsChanged)) this.initialCamera();
       }
+      this.syncNaps();
       this.needsRedraw = true;
     }
 
@@ -195,6 +198,188 @@
         b.rooms.forEach((r) => r.cells.forEach((cell) => { if (cell.deskKey) cells.set(cell.deskKey, { cell, b }); }));
       });
       this.town = { layout, base, M, sp, cells, roofs, Wp, Hp };
+      this.nav.clear(); // navigation grids are bound to the building objects
+      this.reanchorNaps();
+    }
+
+    /* ---------- idle agents take the sofa (the film's nap) ---------- */
+
+    sofaSpots(b) {
+      // two nappers on the sofa (drawn at the film's lounge position)
+      const L = b.lounge;
+      const sx = (L.x + 1) * TT - 1, sy = (L.y + 1) * TT - 8;
+      return [
+        { x: sx + 14, y: sy + 9, side: -1 },
+        { x: sx + 34, y: sy + 9, side: 1 },
+      ];
+    }
+
+    wantSpots() {
+      // deterministic assignment: the building's idle sessions, by name, take
+      // the sofa in order; overflow stays at the desk (Zzz in the chair)
+      const want = new Map(); // key -> spot
+      if (!this.town) return want;
+      for (const b of this.town.layout.buildings) {
+        if (this.hostOff(b.hostKey)) continue;
+        const spots = this.sofaSpots(b);
+        const idle = [];
+        for (const [name, info] of this.town.cells) {
+          if (info.b.hostKey !== b.hostKey) continue;
+          const key = b.hostKey + ':' + name;
+          const s = this.sessions.get(key);
+          if (s && !s.activity) idle.push(key);
+        }
+        idle.sort();
+        for (let i = 0; i < idle.length && i < spots.length; i++) want.set(idle[i], spots[i]);
+      }
+      return want;
+    }
+
+    deskFeet(key) {
+      const s = this.sessions.get(key);
+      const info = s && this.town && this.town.cells.get(s.name);
+      if (!info) return null;
+      const Y = info.cell.y * TT;
+      const seat = TA.townSeat(info.cell, 0);
+      return {
+        b: info.b,
+        feet: [seat.cx, Y + 25],
+        entry: [(seat.entry.x + 0.5) * TT, (seat.entry.y + 0.5) * TT],
+      };
+    }
+
+    buildWalk(b, waypoints) {
+      // A* between consecutive waypoints where the grid allows it (the film's
+      // TownNavigation); a straight segment where it doesn't (inside a cell)
+      let nav = this.nav.get(b.hostKey);
+      if (!nav) this.nav.set(b.hostKey, nav = new TA.TownNavigation(b));
+      const raw = [waypoints[0]];
+      for (let i = 1; i < waypoints.length; i++) {
+        const a = waypoints[i - 1], c = waypoints[i];
+        const tiles = nav.path(Math.floor(a[0] / TT), Math.floor(a[1] / TT), Math.floor(c[0] / TT), Math.floor(c[1] / TT));
+        if (tiles && tiles.length) for (const [tx, ty] of tiles) raw.push([(tx + 0.5) * TT, (ty + 0.5) * TT]);
+        raw.push(c);
+      }
+      const pts = [raw[0]];
+      for (let i = 1; i < raw.length; i++) {
+        const q = pts[pts.length - 1];
+        if (Math.hypot(raw[i][0] - q[0], raw[i][1] - q[1]) >= 1) pts.push(raw[i]);
+      }
+      const cum = [0];
+      for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
+      return { pts, cum, total: cum[cum.length - 1] };
+    }
+
+    walkPoint(walk, d) {
+      const { pts, cum } = walk;
+      if (walk.total <= 0) { const q = pts[pts.length - 1]; return [q[0], q[1], 'down']; }
+      d = clamp(d, 0, walk.total);
+      for (let i = 1; i < cum.length; i++) {
+        if (d <= cum[i]) {
+          const seg = cum[i] - cum[i - 1];
+          const f = seg > 0 ? (d - cum[i - 1]) / seg : 1;
+          const dx = pts[i][0] - pts[i - 1][0], dy = pts[i][1] - pts[i - 1][1];
+          const dir = Math.abs(dx) >= Math.abs(dy) ? (dx >= 0 ? 'right' : 'left') : (dy >= 0 ? 'down' : 'up');
+          return [pts[i - 1][0] + dx * f, pts[i - 1][1] + dy * f, dir];
+        }
+      }
+      const q = pts[pts.length - 1];
+      return [q[0], q[1], 'down'];
+    }
+
+    napPos(nap, t) {
+      const total = nap.walk.total;
+      const p = clamp((t - nap.start) / this.walkDur(nap), 0, 1);
+      const e = p * p * (3 - 2 * p); // ease in-out over the whole route
+      return this.walkPoint(nap.walk, total * e).concat(p);
+    }
+
+    walkDur(nap) {
+      return Math.max(0.4, nap.walk.total / 90); // ~90 px/s stroll, like the film's moves
+    }
+
+    startWalk(key, phase, waypoints, spot) {
+      const at = this.deskFeet(key);
+      if (!at) return;
+      this.naps.set(key, {
+        phase, // 'to-sofa' | 'to-desk'
+        start: performance.now() / 1000,
+        from: waypoints[0],
+        to: waypoints[waypoints.length - 1],
+        spot: spot || null,
+        walk: this.buildWalk(at.b, waypoints),
+      });
+    }
+
+    syncNaps() {
+      if (!this.town) { this.naps.clear(); return; }
+      const t = performance.now() / 1000;
+      const want = this.wantSpots();
+      const posOf = (key) => {
+        const nap = this.naps.get(key);
+        if (!nap) return null;
+        if (nap.phase === 'napping') return [nap.spot.x, nap.spot.y];
+        const r = this.napPos(nap, t);
+        return [r[0], r[1]];
+      };
+      for (const key of [...this.naps.keys()]) {
+        const s = this.sessions.get(key);
+        if (!s) { this.naps.delete(key); continue; }
+        const nap = this.naps.get(key);
+        const spot = want.get(key);
+        const at = this.deskFeet(key);
+        if (!at) { this.naps.delete(key); continue; }
+        if (s.activity || !spot) {
+          // belongs at the desk: get up and walk back
+          if (nap.phase !== 'to-desk') {
+            const from = posOf(key);
+            if (from) this.startWalk(key, 'to-desk', [from, at.entry, at.feet], null);
+          }
+        } else if (nap.phase === 'to-desk') {
+          // went idle again mid-return: turn around
+          const from = posOf(key);
+          this.startWalk(key, 'to-sofa', [from, at.entry, [spot.x, spot.y]], spot);
+        } else if (nap.phase === 'to-sofa' && (nap.spot.x !== spot.x || nap.spot.y !== spot.y)) {
+          // reassigned to a different spot mid-walk
+          const from = posOf(key);
+          this.startWalk(key, 'to-sofa', [from, at.entry, [spot.x, spot.y]], spot);
+        } else if (nap.phase === 'napping' && (nap.spot.x !== spot.x || nap.spot.y !== spot.y)) {
+          this.startWalk(key, 'to-sofa', [[nap.spot.x, nap.spot.y], [spot.x, spot.y]], spot);
+        }
+      }
+      // fresh idle sessions: leave the desk for the sofa
+      for (const [key, spot] of want) {
+        if (this.naps.has(key)) continue;
+        const at = this.deskFeet(key);
+        if (at) this.startWalk(key, 'to-sofa', [at.feet, at.entry, [spot.x, spot.y]], spot);
+      }
+      if (REDUCED) for (const [key, nap] of [...this.naps]) {
+        if (nap.phase === 'to-sofa') this.naps.set(key, { phase: 'napping', spot: nap.spot });
+        else if (nap.phase === 'to-desk') this.naps.delete(key);
+      }
+    }
+
+    reanchorNaps() {
+      // the layout was rebuilt (a session was added/killed): re-attach the nap
+      // state to the new geometry instead of dropping it
+      if (!this.town || !this.naps.size) return;
+      const t = performance.now() / 1000;
+      const want = this.wantSpots();
+      for (const [key, nap] of [...this.naps]) {
+        const s = this.sessions.get(key);
+        const at = s && this.deskFeet(key);
+        if (!s || !at) { this.naps.delete(key); continue; }
+        const spot = want.get(key);
+        if (nap.phase === 'napping') {
+          if (spot) this.naps.set(key, { phase: 'napping', spot });
+          else this.startWalk(key, 'to-desk', [[nap.spot.x, nap.spot.y], at.entry, at.feet], null);
+        } else {
+          const r = this.napPos(nap, t);
+          const from = [r[0], r[1]];
+          if (spot) this.startWalk(key, 'to-sofa', [from, at.entry, [spot.x, spot.y]], spot);
+          else this.startWalk(key, 'to-desk', [from, at.entry, at.feet], null);
+        }
+      }
     }
 
     /* ---------- camera ---------- */
@@ -240,6 +425,18 @@
 
     podAt(wx, wy) {
       if (!this.town) return null;
+      // moving agents first: a napper on the sofa or a walker in between is
+      // the same session as its desk
+      for (const [key, nap] of this.naps) {
+        let px, py;
+        if (nap.phase === 'napping') { px = nap.spot.x; py = nap.spot.y; }
+        else { const r = this.napPos(nap, performance.now() / 1000); px = r[0]; py = r[1]; }
+        if (wx >= px - 15 && wx <= px + 15 && wy >= py - 16 && wy <= py + 10) {
+          const s = this.sessions.get(key);
+          const info = s && this.town.cells.get(s.name);
+          if (info) return { name: s.name, info, key };
+        }
+      }
       for (const [name, info] of this.town.cells) {
         const X = (info.cell.x + 1) * TT, Y = info.cell.y * TT;
         if (wx >= X - 6 && wx <= X + 56 && wy >= Y - 6 && wy <= Y + 58) {
@@ -404,6 +601,17 @@
         this.needsRedraw = true;
       }
 
+      // walks that finished: the napper settles on the sofa, the returner sits down
+      if (this.naps.size) {
+        for (const [key, nap] of [...this.naps]) {
+          if (nap.phase === 'napping') continue;
+          if (t - nap.start >= this.walkDur(nap)) {
+            if (nap.phase === 'to-sofa') this.naps.set(key, { phase: 'napping', spot: nap.spot });
+            else this.naps.delete(key);
+          }
+        }
+      }
+
       const animate = !REDUCED && (this.town ? this.sessions.size : 0) > 0;
       if (REDUCED && !this.needsRedraw) return;
       if (!animate && !this.needsRedraw && !this.target) return;
@@ -442,14 +650,22 @@
       ctx.imageSmoothingEnabled = false;
       ctx.drawImage(T.base, -T.M, -T.M);
 
-      // dynamic desk layer, depth-sorted
+      // dynamic desk layer, depth-sorted (pods and the moving agents together)
       const list = [];
+      const bubbles = [];
       const frame = REDUCED ? 0 : Math.floor(t * 6);
       for (const [name, info] of T.cells) {
         const key = info.b.hostKey + ':' + name;
         const s = this.sessions.get(key);
         const state = s ? (s.activity ? 'working' : 'idle') : 'off';
-        list.push([info.cell.y * TT + 52, () => this.drawPod(info, name, state, t, key, frame)]);
+        const nap = this.naps.get(key);
+        list.push([info.cell.y * TT + 52, () => this.drawPod(info, name, state, t, key, frame, !nap, bubbles)]);
+        if (nap && nap.phase === 'napping') {
+          list.push([nap.spot.y + 8, () => this.drawNapper(key, nap, bubbles)]);
+        } else if (nap) {
+          const r = this.napPos(nap, t);
+          if (r[3] < 1) list.push([r[1] + 2, () => this.drawWalker(key, nap, r, t)]);
+        }
       }
       list.sort((a, b) => a[0] - b[0]).forEach((e) => e[1]());
 
@@ -473,9 +689,51 @@
         ctx.strokeRect(X - 7, Y - 5, 62, 62);
       }
       ctx.restore();
+
+      // thought bubbles in screen space: constant size at every zoom, like the film
+      for (const [x, y, kind] of bubbles) {
+        const img = T.sp.bubble[kind];
+        if (!img) continue;
+        const sx = ox + (x - camx) * z, sy = oy + (y - camy) * z;
+        const near = z >= 1.4;
+        const bs = near ? clamp(Math.round(z * 1.5), 2, 4) : z < 0.7 ? 1 : 2;
+        ctx.drawImage(img, Math.round(sx - img.width * bs / 2), Math.round(sy - 2 - img.height * bs), img.width * bs, img.height * bs);
+      }
     }
 
-    drawPod(info, name, state, t, key, frame) {
+    drawNapper(key, nap, bubbles) {
+      const s = this.sessions.get(key);
+      if (!s) return;
+      const { ctx } = this;
+      const c = TA.townCharacter(TA.townLookFor(s.name), 'down', 0, 'stand', true); // eyes closed
+      const w = c.width * AS, h = c.height * AS;
+      const x = nap.spot.x, y = nap.spot.y;
+      ctx.fillStyle = 'rgba(0,0,0,.18)';
+      ctx.fillRect(x - 14, y + 8, 28, 3);
+      // lying along the sofa, head to one side (the film's floor-nap, on the couch)
+      ctx.save();
+      ctx.translate(Math.round(x), Math.round(y));
+      ctx.rotate(nap.spot.side * Math.PI / 2);
+      ctx.drawImage(c, -w / 2, -h / 2, w, h);
+      ctx.restore();
+      bubbles.push([x + nap.spot.side * 16, y - 12, 'sleep']);
+    }
+
+    drawWalker(key, nap, r, t) {
+      const s = this.sessions.get(key);
+      if (!s) return;
+      const { ctx } = this;
+      const [x, y, dir] = r;
+      const wf = Math.floor(t * 9) % 4; // the film's 4-frame walk cycle at 9 fps
+      const c = TA.townCharacter(TA.townLookFor(s.name), dir, wf, 'stand', false);
+      const w = c.width * AS, h = c.height * AS;
+      const bob = wf % 2 ? -1 : 0;
+      ctx.fillStyle = 'rgba(0,0,0,.22)';
+      ctx.fillRect(Math.round(x) - 5, Math.round(y) - 1, 10, 3);
+      ctx.drawImage(c, Math.round(x) - w / 2, Math.round(y) - h + 1 + bob, w, h);
+    }
+
+    drawPod(info, name, state, t, key, frame, seated, bubbles) {
       const { ctx } = this;
       const { cell } = info;
       const X = (cell.x + 1) * TT, Y = cell.y * TT;
@@ -484,12 +742,14 @@
       const sp = this.town.sp;
 
       // seated agent — a pure function of the session name (film's drawPod:
-      // person first, then the table over the lower body, then the device)
-      if (state !== 'off') {
+      // person first, then the table over the lower body, then the device).
+      // Absent (seated=false) while the agent is walking or napping on the sofa.
+      if (seated && state !== 'off') {
         const typing = state === 'working' && !REDUCED ? Math.floor(t * 7 + hash(name)) % 2 : 0;
         const c = TA.townCharacter(TA.townLookFor(name), 'down', typing, 'sit', state === 'idle');
         const cw = c.width * AS, ch = c.height * AS;
         ctx.drawImage(c, cx - cw / 2, Y + 25 - ch, cw, ch);
+        if (state === 'idle' && bubbles) bubbles.push([cx, Y - 3, 'sleep']); // Zzz in the chair (sofa full)
       }
 
       // table over the agent's lower body (also baked in the base canvas)
