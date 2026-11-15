@@ -108,7 +108,7 @@
       this.skyStars = [];
       let seed = 777;
       const rand = () => { seed = (seed * 9301 + 49297) % 233280; return seed / 233280; };
-      for (let i = 0; i < 240; i++) {
+      for (let i = 0; i < 80; i++) {
         this.skyStars.push({
           x: rand(), y: rand(),
           size: rand() < 0.65 ? 1 : rand() < 0.88 ? 2 : 3,
@@ -142,18 +142,6 @@
 
       this.galaxies = [
         {
-          nx: 0.12, ny: 0.24, // Moved down on the left
-          radius: 34,         // Reduced size
-          tilt: 0.52,
-          angle: -0.38,
-          speed: -0.045, // counter-clockwise slow rotation
-          coreColor: '#ffe4f0',
-          haloColor: 'rgba(189, 147, 249, 0.4)',
-          armColor1: 'rgba(189, 147, 249, 0.85)',
-          armColor2: 'rgba(139, 233, 253, 0.8)',
-          stars: makeGalaxy(4321, 140),
-        },
-        {
           nx: 0.88, ny: 0.11, // High open sky on the right
           radius: 46,
           tilt: 0.58,
@@ -163,7 +151,7 @@
           haloColor: 'rgba(0, 229, 255, 0.38)',
           armColor1: 'rgba(0, 229, 255, 0.85)',
           armColor2: 'rgba(241, 250, 140, 0.8)',
-          stars: makeGalaxy(8765, 140),
+          stars: makeGalaxy(8765, 120),
         },
       ];
 
@@ -187,6 +175,61 @@
       };
       this.glowWorking = bakeGlow('0,180,255');
       this.glowActive = bakeGlow('0,229,255');
+
+      // Pre-baked holographic projection light beam (drawPreview)
+      const bakeBeam = (active) => {
+        const c = document.createElement('canvas');
+        c.width = 104; c.height = 6;
+        const bc = c.getContext('2d');
+        const cx = 52;
+        const beam = bc.createLinearGradient(cx, 0, cx, 6);
+        beam.addColorStop(0, active ? 'rgba(0, 229, 255, 0.55)' : 'rgba(0, 180, 255, 0.35)');
+        beam.addColorStop(0.4, active ? 'rgba(0, 200, 255, 0.25)' : 'rgba(0, 150, 255, 0.15)');
+        beam.addColorStop(1, 'rgba(0, 229, 255, 0.04)');
+        bc.fillStyle = beam;
+        bc.beginPath();
+        bc.moveTo(cx - 3, 0);
+        bc.lineTo(cx + 3, 0);
+        bc.lineTo(104, 6);
+        bc.lineTo(0, 6);
+        bc.closePath();
+        bc.fill();
+        return c;
+      };
+      this.holoBeamActive = bakeBeam(true);
+      this.holoBeamWorking = bakeBeam(false);
+
+      // Pre-baked K2000 Knight Rider scanner glow head (drawK2000Scanner)
+      const bakeScannerGlow = () => {
+        const c = document.createElement('canvas');
+        c.width = 72; c.height = 72;
+        const sc = c.getContext('2d');
+        const vGrad = sc.createRadialGradient(36, 36, 2, 36, 36, 36);
+        vGrad.addColorStop(0, 'rgba(255, 255, 255, 0.9)');
+        vGrad.addColorStop(0.2, 'rgba(0, 229, 255, 0.65)');
+        vGrad.addColorStop(0.6, 'rgba(0, 140, 255, 0.22)');
+        vGrad.addColorStop(1, 'transparent');
+        sc.fillStyle = vGrad;
+        sc.beginPath();
+        sc.arc(36, 36, 36, 0, Math.PI * 2);
+        sc.fill();
+        return c;
+      };
+      this.scannerGlow = bakeScannerGlow();
+
+      // Pre-baked space traffic engine plume trails (drawSpaceTraffic)
+      for (const ship of this.spaceTraffic) {
+        const tc = document.createElement('canvas');
+        tc.width = 48; tc.height = 8;
+        const tctx = tc.getContext('2d');
+        const tg = tctx.createLinearGradient(0, 0, 48, 0);
+        tg.addColorStop(0, 'transparent');
+        tg.addColorStop(0.4, ship.trailColor);
+        tg.addColorStop(1, '#ffffff');
+        tctx.fillStyle = tg;
+        tctx.fillRect(0, 0, 48, 8);
+        ship.trailCanvas = tc;
+      }
 
       canvas.addEventListener('wheel', (e) => this.onWheel(e), { passive: false });
       canvas.addEventListener('pointerdown', (e) => this.onPointerDown(e));
@@ -266,6 +309,7 @@
         if (this.town && (first || hostsChanged)) this.initialCamera();
       }
       this.syncNaps();
+      this.updateStorageShipLayout();
       this.needsRedraw = true;
     }
 
@@ -325,7 +369,7 @@
         if (sp.food) g.drawImage(sp.food, (L.x + 16) * TT + 2, (L.y + 1) * TT - 12);
         const cx = b.doorX * TT, cy = (b.counter.y + 1) * TT - 8;
         g.drawImage(sp.chair, cx - 7, cy - 14);
-        g.drawImage(TA.townCharacter(TA.townLookFor('you'), 'down', 0, 'sit', false), cx - 7, cy - 11);
+        g.drawImage(TA.townCharacter({ isImperial: true }, 'down', 0, 'sit', false), cx - 7, cy - 11);
         g.drawImage(sp.counter, cx - 41, cy);
         // "+" new-session button right of the reception counter ("à l'accueil")
         b.plus = { x: cx + 44, y: cy - 3, s: 18 };
@@ -341,6 +385,7 @@
       const shipX = center.x * TT - shipW - 40;
       const shipY = center.y * TT + 10;
       const storageShip = { x: shipX, y: shipY, w: shipW, h: shipH, items: [], hostItems: [] };
+      this.bakeStorageShipHull(storageShip);
 
       this.town = { layout, base, M, sp, cells, roofs, Wp, Hp, storageShip };
       this.nav.clear(); // navigation grids are bound to the building objects
@@ -909,7 +954,7 @@
 
     /* ---------- camera ---------- */
 
-    initialCamera() {
+    initialCamera(instant = true) {
       if (!this.town) return;
       const L = this.town.layout;
       const c = L.center;
@@ -928,29 +973,22 @@
         const cy = (top + bottom) / 2;
         const w = this.cv.clientWidth, h = this.cv.clientHeight;
         const z = clamp(Math.min(w / (maxX - minX + 180), (h - 60) / (bottom - top + 120)), 0.5, 1.0);
-        this.cam = { x: cx, y: cy, z };
-        this.target = null;
+        const t = { x: cx, y: cy, z };
+        if (instant) { this.cam = { ...t }; this.target = null; }
+        else this.target = t;
         this.needsRedraw = true;
         return;
       }
       const b = L.buildings[0];
-      if (!b) { this.fitCamera(true); return; }
-      this.cam = { x: b.x * TT + (b.w * TT) / 2, y: b.y * TT + (b.h * TT) / 2 + 6, z: 1 };
-      this.target = null;
-      this.needsRedraw = true;
-    }
-
-    fitCamera(instant) {
-      if (!this.town) return;
-      const L = this.town.layout;
-      const w = this.cv.clientWidth, h = this.cv.clientHeight;
-      if (!w || !h) return;
-      // leave room for the floating header at the top
-      const z = clamp(Math.min(w / (L.width * TT + 140), (h - 60) / (L.height * TT + 60)), Z_MIN, 1.5);
-      const t = { x: (L.width * TT) / 2, y: (L.height * TT) / 2 + 20, z };
+      if (!b) return;
+      const t = { x: b.x * TT + (b.w * TT) / 2, y: b.y * TT + (b.h * TT) / 2 + 6, z: 1 };
       if (instant) { this.cam = { ...t }; this.target = null; }
       else this.target = t;
       this.needsRedraw = true;
+    }
+
+    fitCamera(instant = false) {
+      this.initialCamera(instant);
     }
 
     zoomToBuilding(b) {
@@ -1569,19 +1607,9 @@
 
       ctx.save();
 
-      // Radiant holographic projection light beam shooting down from console emitter
-      const beam = ctx.createLinearGradient(cx, emitY, cx, projY);
-      beam.addColorStop(0, active ? `rgba(0, 229, 255, ${0.55 * holoAlpha})` : `rgba(0, 180, 255, ${0.35 * holoAlpha})`);
-      beam.addColorStop(0.4, active ? `rgba(0, 200, 255, ${0.25 * holoAlpha})` : `rgba(0, 150, 255, ${0.15 * holoAlpha})`);
-      beam.addColorStop(1, 'rgba(0, 229, 255, 0.04)');
-      ctx.fillStyle = beam;
-      ctx.beginPath();
-      ctx.moveTo(cx - 3, emitY);
-      ctx.lineTo(cx + 3, emitY);
-      ctx.lineTo(projX + W, projY);
-      ctx.lineTo(projX, projY);
-      ctx.closePath();
-      ctx.fill();
+      // Blit pre-baked holographic projection light beam
+      ctx.globalAlpha = holoAlpha;
+      ctx.drawImage(active ? this.holoBeamActive : this.holoBeamWorking, projX, emitY);
 
       // Console emitter lens / projector head with pulsing flare
       ctx.fillStyle = '#ffffff';
@@ -1715,15 +1743,17 @@
       ctx.restore();
     }
 
-    // Orbital Storage Starship / Data Vault to the left of the Town Hall
-    drawStorageShip(ctx, t) {
-      if (!this.town || !this.town.storageShip) return;
-      const ship = this.town.storageShip;
-      const { x, y, w, h } = ship;
+    // Pre-bake static cargo carrier hull for Orbital Sessions (saves ~40 drawing ops per frame)
+    bakeStorageShipHull(ship) {
+      const { w, h } = ship;
+      const padL = 14, padR = 14;
+      const c = document.createElement('canvas');
+      c.width = w + padL + padR;
+      c.height = h + 10;
+      const ctx = c.getContext('2d');
+      const x = padL, y = 0;
 
-      ctx.save();
-
-      // 1. Heavy Industrial Cargo / Data-Vault Freighter Hull
+      // Heavy Industrial Cargo / Data-Vault Freighter Hull
       ctx.fillStyle = '#141c2b';
       ctx.beginPath();
       ctx.moveTo(x + 24, y);
@@ -1748,7 +1778,6 @@
       ctx.stroke();
 
       // Cargo Container Pods on Left & Right Flanks
-      // Left cargo pod
       ctx.fillStyle = '#1e293b';
       ctx.fillRect(x - 12, y + 35, 14, h - 70);
       ctx.strokeStyle = '#475569';
@@ -1758,7 +1787,6 @@
         ctx.fillRect(x - 10, hy, 10, 2);
       }
 
-      // Right docking clamp module
       ctx.fillStyle = '#1e293b';
       ctx.fillRect(x + w - 2, y + 35, 14, h - 70);
       ctx.strokeStyle = '#475569';
@@ -1776,35 +1804,107 @@
       ctx.fillRect(x + 58, y + h - 2, 14, 2);
       ctx.fillRect(x + w - 72, y + h - 2, 14, 2);
 
-      // Title Banner Header (Top)
+      // Title Banner Header Box (Top)
       ctx.fillStyle = 'rgba(10, 16, 28, 0.95)';
       ctx.fillRect(x + 10, y + 8, w - 20, 24);
       ctx.strokeStyle = 'rgba(0, 229, 255, 0.5)';
       ctx.lineWidth = 1;
       ctx.strokeRect(x + 10, y + 8, w - 20, 24);
 
+      ship.hullCanvas = c;
+      ship.hullOffsetX = padL;
+    }
+
+    // Pre-calculate Orbital Sessions manifest positions & text measurements (runs in update(), not at 60fps)
+    updateStorageShipLayout() {
+      if (!this.town || !this.town.storageShip) return;
+      const ship = this.town.storageShip;
+      const { x, y, w, h } = ship;
+      const hosts = this.town.layout.buildings.map((b) => b.hostKey);
+      const rowH = Math.floor((h - 44) / Math.max(1, hosts.length));
+
+      const measureCtx = (this._measureCtx ||= document.createElement('canvas').getContext('2d'));
+      measureCtx.font = '600 11.5px "JetBrains Mono", monospace';
+
+      const hostRows = [];
+      const items = [];
+      const hostItems = [];
+
+      hosts.forEach((hKey, idx) => {
+        const rowY = y + 36 + idx * rowH;
+        const hostItem = { host: hKey, x: x + 12, y: rowY + 2, w: 126, h: rowH - 6 };
+        hostItems.push(hostItem);
+
+        const prefix = hKey + ':';
+        const hostSessions = [];
+        for (const [key, s] of this.sessions) {
+          if (key.startsWith(prefix)) hostSessions.push({ key, name: s.name });
+        }
+
+        const pills = [];
+        let pillX = x + 148;
+        if (hostSessions.length > 0) {
+          for (const s of hostSessions) {
+            const label = s.name;
+            const tw = measureCtx.measureText(label).width;
+            const pw = tw + 18, ph = 20;
+            const py = rowY + (rowH - ph) / 2 - 1;
+            if (pillX + pw > x + w - 16) break;
+
+            const pill = { key: s.key, name: label, x: pillX, y: py, w: pw, h: ph, host: hKey };
+            pills.push(pill);
+            items.push(pill);
+            pillX += pw + 8;
+          }
+        }
+
+        hostRows.push({
+          hostKey: hKey,
+          rowY,
+          rowH,
+          hostItem,
+          pills,
+          hasSessions: hostSessions.length > 0,
+        });
+      });
+
+      ship.hostRows = hostRows;
+      ship.items = items;
+      ship.hostItems = hostItems;
+      ship.totalSessions = this.sessions.size;
+    }
+
+    // Orbital Storage Starship / Data Vault to the left of the Town Hall (ultra-lean 60fps render)
+    drawStorageShip(ctx, t) {
+      if (!this.town || !this.town.storageShip) return;
+      const ship = this.town.storageShip;
+      const { x, y, w, h } = ship;
+
+      ctx.save();
+
+      // 1. Blit pre-baked cargo freighter hull
+      if (ship.hullCanvas) {
+        ctx.drawImage(ship.hullCanvas, x - (ship.hullOffsetX || 14), y);
+      }
+
+      // Title Banner Header Text
       ctx.font = '700 13px "JetBrains Mono", monospace';
       ctx.fillStyle = '#00e5ff';
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
       ctx.fillText('📦 ORBITAL SESSIONS // MANIFEST', x + 18, y + 20);
 
-      // Total session count badge
-      let totalSessions = this.sessions.size;
       ctx.textAlign = 'right';
       ctx.font = '700 12px "JetBrains Mono", monospace';
       ctx.fillStyle = '#f1fa8c';
-      ctx.fillText(totalSessions + ' ACTIVE SESSIONS', x + w - 18, y + 20);
+      ctx.fillText((ship.totalSessions || 0) + ' ACTIVE SESSIONS', x + w - 18, y + 20);
       ctx.textAlign = 'left';
 
-      // 2. Holographic Manifest Display (One Row Per Host)
-      const hosts = this.town.layout.buildings.map(b => b.hostKey);
-      const rowH = Math.floor((h - 44) / Math.max(1, hosts.length));
-      const items = [];
-      const hostItems = [];
-
-      hosts.forEach((hKey, idx) => {
-        const rowY = y + 36 + idx * rowH;
+      // 2. Render pre-computed manifest rows
+      const rows = ship.hostRows || [];
+      for (let idx = 0; idx < rows.length; idx++) {
+        const row = rows[idx];
+        const rowY = row.rowY, rowH = row.rowH, hKey = row.hostKey;
         const off = this.hostOff(hKey);
         const isHostHover = this.hover && this.hover.type === 'host-sign' && this.hover.host === hKey;
 
@@ -1812,15 +1912,13 @@
         ctx.fillStyle = idx % 2 === 0 ? 'rgba(15, 23, 42, 0.65)' : 'rgba(10, 16, 28, 0.65)';
         ctx.fillRect(x + 10, rowY, w - 20, rowH - 2);
 
-        // Host name tag area (clickable to toggle polling)
+        // Host name hover highlight
         if (isHostHover) {
           ctx.fillStyle = 'rgba(0, 229, 255, 0.15)';
-          this.rr(x + 12, rowY + 2, 126, rowH - 6, 3);
-          ctx.fill();
+          ctx.fillRect(x + 12, rowY + 2, 126, rowH - 6);
           ctx.strokeStyle = '#00e5ff';
           ctx.lineWidth = 1;
-          this.rr(x + 12, rowY + 2, 126, rowH - 6, 3);
-          ctx.stroke();
+          ctx.strokeRect(x + 12, rowY + 2, 126, rowH - 6);
         }
 
         // Host status dot & name
@@ -1832,60 +1930,37 @@
         ctx.font = '700 13px "JetBrains Mono", monospace';
         ctx.fillStyle = off ? '#64748b' : isHostHover ? '#00e5ff' : '#38bdf8';
         ctx.fillText(hKey.toUpperCase(), x + 36, rowY + rowH / 2 - 1);
-        hostItems.push({ host: hKey, x: x + 12, y: rowY + 2, w: 126, h: rowH - 6 });
 
-        // Find sessions for this host
-        const prefix = hKey + ':';
-        const hostSessions = [];
-        for (const [key, s] of this.sessions) {
-          if (key.startsWith(prefix)) hostSessions.push({ key, name: s.name, activity: s.activity });
-        }
-
-        // Render session pills
-        let pillX = x + 148;
-        if (hostSessions.length === 0) {
+        if (!row.hasSessions) {
           ctx.font = 'italic 11px "JetBrains Mono", monospace';
           ctx.fillStyle = '#64748b';
-          ctx.fillText(off ? '(offline / polling disabled)' : '(idle / no sessions)', pillX, rowY + rowH / 2 - 1);
+          ctx.fillText(off ? '(offline / polling disabled)' : '(idle / no sessions)', x + 148, rowY + rowH / 2 - 1);
         } else {
           ctx.font = '600 11.5px "JetBrains Mono", monospace';
-          for (const s of hostSessions) {
-            const label = s.name;
-            const tw = ctx.measureText(label).width;
-            const pw = tw + 18, ph = 20;
-            const py = rowY + (rowH - ph) / 2 - 1;
-
-            if (pillX + pw > x + w - 16) break;
-
-            const isHover = this.hover && this.hover.type === 'manifest-session' && this.hover.key === s.key;
-            const isActive = s.key === this.activeKey;
+          for (const p of row.pills) {
+            const isHover = this.hover && this.hover.type === 'manifest-session' && this.hover.key === p.key;
+            const isActive = p.key === this.activeKey;
+            const s = this.sessions.get(p.key);
 
             // Pill box
             ctx.fillStyle = isActive ? 'rgba(0, 229, 255, 0.28)' : isHover ? 'rgba(56, 189, 248, 0.24)' : 'rgba(8, 12, 22, 0.88)';
-            this.rr(pillX, py, pw, ph, 4);
-            ctx.fill();
+            ctx.fillRect(p.x, p.y, p.w, p.h);
 
             ctx.strokeStyle = isActive ? '#00e5ff' : isHover ? '#38bdf8' : 'rgba(0, 229, 255, 0.45)';
             ctx.lineWidth = 1;
-            this.rr(pillX, py, pw, ph, 4);
-            ctx.stroke();
+            ctx.strokeRect(p.x, p.y, p.w, p.h);
 
             // Activity dot inside pill
-            ctx.fillStyle = s.activity ? '#10b981' : '#64748b';
-            ctx.fillRect(pillX + 5, py + ph / 2 - 2, 4, 4);
+            ctx.fillStyle = (s && s.activity) ? '#10b981' : '#64748b';
+            ctx.fillRect(p.x + 5, p.y + p.h / 2 - 2, 4, 4);
 
             // Text
             ctx.fillStyle = isActive ? '#00e5ff' : '#f8fafc';
-            ctx.fillText(label, pillX + 13, py + ph / 2);
-
-            items.push({ key: s.key, x: pillX, y: py, w: pw, h: ph, host: hKey });
-            pillX += pw + 8;
+            ctx.fillText(p.name, p.x + 13, p.y + p.h / 2);
           }
         }
-      });
+      }
 
-      ship.items = items;
-      ship.hostItems = hostItems;
       ctx.restore();
     }
 
@@ -2009,16 +2084,10 @@
       ctx.fillStyle = grad;
       ctx.fillRect(scanX - trailLen, beamY - 4, trailLen, 8);
 
-      // Vertical diffuse illumination cone lighting up space
-      const vGrad = ctx.createRadialGradient(scanX, beamY, 2, scanX, beamY, 36);
-      vGrad.addColorStop(0, 'rgba(255, 255, 255, 0.9)');
-      vGrad.addColorStop(0.2, 'rgba(0, 229, 255, 0.65)');
-      vGrad.addColorStop(0.6, 'rgba(0, 140, 255, 0.22)');
-      vGrad.addColorStop(1, 'transparent');
-      ctx.fillStyle = vGrad;
-      ctx.beginPath();
-      ctx.arc(scanX, beamY, 36, 0, Math.PI * 2);
-      ctx.fill();
+      // Blit pre-baked diffuse illumination cone lighting up space
+      if (this.scannerGlow) {
+        ctx.drawImage(this.scannerGlow, scanX - 36, beamY - 36);
+      }
 
       // Brilliant scanner pulse head
       ctx.fillStyle = '#ffffff';
@@ -2263,12 +2332,9 @@
 
         // Sublight / ion / warp engine plume trail behind the ship
         const trailLen = 38 + Math.sin(t * 18 + ship.x) * 8;
-        const trailGrad = ctx.createLinearGradient(-trailLen, 0, 0, 0);
-        trailGrad.addColorStop(0, 'transparent');
-        trailGrad.addColorStop(0.4, ship.trailColor);
-        trailGrad.addColorStop(1, '#ffffff');
-        ctx.fillStyle = trailGrad;
-        ctx.fillRect(-trailLen, -3.5, trailLen, 7);
+        if (ship.trailCanvas) {
+          ctx.drawImage(ship.trailCanvas, -trailLen, -3.5, trailLen, 7);
+        }
 
         // Draw the spaceship sprite centered
         ctx.drawImage(sprite, -sprite.width / 2, -sprite.height / 2);

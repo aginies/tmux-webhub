@@ -1009,6 +1009,115 @@
       const isSit = pose === 'sit';
       const legFrame = frame % 4;
 
+      if (look && (look.isImperial || look.empire)) {
+        // Star Wars Galactic Empire Stormtrooper Receptionist
+        // 1. Black Body Glove Undersuit
+        ctx.fillStyle = '#0f172a';
+        ctx.fillRect(5, 7, 10, 11);
+
+        // 2. White Duraplast Chest & Abdomen Armor
+        ctx.fillStyle = '#f8fafc';
+        ctx.fillRect(6, 8, 8, 8);
+        ctx.fillStyle = '#e2e8f0';
+        ctx.fillRect(6, 14, 8, 2);
+
+        // Abdominal detail cutouts & thermal detonator belt
+        ctx.fillStyle = '#1e293b';
+        ctx.fillRect(8, 11, 4, 3);
+        ctx.fillStyle = '#00e5ff';
+        ctx.fillRect(9, 12, 2, 1);
+
+        // Imperial Commander Shoulder Pauldron (Orange pauldron on right shoulder)
+        ctx.fillStyle = '#ea580c';
+        ctx.fillRect(3, 8, 4, 4);
+        ctx.fillStyle = '#f97316';
+        ctx.fillRect(3.5, 8.5, 3, 3);
+
+        // Left white shoulder bell
+        ctx.fillStyle = '#f8fafc';
+        ctx.fillRect(13, 8, 4, 4);
+
+        // White Utility Belt
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(5, 16, 10, 2);
+        ctx.fillStyle = '#1e293b';
+        ctx.fillRect(9, 16, 2, 2);
+
+        // 3. Iconic Star Wars Stormtrooper Helmet
+        // White Helmet Dome
+        ctx.fillStyle = '#f8fafc';
+        ctx.beginPath();
+        ctx.arc(10, 5, 5.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#cbd5e1';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+
+        // Distinctive Black Brow Rubber Band across forehead
+        ctx.fillStyle = '#000000';
+        ctx.fillRect(4.5, 3, 11, 1.5);
+
+        // Dual Angled Black Eye Lenses (angled menacing gaze)
+        ctx.fillStyle = '#090d16';
+        ctx.fillRect(6, 4.5, 3, 2);
+        ctx.fillRect(11, 4.5, 3, 2);
+        // Lens reflection highlight glints
+        ctx.fillStyle = '#38bdf8';
+        ctx.fillRect(6.5, 4.5, 1, 1);
+        ctx.fillRect(11.5, 4.5, 1, 1);
+
+        // Cheek Tube Armor tapering down
+        ctx.fillStyle = '#e2e8f0';
+        ctx.fillRect(5, 6, 2, 2.5);
+        ctx.fillRect(13, 6, 2, 2.5);
+
+        // Blue Tube Stripes / Cooling Vents on Ears
+        ctx.fillStyle = '#0284c7';
+        ctx.fillRect(4.5, 6, 1, 2);
+        ctx.fillRect(14.5, 6, 1, 2);
+
+        // Triangular Black Vocoder / Mouth Grill at Center
+        ctx.fillStyle = '#000000';
+        ctx.beginPath();
+        ctx.moveTo(9, 7);
+        ctx.lineTo(11, 7);
+        ctx.lineTo(10, 9);
+        ctx.closePath();
+        ctx.fill();
+
+        // Dual Cylindrical Chin Aerators / Filtration Pods
+        ctx.fillStyle = '#475569';
+        ctx.fillRect(7, 8, 1.5, 1.5);
+        ctx.fillRect(11.5, 8, 1.5, 1.5);
+        ctx.fillStyle = '#94a3b8';
+        ctx.fillRect(7, 8, 1, 1);
+        ctx.fillRect(11.5, 8, 1, 1);
+
+        // Ribbed Black Neck Seal Gasket
+        ctx.fillStyle = '#0f172a';
+        ctx.fillRect(7, 9.5, 6, 1.5);
+
+        // 4. White Armor Arms & Black Gloves
+        ctx.fillStyle = '#f8fafc';
+        ctx.fillRect(3, 11, 3, 4);
+        ctx.fillRect(14, 11, 3, 4);
+        ctx.fillStyle = '#090d16'; // black gloves
+        ctx.fillRect(3, 14, 3, 2);
+        ctx.fillRect(14, 14, 3, 2);
+
+        // 5. White Armor Legs & Boots
+        ctx.fillStyle = '#f8fafc';
+        ctx.fillRect(5, 18, 10, 3);
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(4, 21, 5, 3);
+        ctx.fillRect(11, 21, 5, 3);
+        ctx.fillStyle = '#0f172a'; // black boot soles
+        ctx.fillRect(4, 23, 5, 1);
+        ctx.fillRect(11, 23, 5, 1);
+
+        return canvas;
+      }
+
       // 1. Life Support Backpack (PLSS)
       if (dir === 'down' || dir === 'up') {
         ctx.fillStyle = '#1e293b';
@@ -1172,7 +1281,7 @@
       };
       return (look, dir, frame, pose, eyesClosed) => {
         // same key shape as the original cached impl (R0(look)|dir|frame|pose|eyes)
-        const key = `${look && look.skin}${look && look.hair}${look && look.shirt}${look && look.pants}${look && look.style}${look && (look.outfit ?? "")}${look && (look.accessory ?? "")}|${dir}|${frame}|${pose}|${eyesClosed ? 1 : 0}`;
+        const key = `${look && (look.isImperial || look.empire) ? 'imp' : ''}${look && look.skin}${look && look.hair}${look && look.shirt}${look && look.pants}${look && look.style}${look && (look.outfit ?? "")}${look && (look.accessory ?? "")}|${dir}|${frame}|${pose}|${eyesClosed ? 1 : 0}`;
         let c = cache.get(key);
         if (!c) { c = render(look, dir, frame, pose, eyesClosed); cache.set(key, c); }
         return c;
