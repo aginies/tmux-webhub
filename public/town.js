@@ -584,16 +584,20 @@
       const L = this.town.layout;
       const c = L.center;
       if (c) {
-        // Main square: the town center and the bus stop on the road below it,
-        // with the host buildings (the sessions) in view. Shows a part of the
-        // town — the central area — not all of it, and the bus is visible by
-        // default. Wheel/pinch to zoom, click empty ground to fit-all.
-        const cx = (c.x + c.w / 2) * TT;
-        const top = c.y * TT;
-        const bottom = Math.max(...L.buildings.map((b) => (b.y + b.h) * TT), top + 500);
+        // Frame the host buildings (the sessions) + the town center + the bus
+        // stop, so the workers and their previews are visible by default. Shows
+        // a part of the town — the central area — not all of it. Wheel/pinch to
+        // zoom, click empty ground to fit-all.
+        const bxs = L.buildings.map((b) => b.x * TT);
+        const bx2 = L.buildings.map((b) => (b.x + b.w) * TT);
+        const minX = Math.min(...bxs, c.x * TT);
+        const maxX = Math.max(...bx2, (c.x + c.w) * TT);
+        const cx = (minX + maxX) / 2;
+        const top = Math.min(c.y * TT, ...L.buildings.map((b) => b.y * TT));
+        const bottom = Math.max(...L.buildings.map((b) => (b.y + b.h) * TT), c.y * TT + 500);
         const cy = (top + bottom) / 2;
         const w = this.cv.clientWidth, h = this.cv.clientHeight;
-        const z = clamp(Math.min(w / 1800, (h - 60) / (bottom - top + 120)), 0.55, 1.0);
+        const z = clamp(Math.min(w / (maxX - minX + 180), (h - 60) / (bottom - top + 120)), 0.5, 1.0);
         this.cam = { x: cx, y: cy, z };
         this.target = null;
         this.needsRedraw = true;
@@ -1110,30 +1114,34 @@
     drawPreview(mx, Y, preview, name) {
       const { ctx } = this;
       const s = Math.max(1 / this.cam.z, 1);
-      const W = 54 * s, H = 34 * s, pad = 3 * s, fs = 6 * s, lh = 6 * s;
+      const W = 66 * s, H = 42 * s, pad = 3.5 * s, fs = 7 * s, lh = 7.5 * s;
       // last non-empty lines
       const lines = preview.split('\n').map((l) => l.replace(/\s+$/, '')).filter((l) => l.length > 0);
-      const shown = lines.slice(-5);
+      const shown = lines.slice(-6);
       if (!shown.length) return;
-      const maxChars = Math.floor((W - pad * 2) / (fs * 0.62));
+      const maxChars = Math.floor((W - pad * 2) / (fs * 0.6));
       // position: above the monitor (mx is the monitor's left edge); the offset
       // is scaled too, so the gap stays constant on screen
-      const x = mx - 15 * s, y = Y - 18 * s - H;
-      // background + border
+      const x = mx - 16 * s, y = Y - 20 * s - H;
+      // background + border (a soft shadow lifts it off the building behind it)
       ctx.save();
-      ctx.fillStyle = 'rgba(10,12,20,0.92)';
-      ctx.strokeStyle = 'rgba(120,140,180,0.5)';
-      ctx.lineWidth = Math.max(1, 1 * s);
+      ctx.shadowColor = 'rgba(0,0,0,0.5)';
+      ctx.shadowBlur = 4 * s;
+      ctx.shadowOffsetY = 1.5 * s;
+      ctx.fillStyle = 'rgba(8,10,18,0.95)';
       ctx.beginPath();
       ctx.rect(x + 0.5, y + 0.5, W, H);
       ctx.fill();
+      ctx.shadowColor = 'transparent';
+      ctx.strokeStyle = 'rgba(150,175,220,0.85)';
+      ctx.lineWidth = Math.max(1, 1.2 * s);
       ctx.stroke();
       // a little pointer down to the monitor
-      ctx.fillStyle = 'rgba(10,12,20,0.92)';
+      ctx.fillStyle = 'rgba(8,10,18,0.95)';
       ctx.beginPath();
       ctx.moveTo(mx + 3 * s, y + H);
-      ctx.lineTo(mx + 9 * s, y + H);
-      ctx.lineTo(mx + 6 * s, y + H + 3 * s);
+      ctx.lineTo(mx + 10 * s, y + H);
+      ctx.lineTo(mx + 6.5 * s, y + H + 3.5 * s);
       ctx.closePath();
       ctx.fill();
       // text
@@ -1141,9 +1149,9 @@
       ctx.textBaseline = 'top';
       shown.forEach((l, i) => {
         let txt = l.length > maxChars ? '…' + l.slice(-(maxChars - 1)) : l;
-        // color: prompt lines ($ or >) brighter, dim otherwise
+        // color: prompt lines ($ or >) bright green, output lines light grey
         const isPrompt = /^[$>\u276f#%]/.test(l.trim()) || /\$\s/.test(l);
-        ctx.fillStyle = isPrompt ? '#9fe89f' : '#8a93a8';
+        ctx.fillStyle = isPrompt ? '#b6f0b6' : '#c3cbdc';
         ctx.fillText(txt, x + pad, y + pad + i * lh);
       });
       ctx.restore();

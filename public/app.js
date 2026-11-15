@@ -212,9 +212,9 @@ function attach(key) {
   const host = s ? s.host : 'localhost';
   const st = connectTerminal(key, host, sessionName, term, () => {
     fitTerm(); term.focus();
-    // re-assert after layout settles: on slow/remote hosts the WS can open before
-    // the container is painted, and the first focus() is then dropped by the browser
-    setTimeout(() => { if (active === st) term.focus(); }, 60);
+    // re-assert a few times: on slow/remote hosts the WS can open before the
+    // container is painted, and the first focus() is then dropped by the browser
+    for (const d of [60, 200, 500, 1000]) setTimeout(() => { if (active === st) term.focus(); }, d);
   });
   active = st;
   if (view === 'town' && townView) { $('termwin').classList.add('attached'); townView.activeKey = key; townView.needsRedraw = true; }
@@ -386,8 +386,8 @@ function attachSplit(key) {
 
   const st = connectTerminal(key, s.host, s.name, splitTerm, () => {
     splitTerm.focus();
-    // re-assert after layout settles (same as the primary terminal)
-    setTimeout(() => { if (splitActive === st) splitTerm.focus(); }, 60);
+    // re-assert a few times (same as the primary terminal)
+    for (const d of [60, 200, 500, 1000]) setTimeout(() => { if (splitActive === st) splitTerm.focus(); }, d);
     // resize split terminal to fill pane
     try { splitFit.fit(); } catch {}
   });
@@ -1276,6 +1276,31 @@ document.addEventListener('click', (e) => {
 // clicking the terminal itself (its xterm surface) must keep / restore focus —
 // mousedown fires before the browser's default focus move, so re-assert here.
 $('term').addEventListener('mousedown', () => { if (active) term.focus(); });
+// safety net for the physical keyboard: on slow/remote hosts the terminal's
+// textarea can lose focus (the initial focus is dropped before the container is
+// painted). If a key lands on <body> while a session is active, re-assert focus
+// and re-dispatch printable keys so the first keystroke after a focus drop is
+// not lost. (The ⌨ virtual keyboard is unaffected: it goes server-side.)
+document.addEventListener('keydown', (e) => {
+  if (!active) return;
+  if (e.target.closest('input, textarea, select')) return; // a real input keeps the keyboard
+  if (document.querySelector('#modal-bg.open, #cfg-bg.open, #rn-bg.open, #keys-bg.open')) return;
+  const ae = document.activeElement;
+  if (ae && ae.classList && ae.classList.contains('xterm-helper-textarea')) return; // already focused
+  term.focus();
+  // re-dispatch plain printable keys (no Ctrl/Alt/Meta) so they aren't dropped —
+  // modifier combos are left to the browser to avoid double-firing shortcuts
+  if (e.key && e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
+    const ta = document.activeElement;
+    if (ta && ta !== e.target) {
+      ta.dispatchEvent(new KeyboardEvent('keydown', {
+        key: e.key, code: e.code, shiftKey: e.shiftKey,
+        repeat: e.repeat, location: e.location,
+        bubbles: true, cancelable: true,
+      }));
+    }
+  }
+});
 
 // ---------- phone shortcuts (⎋ / Pg↑ / Pg↓, right of +New) ----------
 // phones have no Esc / PageUp / PageDown keys. ⎋ is injected server-side with
