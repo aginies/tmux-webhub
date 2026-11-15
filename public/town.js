@@ -67,6 +67,43 @@
       this.pointers = new Map();
       this.drag = null;
 
+      // iconic sci-fi space traffic (Millennium Falcon, X-Wing, Star Trek Enterprise)
+      this.spaceTraffic = [
+        {
+          id: 'falcon',
+          x: -80, y: 140,
+          vx: 110, vy: 18,
+          speed: 120,
+          targetAngle: 0.15,
+          angle: 0.15,
+          timer: 0,
+          interval: 4,
+          trailColor: 'rgba(0, 229, 255, 0.45)',
+        },
+        {
+          id: 'xwing',
+          x: 1350, y: 180,
+          vx: -145, vy: -20,
+          speed: 150,
+          targetAngle: Math.PI + 0.1,
+          angle: Math.PI + 0.1,
+          timer: 0,
+          interval: 3.2,
+          trailColor: 'rgba(244, 63, 94, 0.45)',
+        },
+        {
+          id: 'enterprise',
+          x: 120, y: -60,
+          vx: 55, vy: 50,
+          speed: 80,
+          targetAngle: 0.75,
+          angle: 0.75,
+          timer: 0,
+          interval: 6,
+          trailColor: 'rgba(56, 189, 248, 0.4)',
+        },
+      ];
+
       // starfield for the deep-space sky
       this.skyStars = [];
       let seed = 777;
@@ -577,20 +614,34 @@
       ];
     }
 
-    // deterministic idle activity for an agent (by name): drink water or eat food in the lounge
+    sofaSpots(b) {
+      // two nappers on the Star Wars banquette booth
+      const L = b.lounge;
+      const sx = (L.x + 1) * TT - 1, sy = (L.y + 1) * TT - 8;
+      return [
+        { x: sx + 14, y: sy + 9, side: -1 },
+        { x: sx + 34, y: sy + 9, side: 1 },
+      ];
+    }
+
+    // deterministic idle activity for an agent (by name): sleep on sofa, drink water, or eat food
     activityFor(name) {
       const h = hash(name);
       if (this.bus && h % 11 === 0) return 'bus';
-      return (h % 2 === 0) ? 'drink' : 'eat';
+      const m = h % 3;
+      if (m === 0) return 'nap';
+      if (m === 1) return 'drink';
+      return 'eat';
     }
 
-    // the idle plan: idle agents leave the desk to drink water and eat food in the rest area
+    // the idle plan: idle agents leave the desk to sleep on the sofa, drink water, or eat food
     idlePlan() {
       const plan = new Map(); // key -> { activity, spot, b }
       if (!this.town) return plan;
       let busI = 0; // global queue index at the main bus stop
       for (const b of this.town.layout.buildings) {
         if (this.hostOff(b.hostKey)) continue;
+        const sofa = this.sofaSpots(b);
         const drinks = this.coolerSpots(b);
         const foods = this.foodSpots(b);
         const idle = [];
@@ -601,13 +652,15 @@
           if (s && !s.activity) idle.push(key);
         }
         idle.sort();
-        let drinkI = 0, eatI = 0;
+        let sofaI = 0, drinkI = 0, eatI = 0;
         for (const key of idle) {
           const name = key.slice(b.hostKey.length + 1);
           let activity = this.activityFor(name);
           let spot = null;
           if (activity === 'bus' && this.bus && busI < 4) {
             spot = { ...TA.townQueueSpot(this.bus.stop, busI++) };
+          } else if (activity === 'nap' && sofaI < sofa.length) {
+            spot = { ...sofa[sofaI++] };
           } else if (activity === 'drink') {
             spot = { ...drinks[drinkI++ % drinks.length] };
           } else {
@@ -1143,6 +1196,7 @@
       if (this.naps.size) advance(this.naps);
       this.updateBus(t);
       this.updateRepairCrew(t);
+      this.updateSpaceTraffic(t);
 
       const animate = !REDUCED && !!this.town;
       if (REDUCED && !this.needsRedraw) return;
@@ -1166,6 +1220,7 @@
       ctx.fillRect(0, 0, w, h);
       this.drawSkyStars(ctx, w, h, t);
       this.drawGalaxies(ctx, w, h, t);
+      this.drawSpaceTraffic(ctx, t);
       if (!this.town) {
         ctx.fillStyle = '#858faa';
         ctx.font = '12px ' + 'Silkscreen, monospace';
@@ -1801,6 +1856,70 @@
         ctx.arc(0, 0, 2.5, 0, Math.PI * 2);
         ctx.fill();
 
+        ctx.restore();
+      }
+    }
+
+    // iconic sci-fi space traffic: Millennium Falcon, X-Wing, Star Trek Enterprise
+    updateSpaceTraffic(t) {
+      if (!this.spaceTraffic || !this.cv) return;
+      const w = this.cv.clientWidth, h = this.cv.clientHeight;
+      const dt = this.trafficLastT ? Math.min(0.1, t - this.trafficLastT) : 0.016;
+      this.trafficLastT = t;
+
+      for (const ship of this.spaceTraffic) {
+        ship.timer += dt;
+        if (ship.timer >= ship.interval) {
+          ship.timer = 0;
+          ship.interval = 3 + Math.random() * 4;
+          // Random heading wandering through open space
+          ship.targetAngle = Math.random() * Math.PI * 2;
+        }
+
+        // Steer angle smoothly towards targetAngle
+        let diff = (ship.targetAngle - ship.angle + Math.PI * 3) % (Math.PI * 2) - Math.PI;
+        ship.angle += Math.sign(diff) * Math.min(Math.abs(diff), 1.2 * dt);
+
+        // Update velocity and position
+        ship.vx = Math.cos(ship.angle) * ship.speed;
+        ship.vy = Math.sin(ship.angle) * ship.speed;
+        ship.x += ship.vx * dt;
+        ship.y += ship.vy * dt;
+
+        // Wrap around viewport with fresh angle
+        const pad = 120;
+        if (ship.x < -pad) { ship.x = w + pad - 20; ship.targetAngle = Math.PI - 0.3 + Math.random() * 0.6; ship.angle = ship.targetAngle; }
+        else if (ship.x > w + pad) { ship.x = -pad + 20; ship.targetAngle = -0.3 + Math.random() * 0.6; ship.angle = ship.targetAngle; }
+        if (ship.y < -pad) { ship.y = h + pad - 20; ship.targetAngle = -Math.PI / 2 - 0.4 + Math.random() * 0.8; ship.angle = ship.targetAngle; }
+        else if (ship.y > h + pad) { ship.y = -pad + 20; ship.targetAngle = Math.PI / 2 - 0.4 + Math.random() * 0.8; ship.angle = ship.targetAngle; }
+      }
+    }
+
+    drawSpaceTraffic(ctx, t) {
+      if (!this.spaceTraffic || !this.town) return;
+      const sp = this.town.sp;
+      if (!sp) return;
+
+      for (const ship of this.spaceTraffic) {
+        const sprite = sp[ship.id];
+        if (!sprite) continue;
+
+        const sx = Math.round(ship.x), sy = Math.round(ship.y);
+        ctx.save();
+        ctx.translate(sx, sy);
+        ctx.rotate(ship.angle);
+
+        // Sublight / ion / warp engine plume trail behind the ship
+        const trailLen = 28 + Math.sin(t * 18 + ship.x) * 6;
+        const trailGrad = ctx.createLinearGradient(-trailLen, 0, 0, 0);
+        trailGrad.addColorStop(0, 'transparent');
+        trailGrad.addColorStop(0.5, ship.trailColor);
+        trailGrad.addColorStop(1, '#ffffff');
+        ctx.fillStyle = trailGrad;
+        ctx.fillRect(-trailLen, -3, trailLen, 6);
+
+        // Draw the spaceship sprite centered
+        ctx.drawImage(sprite, -sprite.width / 2, -sprite.height / 2);
         ctx.restore();
       }
     }

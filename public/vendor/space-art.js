@@ -345,6 +345,242 @@
       ctx.fillRect(7, 4, 1, 1);
     });
 
+    // Millennium Falcon (Star Wars YT-1300 light freighter)
+    const createFalcon = () => {
+      const c = document.createElement('canvas');
+      c.width = 44; c.height = 34;
+      const ctx = c.getContext('2d');
+
+      // Main circular saucer hull
+      ctx.fillStyle = '#cbd5e1';
+      ctx.beginPath();
+      ctx.arc(19, 17, 13, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#64748b';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      // Armor plating panels
+      ctx.fillStyle = '#94a3b8';
+      ctx.fillRect(12, 8, 4, 3);
+      ctx.fillRect(12, 23, 4, 3);
+      ctx.fillStyle = '#ef4444'; // Red hull accent markings
+      ctx.fillRect(16, 9, 3, 2);
+      ctx.fillRect(16, 23, 3, 2);
+
+      // Forward cargo mandibles / prongs
+      ctx.fillStyle = '#cbd5e1';
+      ctx.fillRect(24, 10, 15, 4); // Port mandible
+      ctx.fillRect(24, 20, 15, 4); // Starboard mandible
+      ctx.strokeStyle = '#64748b';
+      ctx.strokeRect(24, 10, 15, 4);
+      ctx.strokeRect(24, 20, 15, 4);
+
+      // Central freight notch
+      ctx.fillStyle = '#475569';
+      ctx.fillRect(24, 14, 5, 6);
+
+      // Starboard offset cockpit & access tube
+      ctx.fillStyle = '#94a3b8';
+      ctx.fillRect(17, 24, 10, 3); // tube
+      ctx.fillStyle = '#cbd5e1';
+      ctx.beginPath();
+      ctx.arc(28, 27, 4.5, 0, Math.PI * 2); // cockpit pod
+      ctx.fill();
+      ctx.strokeStyle = '#475569';
+      ctx.stroke();
+      ctx.fillStyle = '#0284c7';
+      ctx.fillRect(27, 25, 4, 3); // cockpit viewport glass
+
+      // Round sensor / radar dish
+      ctx.strokeStyle = '#334155';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(14, 10, 3.5, 0, Math.PI * 2);
+      ctx.stroke();
+
+      // Quad laser cannon turret on top
+      ctx.fillStyle = '#334155';
+      ctx.beginPath();
+      ctx.arc(19, 17, 3, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Rear curved blue sublight engine exhaust drive band
+      ctx.fillStyle = '#00e5ff';
+      ctx.fillRect(4, 10, 2.5, 14);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(5, 12, 1.5, 10);
+
+      return c;
+    };
+    sp.falcon = createFalcon();
+
+    // X-Wing Starfighter (Star Wars T-65B X-wing)
+    const createXWing = () => {
+      const c = document.createElement('canvas');
+      c.width = 40; c.height = 32;
+      const ctx = c.getContext('2d');
+
+      // 4 S-Foils (wings locked in attack position)
+      ctx.fillStyle = '#e2e8f0';
+      // Upper wings
+      ctx.beginPath();
+      ctx.moveTo(14, 13);
+      ctx.lineTo(6, 4);
+      ctx.lineTo(26, 4);
+      ctx.lineTo(22, 13);
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = '#94a3b8';
+      ctx.stroke();
+
+      // Lower wings
+      ctx.beginPath();
+      ctx.moveTo(14, 19);
+      ctx.lineTo(6, 28);
+      ctx.lineTo(26, 28);
+      ctx.lineTo(22, 19);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+
+      // Red Squadron striping (Red 5!)
+      ctx.fillStyle = '#ef4444';
+      ctx.fillRect(10, 4, 3, 2); ctx.fillRect(15, 4, 3, 2); ctx.fillRect(20, 4, 3, 2);
+      ctx.fillRect(10, 26, 3, 2); ctx.fillRect(15, 26, 3, 2); ctx.fillRect(20, 26, 3, 2);
+
+      // 4 Wingtip Laser Cannon Barrels
+      ctx.fillStyle = '#475569';
+      ctx.fillRect(6, 3, 28, 1.5);  // Top port
+      ctx.fillRect(6, 27.5, 28, 1.5); // Bottom port
+      ctx.fillStyle = '#00e5ff';
+      ctx.fillRect(33, 3, 2, 1.5); // Tip laser charge
+      ctx.fillRect(33, 27.5, 2, 1.5);
+
+      // Long pointed fuselage / nose cone
+      ctx.fillStyle = '#f8fafc';
+      ctx.beginPath();
+      ctx.moveTo(8, 13);
+      ctx.lineTo(36, 15);
+      ctx.lineTo(38, 16);
+      ctx.lineTo(36, 17);
+      ctx.lineTo(8, 19);
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = '#94a3b8';
+      ctx.stroke();
+
+      // Red nose flashes
+      ctx.fillStyle = '#ef4444';
+      ctx.fillRect(28, 15, 4, 2);
+
+      // Pilot canopy (dark cyan glass)
+      ctx.fillStyle = '#0284c7';
+      ctx.fillRect(20, 15, 5, 2);
+
+      // Astromech droid (R2-D2!) socket
+      ctx.fillStyle = '#2563eb';
+      ctx.fillRect(16, 15, 2.5, 2);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(17, 15, 1, 1);
+
+      // 4 Sublight Ion Engines with glowing pink/red exhaust
+      ctx.fillStyle = '#334155';
+      ctx.fillRect(7, 10, 6, 3);
+      ctx.fillRect(7, 19, 6, 3);
+      ctx.fillStyle = '#f43f5e';
+      ctx.fillRect(5, 10.5, 2.5, 2);
+      ctx.fillRect(5, 19.5, 2.5, 2);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(6, 11, 1.5, 1);
+      ctx.fillRect(6, 20, 1.5, 1);
+
+      return c;
+    };
+    sp.xwing = createXWing();
+
+    // Star Trek Federation Starship (USS Enterprise)
+    const createEnterprise = () => {
+      const c = document.createElement('canvas');
+      c.width = 48; c.height = 30;
+      const ctx = c.getContext('2d');
+
+      // Primary Hull: Saucer Section (Front)
+      ctx.fillStyle = '#f1f5f9';
+      ctx.beginPath();
+      ctx.ellipse(35, 15, 10, 12, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#94a3b8';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      // Bridge module dome
+      ctx.fillStyle = '#e2e8f0';
+      ctx.beginPath();
+      ctx.arc(35, 15, 3.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#38bdf8';
+      ctx.fillRect(34, 14, 2, 2);
+
+      // Connecting Dorsal Neck
+      ctx.fillStyle = '#cbd5e1';
+      ctx.fillRect(22, 14, 8, 2);
+
+      // Secondary Engineering Hull
+      ctx.fillStyle = '#e2e8f0';
+      ctx.fillRect(11, 12, 14, 6);
+      ctx.strokeStyle = '#94a3b8';
+      ctx.strokeRect(11, 12, 14, 6);
+
+      // Glowing Navigational Deflector Dish (amber / cyan copper glow)
+      const defGrad = ctx.createRadialGradient(24, 15, 1, 24, 15, 4);
+      defGrad.addColorStop(0, '#ffffff');
+      defGrad.addColorStop(0.5, '#f59e0b');
+      defGrad.addColorStop(1, '#00e5ff');
+      ctx.fillStyle = defGrad;
+      ctx.beginPath();
+      ctx.arc(24, 15, 3.5, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Angled Warp Pylons
+      ctx.strokeStyle = '#64748b';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(16, 12); ctx.lineTo(12, 6);
+      ctx.moveTo(16, 18); ctx.lineTo(12, 24);
+      ctx.stroke();
+
+      // Dual Warp Nacelles
+      const drawNacelle = (ny) => {
+        // Nacelle body
+        ctx.fillStyle = '#cbd5e1';
+        ctx.fillRect(5, ny, 21, 4);
+        ctx.strokeStyle = '#64748b';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(5, ny, 21, 4);
+
+        // Glowing Blue Warp Coil Strip
+        ctx.fillStyle = '#00e5ff';
+        ctx.fillRect(8, ny + 1, 14, 2);
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(11, ny + 1.5, 8, 1);
+
+        // Glowing Red Bussard Ramscoop at nacelle front
+        ctx.fillStyle = '#ef4444';
+        ctx.beginPath();
+        ctx.arc(25, ny + 2, 2.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#fef08a';
+        ctx.fillRect(24.5, ny + 1.5, 1, 1);
+      };
+
+      drawNacelle(4);
+      drawNacelle(22);
+
+      return c;
+    };
+    sp.enterprise = createEnterprise();
+
     return sp;
   }
 
