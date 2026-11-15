@@ -67,10 +67,13 @@
       this.pointers = new Map();
       this.drag = null;
 
-      // iconic sci-fi space traffic (Millennium Falcon, X-Wing, Star Trek Enterprise)
+      // iconic sci-fi space traffic (Millennium Falcon, X-Wing, Star Trek Enterprise: max 1-2 active at a time)
       this.spaceTraffic = [
         {
           id: 'falcon',
+          active: true,
+          passTimer: 0,
+          cooldown: 0,
           x: 520, y: 640,
           vx: 130, vy: -15,
           speed: 135,
@@ -82,6 +85,9 @@
         },
         {
           id: 'xwing',
+          active: false,
+          passTimer: 0,
+          cooldown: 5.0, // launches after Falcon's pass
           x: 820, y: 700,
           vx: -160, vy: 25,
           speed: 165,
@@ -93,6 +99,9 @@
         },
         {
           id: 'enterprise',
+          active: false,
+          passTimer: 0,
+          cooldown: 13.0, // enters later
           x: 620, y: 520,
           vx: 85, vy: 20,
           speed: 95,
@@ -1390,9 +1399,9 @@
       this.raf = requestAnimationFrame(this.frame);
       if (document.hidden) return;
 
-      // Throttle static rendering to 24 FPS (~41.6ms); uncap to full display Hz during camera interaction/easing
+      // Throttle static rendering to 15 FPS (~66ms); uncap to full display Hz during camera interaction/easing
       const isMoving = !!this.target || !!this.drag || !!this.pinch;
-      if (!isMoving && this._lastFrameTime && (now - this._lastFrameTime < 41)) {
+      if (!isMoving && this._lastFrameTime && (now - this._lastFrameTime < 66)) {
         return;
       }
       this._lastFrameTime = now;
@@ -1925,7 +1934,7 @@
       ship.hullOffsetX = padL;
     }
 
-    // Pre-calculate Orbital Sessions manifest positions & text measurements (runs in update(), not at 60fps)
+    // Pre-calculate and bake Orbital Sessions manifest (runs in update(), zero per-frame text/pill operations)
     updateStorageShipLayout() {
       if (!this.town || !this.town.storageShip) return;
       const ship = this.town.storageShip;
@@ -1940,51 +1949,100 @@
       const items = [];
       const hostItems = [];
 
+      // Offscreen canvas for pre-baked text and pill boxes
+      const mc = document.createElement('canvas');
+      mc.width = w; mc.height = h;
+      const mctx = mc.getContext('2d');
+
+      // Title Banner Header Text
+      mctx.font = '700 13px "JetBrains Mono", monospace';
+      mctx.fillStyle = '#00e5ff';
+      mctx.textAlign = 'left';
+      mctx.textBaseline = 'middle';
+      mctx.fillText('📦 ORBITAL SESSIONS // MANIFEST', 18, 20);
+
+      mctx.textAlign = 'right';
+      mctx.font = '700 12px "JetBrains Mono", monospace';
+      mctx.fillStyle = '#f1fa8c';
+      mctx.fillText(this.sessions.size + ' ACTIVE SESSIONS', w - 18, 20);
+      mctx.textAlign = 'left';
+
       hosts.forEach((hKey, idx) => {
-        const rowY = y + 36 + idx * rowH;
-        const hostItem = { host: hKey, x: x + 12, y: rowY + 2, w: 126, h: rowH - 6 };
+        const rowY = 36 + idx * rowH;
+        const hostItem = { host: hKey, x: x + 12, y: y + rowY + 2, w: 126, h: rowH - 6 };
         hostItems.push(hostItem);
+
+        // Row background strip
+        mctx.fillStyle = idx % 2 === 0 ? 'rgba(15, 23, 42, 0.65)' : 'rgba(10, 16, 28, 0.65)';
+        mctx.fillRect(10, rowY, w - 20, rowH - 2);
+
+        // Host status dot & name
+        const off = this.hostOff(hKey);
+        mctx.fillStyle = off ? '#ef4444' : '#10b981';
+        mctx.beginPath();
+        mctx.arc(24, rowY + rowH / 2 - 1, 4.5, 0, Math.PI * 2);
+        mctx.fill();
+
+        mctx.font = '700 13px "JetBrains Mono", monospace';
+        mctx.fillStyle = off ? '#64748b' : '#38bdf8';
+        mctx.fillText(hKey.toUpperCase(), 36, rowY + rowH / 2 - 1);
 
         const prefix = hKey + ':';
         const hostSessions = [];
         for (const [key, s] of this.sessions) {
-          if (key.startsWith(prefix)) hostSessions.push({ key, name: s.name });
+          if (key.startsWith(prefix)) hostSessions.push({ key, name: s.name, activity: s.activity });
         }
 
         const pills = [];
-        let pillX = x + 148;
-        if (hostSessions.length > 0) {
+        let pillX = 148;
+        if (hostSessions.length === 0) {
+          mctx.font = 'italic 11px "JetBrains Mono", monospace';
+          mctx.fillStyle = '#64748b';
+          mctx.fillText(off ? '(offline / polling disabled)' : '(idle / no sessions)', 148, rowY + rowH / 2 - 1);
+        } else {
+          mctx.font = '600 11.5px "JetBrains Mono", monospace';
           for (const s of hostSessions) {
             const label = s.name;
             const tw = measureCtx.measureText(label).width;
             const pw = tw + 18, ph = 20;
             const py = rowY + (rowH - ph) / 2 - 1;
-            if (pillX + pw > x + w - 16) break;
+            if (pillX + pw > w - 16) break;
 
-            const pill = { key: s.key, name: label, x: pillX, y: py, w: pw, h: ph, host: hKey };
+            const pill = { key: s.key, name: label, x: x + pillX, y: y + py, w: pw, h: ph, host: hKey };
             pills.push(pill);
             items.push(pill);
+
+            // Draw baked pill box
+            mctx.fillStyle = 'rgba(8, 12, 22, 0.88)';
+            mctx.fillRect(pillX, py, pw, ph);
+
+            mctx.strokeStyle = 'rgba(0, 229, 255, 0.45)';
+            mctx.lineWidth = 1;
+            mctx.strokeRect(pillX, py, pw, ph);
+
+            // Activity dot inside pill
+            mctx.fillStyle = s.activity ? '#10b981' : '#64748b';
+            mctx.fillRect(pillX + 5, py + ph / 2 - 2, 4, 4);
+
+            // Text
+            mctx.fillStyle = '#f8fafc';
+            mctx.fillText(label, pillX + 13, py + ph / 2);
+
             pillX += pw + 8;
           }
         }
 
-        hostRows.push({
-          hostKey: hKey,
-          rowY,
-          rowH,
-          hostItem,
-          pills,
-          hasSessions: hostSessions.length > 0,
-        });
+        hostRows.push({ hostKey: hKey, rowY: y + rowY, rowH, hostItem, pills });
       });
 
+      ship.manifestCanvas = mc;
       ship.hostRows = hostRows;
       ship.items = items;
       ship.hostItems = hostItems;
       ship.totalSessions = this.sessions.size;
     }
 
-    // Orbital Storage Starship / Data Vault to the left of the Town Hall (ultra-lean 60fps render)
+    // Orbital Storage Starship / Data Vault to the left of the Town Hall (ultra-fast single blit)
     drawStorageShip(ctx, t) {
       if (!this.town || !this.town.storageShip) return;
       const ship = this.town.storageShip;
@@ -1997,77 +2055,32 @@
         ctx.drawImage(ship.hullCanvas, x - (ship.hullOffsetX || 14), y);
       }
 
-      // Title Banner Header Text
-      ctx.font = '700 13px "JetBrains Mono", monospace';
-      ctx.fillStyle = '#00e5ff';
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'middle';
-      ctx.fillText('📦 ORBITAL SESSIONS // MANIFEST', x + 18, y + 20);
+      // 2. Blit pre-baked manifest canvas (all text, rows, pills, dots)
+      if (ship.manifestCanvas) {
+        ctx.drawImage(ship.manifestCanvas, x, y);
+      }
 
-      ctx.textAlign = 'right';
-      ctx.font = '700 12px "JetBrains Mono", monospace';
-      ctx.fillStyle = '#f1fa8c';
-      ctx.fillText((ship.totalSessions || 0) + ' ACTIVE SESSIONS', x + w - 18, y + 20);
-      ctx.textAlign = 'left';
-
-      // 2. Render pre-computed manifest rows
-      const rows = ship.hostRows || [];
-      for (let idx = 0; idx < rows.length; idx++) {
-        const row = rows[idx];
-        const rowY = row.rowY, rowH = row.rowH, hKey = row.hostKey;
-        const off = this.hostOff(hKey);
-        const isHostHover = this.hover && this.hover.type === 'host-sign' && this.hover.host === hKey;
-
-        // Row background strip
-        ctx.fillStyle = idx % 2 === 0 ? 'rgba(15, 23, 42, 0.65)' : 'rgba(10, 16, 28, 0.65)';
-        ctx.fillRect(x + 10, rowY, w - 20, rowH - 2);
-
-        // Host name hover highlight
-        if (isHostHover) {
-          ctx.fillStyle = 'rgba(0, 229, 255, 0.15)';
-          ctx.fillRect(x + 12, rowY + 2, 126, rowH - 6);
+      // 3. Dynamic hover and active highlights only
+      if (this.hover && this.hover.type === 'host-sign') {
+        const item = (ship.hostItems || []).find((h) => h.host === this.hover.host);
+        if (item) {
+          ctx.fillStyle = 'rgba(0, 229, 255, 0.18)';
+          ctx.fillRect(item.x, item.y, item.w, item.h);
           ctx.strokeStyle = '#00e5ff';
-          ctx.lineWidth = 1;
-          ctx.strokeRect(x + 12, rowY + 2, 126, rowH - 6);
+          ctx.lineWidth = 1.5;
+          ctx.strokeRect(item.x, item.y, item.w, item.h);
         }
+      }
 
-        // Host status dot & name
-        ctx.fillStyle = off ? '#ef4444' : '#10b981';
-        ctx.beginPath();
-        ctx.arc(x + 24, rowY + rowH / 2 - 1, 4.5, 0, Math.PI * 2);
-        ctx.fill();
-
-        ctx.font = '700 13px "JetBrains Mono", monospace';
-        ctx.fillStyle = off ? '#64748b' : isHostHover ? '#00e5ff' : '#38bdf8';
-        ctx.fillText(hKey.toUpperCase(), x + 36, rowY + rowH / 2 - 1);
-
-        if (!row.hasSessions) {
-          ctx.font = 'italic 11px "JetBrains Mono", monospace';
-          ctx.fillStyle = '#64748b';
-          ctx.fillText(off ? '(offline / polling disabled)' : '(idle / no sessions)', x + 148, rowY + rowH / 2 - 1);
-        } else {
-          ctx.font = '600 11.5px "JetBrains Mono", monospace';
-          for (const p of row.pills) {
-            const isHover = this.hover && this.hover.type === 'manifest-session' && this.hover.key === p.key;
-            const isActive = p.key === this.activeKey;
-            const s = this.sessions.get(p.key);
-
-            // Pill box
-            ctx.fillStyle = isActive ? 'rgba(0, 229, 255, 0.28)' : isHover ? 'rgba(56, 189, 248, 0.24)' : 'rgba(8, 12, 22, 0.88)';
-            ctx.fillRect(p.x, p.y, p.w, p.h);
-
-            ctx.strokeStyle = isActive ? '#00e5ff' : isHover ? '#38bdf8' : 'rgba(0, 229, 255, 0.45)';
-            ctx.lineWidth = 1;
-            ctx.strokeRect(p.x, p.y, p.w, p.h);
-
-            // Activity dot inside pill
-            ctx.fillStyle = (s && s.activity) ? '#10b981' : '#64748b';
-            ctx.fillRect(p.x + 5, p.y + p.h / 2 - 2, 4, 4);
-
-            // Text
-            ctx.fillStyle = isActive ? '#00e5ff' : '#f8fafc';
-            ctx.fillText(p.name, p.x + 13, p.y + p.h / 2);
-          }
+      for (const p of ship.items || []) {
+        const isHover = this.hover && this.hover.type === 'manifest-session' && this.hover.key === p.key;
+        const isActive = p.key === this.activeKey;
+        if (isHover || isActive) {
+          ctx.fillStyle = isActive ? 'rgba(0, 229, 255, 0.28)' : 'rgba(56, 189, 248, 0.22)';
+          ctx.fillRect(p.x, p.y, p.w, p.h);
+          ctx.strokeStyle = isActive ? '#00e5ff' : '#38bdf8';
+          ctx.lineWidth = 1.5;
+          ctx.strokeRect(p.x, p.y, p.w, p.h);
         }
       }
 
@@ -2227,7 +2240,7 @@
       }
     }
 
-    // iconic sci-fi space traffic: Millennium Falcon, X-Wing, Star Trek Enterprise
+    // iconic sci-fi space traffic: Millennium Falcon, X-Wing, Star Trek Enterprise (max 1-2 active at a time)
     updateSpaceTraffic(t) {
       if (!this.spaceTraffic || !this.cv) return;
       const w = this.cv.clientWidth, h = this.cv.clientHeight;
@@ -2239,7 +2252,7 @@
       const camx = (this.cam && this.cam.x) || 700;
       const camy = (this.cam && this.cam.y) || 700;
 
-      // Wrap boundaries relative to camera viewport so ships ALWAYS fly through current view
+      // Wrap boundaries relative to camera viewport
       const halfW = (w / 2) / z + 120;
       const halfH = (h / 2) / z + 100;
       const minX = camx - halfW;
@@ -2247,18 +2260,58 @@
       const minY = camy - halfH;
       const maxY = camy + halfH;
 
+      // Count currently active ships (max 1-2 allowed simultaneously)
+      let activeCount = 0;
+      for (const ship of this.spaceTraffic) if (ship.active) activeCount++;
+
       for (const ship of this.spaceTraffic) {
+        if (!ship.active) {
+          // Ship is in hyperspace standby cooldown
+          ship.cooldown = (ship.cooldown || 0) - dt;
+          // Launch pass when cooldown expired and at most 1 other ship is flying
+          if (ship.cooldown <= 0 && activeCount < 2) {
+            ship.active = true;
+            activeCount++;
+
+            // Pick a scenic entry edge: 0=left, 1=right, 2=top, 3=bottom
+            const side = Math.floor(Math.random() * 4);
+            if (side === 0) {
+              ship.x = minX;
+              ship.y = minY + 0.15 * (maxY - minY) + Math.random() * 0.7 * (maxY - minY);
+              ship.targetAngle = -0.3 + Math.random() * 0.6;
+            } else if (side === 1) {
+              ship.x = maxX;
+              ship.y = minY + 0.15 * (maxY - minY) + Math.random() * 0.7 * (maxY - minY);
+              ship.targetAngle = Math.PI - 0.3 + Math.random() * 0.6;
+            } else if (side === 2) {
+              ship.y = minY;
+              ship.x = minX + 0.2 * (maxX - minX) + Math.random() * 0.6 * (maxX - minX);
+              ship.targetAngle = Math.PI / 2 - 0.4 + Math.random() * 0.8;
+            } else {
+              ship.y = maxY;
+              ship.x = minX + 0.2 * (maxX - minX) + Math.random() * 0.6 * (maxX - minX);
+              ship.targetAngle = -Math.PI / 2 - 0.4 + Math.random() * 0.8;
+            }
+            ship.angle = ship.targetAngle;
+            ship.timer = 0;
+            ship.interval = 4 + Math.random() * 4;
+            ship.passTimer = 0;
+          }
+          continue;
+        }
+
+        // Active ship in flight
+        ship.passTimer = (ship.passTimer || 0) + dt;
         ship.timer += dt;
         if (ship.timer >= ship.interval) {
           ship.timer = 0;
           ship.interval = 3 + Math.random() * 4;
-          // Random heading wandering through space
-          ship.targetAngle = Math.random() * Math.PI * 2;
+          ship.targetAngle += -0.25 + Math.random() * 0.5;
         }
 
         // Steer angle smoothly towards targetAngle
         let diff = (ship.targetAngle - ship.angle + Math.PI * 3) % (Math.PI * 2) - Math.PI;
-        ship.angle += Math.sign(diff) * Math.min(Math.abs(diff), 1.6 * dt);
+        ship.angle += Math.sign(diff) * Math.min(Math.abs(diff), 1.4 * dt);
 
         // Update velocity and position
         ship.vx = Math.cos(ship.angle) * ship.speed;
@@ -2266,28 +2319,11 @@
         ship.x += ship.vx * dt;
         ship.y += ship.vy * dt;
 
-        // Wrap around visible viewport edges
-        if (ship.x < minX) {
-          ship.x = maxX - 10;
-          ship.y = minY + Math.random() * (maxY - minY);
-          ship.targetAngle = Math.PI - 0.4 + Math.random() * 0.8;
-          ship.angle = ship.targetAngle;
-        } else if (ship.x > maxX) {
-          ship.x = minX + 10;
-          ship.y = minY + Math.random() * (maxY - minY);
-          ship.targetAngle = -0.4 + Math.random() * 0.8;
-          ship.angle = ship.targetAngle;
-        }
-        if (ship.y < minY) {
-          ship.y = maxY - 10;
-          ship.x = minX + Math.random() * (maxX - minX);
-          ship.targetAngle = -Math.PI / 2 - 0.4 + Math.random() * 0.8;
-          ship.angle = ship.targetAngle;
-        } else if (ship.y > maxY) {
-          ship.y = minY + 10;
-          ship.x = minX + Math.random() * (maxX - minX);
-          ship.targetAngle = Math.PI / 2 - 0.4 + Math.random() * 0.8;
-          ship.angle = ship.targetAngle;
+        // Disappear once the ship exits the camera view after its scenic pass
+        if (ship.passTimer > 2.5 && (ship.x < minX - 15 || ship.x > maxX + 15 || ship.y < minY - 15 || ship.y > maxY + 15)) {
+          ship.active = false;
+          activeCount--;
+          ship.cooldown = 6 + Math.random() * 10; // 6-16s cooldown before next pass
         }
       }
     }
@@ -2298,6 +2334,7 @@
       if (!sp) return;
 
       for (const ship of this.spaceTraffic) {
+        if (!ship.active) continue; // Only draw active ships in flight!
         const sprite = sp[ship.id];
         if (!sprite) continue;
 
