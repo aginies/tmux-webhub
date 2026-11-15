@@ -155,8 +155,81 @@
         },
       ];
 
-      // precompute the dimmed outer-halo stop (was a per-frame regex in drawGalaxies)
-      for (const g of this.galaxies) g.haloColor2 = g.haloColor.replace(/[\d.]+\)$/, '0.1)');
+      // precompute the dimmed outer-halo stop and bake spiral galaxy to offscreen canvas
+      for (const g of this.galaxies) {
+        g.haloColor2 = g.haloColor.replace(/[\d.]+\)$/, '0.1)');
+        const rad = g.radius;
+        const size = Math.ceil(rad * 2 + 16);
+        const c = document.createElement('canvas');
+        c.width = size; c.height = size;
+        const ctx = c.getContext('2d');
+        const cx = size / 2, cy = size / 2;
+
+        ctx.translate(cx, cy);
+
+        // Outer diffuse galactic haze
+        const outerHalo = ctx.createRadialGradient(0, 0, rad * 0.2, 0, 0, rad);
+        outerHalo.addColorStop(0, g.haloColor);
+        outerHalo.addColorStop(0.65, g.haloColor2);
+        outerHalo.addColorStop(1, 'transparent');
+        ctx.fillStyle = outerHalo;
+        ctx.beginPath();
+        ctx.arc(0, 0, rad, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Continuous glowing spiral gas arms
+        for (let arm = 0; arm < 2; arm++) {
+          const armBase = arm * Math.PI;
+          ctx.beginPath();
+          for (let step = 0; step <= 36; step++) {
+            const frac = step / 36;
+            const r = Math.pow(frac, 1.25) * rad;
+            const theta = armBase + frac * 4.2;
+            const px = Math.cos(theta) * r;
+            const py = Math.sin(theta) * r;
+            if (step === 0) ctx.moveTo(px, py);
+            else ctx.lineTo(px, py);
+          }
+          ctx.strokeStyle = arm === 0 ? g.armColor1 : g.armColor2;
+          ctx.lineWidth = 3.5;
+          ctx.stroke();
+
+          // Inner brighter arm filament
+          ctx.lineWidth = 1;
+          ctx.strokeStyle = 'rgba(255, 255, 255, 0.6)';
+          ctx.stroke();
+        }
+
+        // Spiral arm stardust clusters
+        for (const st of g.stars) {
+          const r = st.dist * rad;
+          const px = Math.cos(st.theta) * r;
+          const py = Math.sin(st.theta) * r;
+          ctx.fillStyle = st.isCore ? '#ffffff' : (st.dist < 0.5 ? g.armColor1 : g.armColor2);
+          ctx.globalAlpha = st.alpha;
+          ctx.fillRect(px - st.size / 2, py - st.size / 2, st.size, st.size);
+        }
+
+        // Brilliant central core
+        ctx.globalAlpha = 1;
+        const coreHalo = ctx.createRadialGradient(0, 0, 1, 0, 0, rad * 0.35);
+        coreHalo.addColorStop(0, '#ffffff');
+        coreHalo.addColorStop(0.35, g.coreColor);
+        coreHalo.addColorStop(1, 'transparent');
+        ctx.fillStyle = coreHalo;
+        ctx.beginPath();
+        ctx.arc(0, 0, rad * 0.35, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Central supermassive nucleus point
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath();
+        ctx.arc(0, 0, 2.5, 0, Math.PI * 2);
+        ctx.fill();
+
+        g.canvas = c;
+        g.offset = size / 2;
+      }
 
       // Pre-baked pod glow sprites (drawPod): a createRadialGradient + 'lighter' fill per
       // working/active pod per frame was the priciest fill in the pod loop. The two
@@ -198,24 +271,6 @@
       };
       this.holoBeamActive = bakeBeam(true);
       this.holoBeamWorking = bakeBeam(false);
-
-      // Pre-baked K2000 Knight Rider scanner glow head (drawK2000Scanner)
-      const bakeScannerGlow = () => {
-        const c = document.createElement('canvas');
-        c.width = 72; c.height = 72;
-        const sc = c.getContext('2d');
-        const vGrad = sc.createRadialGradient(36, 36, 2, 36, 36, 36);
-        vGrad.addColorStop(0, 'rgba(255, 255, 255, 0.9)');
-        vGrad.addColorStop(0.2, 'rgba(0, 229, 255, 0.65)');
-        vGrad.addColorStop(0.6, 'rgba(0, 140, 255, 0.22)');
-        vGrad.addColorStop(1, 'transparent');
-        sc.fillStyle = vGrad;
-        sc.beginPath();
-        sc.arc(36, 36, 36, 0, Math.PI * 2);
-        sc.fill();
-        return c;
-      };
-      this.scannerGlow = bakeScannerGlow();
 
       // Pre-baked space traffic engine plume trails (drawSpaceTraffic)
       for (const ship of this.spaceTraffic) {
@@ -277,6 +332,23 @@
       this.cv.width = Math.round(w * dpr);
       this.cv.height = Math.round(h * dpr);
       this.dpr = dpr;
+
+      // Pre-bake cosmic nebulae gradients once on resize (zero per-frame gradient allocations)
+      const nc = document.createElement('canvas');
+      nc.width = Math.round(w); nc.height = Math.round(h);
+      const nctx = nc.getContext('2d');
+      const n1 = nctx.createRadialGradient(w * 0.22, h * 0.35, 10, w * 0.22, h * 0.35, Math.max(w, h) * 0.4);
+      n1.addColorStop(0, 'rgba(110, 40, 180, 0.12)');
+      n1.addColorStop(1, 'transparent');
+      nctx.fillStyle = n1;
+      nctx.fillRect(0, 0, w, h);
+      const n2 = nctx.createRadialGradient(w * 0.78, h * 0.55, 10, w * 0.78, h * 0.55, Math.max(w, h) * 0.45);
+      n2.addColorStop(0, 'rgba(0, 150, 255, 0.10)');
+      n2.addColorStop(1, 'transparent');
+      nctx.fillStyle = n2;
+      nctx.fillRect(0, 0, w, h);
+      this.nebulaCanvas = nc;
+
       this.needsRedraw = true;
     }
 
@@ -351,6 +423,15 @@
       items.push([(center.y + center.h) * TT, () => g.drawImage(TA.paintTownCenter(center.w), center.x * TT, center.y * TT)]);
       items.sort((a, b) => a[0] - b[0]).forEach((i) => i[1]());
 
+      // Subtle glowing cyan transit guideline on the road
+      const roadY = (layout.roads[0] + 1) * TT;
+      g.strokeStyle = 'rgba(0, 229, 255, 0.35)';
+      g.lineWidth = 1;
+      g.beginPath();
+      g.moveTo(-M, roadY);
+      g.lineTo(Wp, roadY);
+      g.stroke();
+
       // buildings: interior (floors, walls, desks' furniture), lounge, facade;
       // roofs are kept for the per-frame layer (they fade when you look inside)
       const cells = new Map(), roofs = [];
@@ -374,6 +455,7 @@
         // "+" new-session button right of the reception counter ("à l'accueil")
         b.plus = { x: cx + 44, y: cy - 3, s: 18 };
         g.drawImage(TA.paintTownFacade(b, theme), b.x * TT, (b.y + b.h) * TT);
+        this.bakeHostSigns(b);
         roofs.push({ host: b.hostKey, c: TA.paintTownRoof(b, theme, this.hostOff(b.hostKey)), x: b.x * TT - 4, y: b.y * TT - 12, b });
         b.rooms.forEach((r) => r.cells.forEach((cell) => {
           if (cell.deskKey) cells.set(b.hostKey + ':' + cell.deskKey, { cell, b, name: cell.deskKey });
@@ -1307,6 +1389,13 @@
       if (!this.on) return;
       this.raf = requestAnimationFrame(this.frame);
       if (document.hidden) return;
+
+      // Throttle static rendering to 24 FPS (~41.6ms); uncap to full display Hz during camera interaction/easing
+      const isMoving = !!this.target || !!this.drag || !!this.pinch;
+      if (!isMoving && this._lastFrameTime && (now - this._lastFrameTime < 41)) {
+        return;
+      }
+      this._lastFrameTime = now;
       const t = now / 1000;
 
       // camera easing
@@ -1375,7 +1464,8 @@
       ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
       ctx.fillStyle = '#030509';
       ctx.fillRect(0, 0, w, h);
-      this.drawSkyLayer(ctx, w, h, t);
+      this.drawSkyStars(ctx, w, h, t);
+      this.drawGalaxies(ctx, w, h, t);
       if (!this.town) {
         ctx.fillStyle = '#858faa';
         ctx.font = '12px ' + 'Silkscreen, monospace';
@@ -1392,21 +1482,41 @@
       ctx.scale(z, z);
       ctx.translate(-camx, -camy);
       ctx.imageSmoothingEnabled = false;
-      ctx.drawImage(T.base, -T.M, -T.M);
 
-      // K2000 Knight Rider blue scanner light sweeping from left to right along the transit path
-      const roadY = this.bus ? this.bus.roadY : (T.layout.roads[0] + 1) * TT;
-      this.drawK2000Scanner(ctx, t, roadY, T.Wp);
+      // Clip T.base to only the visible viewport rect (avoids copying ~4.5 million offscreen pixels)
+      const halfW = (w / 2) / z + 20;
+      const halfH = (h / 2) / z + 20;
+      const worldLeft = Math.max(0, Math.floor(camx - halfW + T.M));
+      const worldTop = Math.max(0, Math.floor(camy - halfH + T.M));
+      const worldRight = Math.min(T.base.width, Math.ceil(camx + halfW + T.M));
+      const worldBottom = Math.min(T.base.height, Math.ceil(camy + halfH + T.M));
+      const sw = Math.max(0, worldRight - worldLeft);
+      const sh = Math.max(0, worldBottom - worldTop);
+      if (sw > 0 && sh > 0) {
+        ctx.drawImage(T.base, worldLeft, worldTop, sw, sh, worldLeft - T.M, worldTop - T.M, sw, sh);
+      }
 
       // dynamic desk layer, depth-sorted (pods and the moving agents together)
       const list = [];
       const bubbles = [];
       const frame = REDUCED ? 0 : Math.floor(t * 6);
+
+      // Viewport bounds in world space for culling offscreen elements when zoomed in
+      const padW = (w / 2) / z + 120;
+      const padH = (h / 2) / z + 120;
+      const viewMinX = camx - padW, viewMaxX = camx + padW;
+      const viewMinY = camy - padH, viewMaxY = camy + padH;
+
       for (const [key, info] of T.cells) {
+        const deskX = (info.cell.x + 1) * TT, deskY = info.cell.y * TT;
+        const nap = this.naps.get(key);
+        // Cull workstations outside the visible viewport
+        if (!nap && (deskX < viewMinX || deskX > viewMaxX || deskY < viewMinY || deskY > viewMaxY)) {
+          continue;
+        }
         const name = info.name;
         const s = this.sessions.get(key);
         const state = s ? (s.activity ? 'working' : 'idle') : 'off';
-        const nap = this.naps.get(key);
         // seated only when the agent is actually at the desk — any nap state
         // (walking, checking, at an activity) means the chair is empty
         list.push([info.cell.y * TT + 52, () => this.drawPod(info, name, state, t, key, frame, !nap, bubbles)]);
@@ -2057,89 +2167,15 @@
       ctx.restore();
     }
 
-    // K2000 Knight Rider blue scanner light sweeping from left to right along the transit path
-    drawK2000Scanner(ctx, t, roadY, width) {
-      if (this.connected === false || !navigator.onLine) return; // stops when disconnected
-      const speed = 440; // px / s
-      const scanX = (t * speed) % (width + 360) - 180;
-      const beamY = roadY;
-
-      // Subtle horizontal laser guide line across space
-      ctx.strokeStyle = 'rgba(0, 180, 255, 0.12)';
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(-100, beamY);
-      ctx.lineTo(width + 100, beamY);
-      ctx.stroke();
-
-      // K2000 Knight Rider sweeping beam trail (trailing gradient fading behind from left to right)
-      const trailLen = 220;
-      const grad = ctx.createLinearGradient(scanX - trailLen, beamY, scanX, beamY);
-      grad.addColorStop(0, 'transparent');
-      grad.addColorStop(0.35, 'rgba(0, 100, 255, 0.15)');
-      grad.addColorStop(0.7, 'rgba(0, 190, 255, 0.45)');
-      grad.addColorStop(1, '#ffffff');
-
-      // Illuminated beam flare
-      ctx.fillStyle = grad;
-      ctx.fillRect(scanX - trailLen, beamY - 4, trailLen, 8);
-
-      // Blit pre-baked diffuse illumination cone lighting up space
-      if (this.scannerGlow) {
-        ctx.drawImage(this.scannerGlow, scanX - 36, beamY - 36);
-      }
-
-      // Brilliant scanner pulse head
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(scanX - 5, beamY - 3, 10, 6);
-      ctx.fillStyle = '#00e5ff';
-      ctx.fillRect(scanX - 10, beamY - 1.5, 20, 3);
-    }
-
-    // The cosmic sky (2 full-screen nebulae, 240 twinkling stars, a meteor and two
-    // rotating spiral galaxies ≈ 6 gradients + 520 stars + spiral paths) is the most
-    // expensive part of the frame, yet it changes slowly: galaxy rotation ≈ 0.05 rad/s,
-    // star twinkle ≤ 1.2 Hz, camera parallax ≤ 0.15. Render it to an offscreen canvas
-    // at ~10 fps and blit — visually indistinguishable, ~6x less gradient/star work.
-    drawSkyLayer(ctx, w, h, t) {
-      if (!this.skyStars) return; // no sky (non-space theme)
-      let sky = this._skyCv;
-      const dw = Math.round(w * this.dpr), dh = Math.round(h * this.dpr);
-      if (!sky || sky.width !== dw || sky.height !== dh) {
-        sky = this._skyCv = document.createElement('canvas');
-        sky.width = dw; sky.height = dh;
-        this._skyLastT = -1; // new size → force a re-render
-      }
-      if ((this._skyLastT ?? -1) >= 0 && t - this._skyLastT < 0.1) {
-        ctx.drawImage(sky, 0, 0, w, h); // blit the ≤100 ms-old sky
-        return;
-      }
-      const sctx = sky.getContext('2d');
-      sctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
-      sctx.clearRect(0, 0, w, h); // transparent — the #030509 background stays on the main canvas
-      this.drawSkyStars(sctx, w, h, t);
-      this.drawGalaxies(sctx, w, h, t);
-      this._skyLastT = t;
-      ctx.drawImage(sky, 0, 0, w, h);
-    }
-
-    // deep-space sky starfield with twinkling, colored stars, nebulae and meteors
+    // deep-space sky starfield with twinkling, colored stars, pre-baked nebulae and meteors
     drawSkyStars(ctx, w, h, t) {
       if (!this.skyStars) return;
       const { x: camx, y: camy } = this.cam;
 
-      // Full viewport cosmic nebulae (smooth, seamless, no rectangular boundaries)
-      const n1 = ctx.createRadialGradient(w * 0.22, h * 0.35, 10, w * 0.22, h * 0.35, Math.max(w, h) * 0.4);
-      n1.addColorStop(0, 'rgba(110, 40, 180, 0.12)');
-      n1.addColorStop(1, 'transparent');
-      ctx.fillStyle = n1;
-      ctx.fillRect(0, 0, w, h);
-
-      const n2 = ctx.createRadialGradient(w * 0.78, h * 0.55, 10, w * 0.78, h * 0.55, Math.max(w, h) * 0.45);
-      n2.addColorStop(0, 'rgba(0, 150, 255, 0.10)');
-      n2.addColorStop(1, 'transparent');
-      ctx.fillStyle = n2;
-      ctx.fillRect(0, 0, w, h);
+      // Blit pre-baked cosmic nebulae gradients (zero per-frame gradient allocations)
+      if (this.nebulaCanvas) {
+        ctx.drawImage(this.nebulaCanvas, 0, 0);
+      }
 
       for (const st of this.skyStars) {
         const px = Math.round(((st.x * 2560 - camx * 0.15) % w + w) % w);
@@ -2171,11 +2207,12 @@
       ctx.globalAlpha = 1;
     }
 
-    // slowly rotating spiral galaxies in the sky
+    // slowly rotating spiral galaxies in the sky (pre-baked to offscreen canvas)
     drawGalaxies(ctx, w, h, t) {
       if (!this.galaxies) return;
       const { x: camx, y: camy } = this.cam;
       for (const g of this.galaxies) {
+        if (!g.canvas) continue;
         const gx = Math.round(w * g.nx - (camx - 800) * 0.03);
         const gy = Math.round(h * g.ny - (camy - 500) * 0.025);
         const rot = t * g.speed;
@@ -2185,67 +2222,7 @@
         ctx.rotate(g.angle); // fixed tilt angle
         ctx.scale(1, g.tilt); // 3D inclination
         ctx.rotate(rot); // slow continuous cosmic rotation!
-
-        // Outer diffuse galactic haze
-        const outerHalo = ctx.createRadialGradient(0, 0, g.radius * 0.2, 0, 0, g.radius);
-        outerHalo.addColorStop(0, g.haloColor);
-        outerHalo.addColorStop(0.65, g.haloColor2); // precomputed dimmed stop (no per-frame regex)
-        outerHalo.addColorStop(1, 'transparent');
-        ctx.fillStyle = outerHalo;
-        ctx.beginPath();
-        ctx.arc(0, 0, g.radius, 0, Math.PI * 2);
-        ctx.fill();
-
-        // Continuous glowing spiral gas arms (logarithmic spiral stroke)
-        for (let arm = 0; arm < 2; arm++) {
-          const armBase = arm * Math.PI;
-          ctx.beginPath();
-          for (let step = 0; step <= 36; step++) {
-            const frac = step / 36;
-            const r = Math.pow(frac, 1.25) * g.radius;
-            const theta = armBase + frac * 4.2;
-            const px = Math.cos(theta) * r;
-            const py = Math.sin(theta) * r;
-            if (step === 0) ctx.moveTo(px, py);
-            else ctx.lineTo(px, py);
-          }
-          ctx.strokeStyle = arm === 0 ? g.armColor1 : g.armColor2;
-          ctx.lineWidth = 3.5;
-          ctx.stroke();
-
-          // Inner brighter arm filament
-          ctx.lineWidth = 1;
-          ctx.strokeStyle = 'rgba(255, 255, 255, 0.6)';
-          ctx.stroke();
-        }
-
-        // Spiral arm stardust clusters
-        for (const st of g.stars) {
-          const r = st.dist * g.radius;
-          const px = Math.cos(st.theta) * r;
-          const py = Math.sin(st.theta) * r;
-          ctx.fillStyle = st.isCore ? '#ffffff' : (st.dist < 0.5 ? g.armColor1 : g.armColor2);
-          ctx.globalAlpha = st.alpha;
-          ctx.fillRect(px - st.size / 2, py - st.size / 2, st.size, st.size);
-        }
-
-        // Brilliant central core / galactic bulge
-        ctx.globalAlpha = 1;
-        const coreHalo = ctx.createRadialGradient(0, 0, 1, 0, 0, g.radius * 0.35);
-        coreHalo.addColorStop(0, '#ffffff');
-        coreHalo.addColorStop(0.35, g.coreColor);
-        coreHalo.addColorStop(1, 'transparent');
-        ctx.fillStyle = coreHalo;
-        ctx.beginPath();
-        ctx.arc(0, 0, g.radius * 0.35, 0, Math.PI * 2);
-        ctx.fill();
-
-        // Central supermassive nucleus point
-        ctx.fillStyle = '#ffffff';
-        ctx.beginPath();
-        ctx.arc(0, 0, 2.5, 0, Math.PI * 2);
-        ctx.fill();
-
+        ctx.drawImage(g.canvas, -g.offset, -g.offset);
         ctx.restore();
       }
     }
@@ -2367,46 +2344,75 @@
       return false;
     }
 
+    // Pre-bake host sign badges (eliminates per-frame measureText and software shadowBlur)
+    bakeHostSigns(b) {
+      const label = b.hostKey.toUpperCase();
+      const padX = 20, h = 46;
+
+      const measureCtx = (this._signMeasureCtx ||= document.createElement('canvas').getContext('2d'));
+      measureCtx.font = '700 30px "JetBrains Mono", ui-monospace, Menlo, monospace';
+      const tw = measureCtx.measureText(label).width;
+      const w = Math.round(tw + padX * 2 + 18);
+
+      const pad = 12; // margin for shadow blur
+      const renderSign = (off) => {
+        const c = document.createElement('canvas');
+        c.width = w + pad * 2;
+        c.height = h + pad * 2;
+        const sctx = c.getContext('2d');
+        const bx = pad, by = pad;
+
+        sctx.save();
+        sctx.shadowColor = 'rgba(0, 0, 0, 0.7)';
+        sctx.shadowBlur = 8;
+        sctx.shadowOffsetY = 2;
+        sctx.fillStyle = off ? 'rgba(15, 20, 30, 0.95)' : 'rgba(10, 14, 22, 0.95)';
+
+        const r = 6;
+        sctx.beginPath();
+        sctx.moveTo(bx + r, by);
+        sctx.lineTo(bx + w - r, by); sctx.arcTo(bx + w, by, bx + w, by + r, r);
+        sctx.lineTo(bx + w, by + h - r); sctx.arcTo(bx + w, by + h, bx + w - r, by + h, r);
+        sctx.lineTo(bx + r, by + h); sctx.arcTo(bx, by + h, bx, by + h - r, r);
+        sctx.lineTo(bx, by + r); sctx.arcTo(bx, by, bx + r, by, r);
+        sctx.closePath();
+        sctx.fill();
+        sctx.shadowColor = 'transparent';
+
+        sctx.strokeStyle = off ? 'rgba(100, 116, 139, 0.4)' : 'rgba(0, 229, 255, 0.85)';
+        sctx.lineWidth = 2;
+        sctx.stroke();
+
+        sctx.fillStyle = off ? '#ef4444' : '#10b981';
+        sctx.beginPath();
+        sctx.arc(bx + 18, by + h / 2, 6, 0, Math.PI * 2);
+        sctx.fill();
+
+        sctx.font = '700 30px "JetBrains Mono", ui-monospace, Menlo, monospace';
+        sctx.fillStyle = off ? '#94a3b8' : '#ffffff';
+        sctx.textAlign = 'left';
+        sctx.textBaseline = 'middle';
+        sctx.fillText(label, bx + 32, by + h / 2 + 1);
+        sctx.restore();
+
+        return c;
+      };
+
+      b.signCanvasOn = renderSign(false);
+      b.signCanvasOff = renderSign(true);
+      b.signW = w;
+      b.signH = h;
+      b.signPad = pad;
+    }
+
     drawSign(b) {
       const { ctx } = this;
       const off = this.hostOff(b.hostKey);
-      const label = b.hostKey.toUpperCase();
-      // High-resolution, crisp, bold monospace font doubled in size (30px)
-      ctx.font = '700 30px "JetBrains Mono", ui-monospace, Menlo, monospace';
-      const tw = ctx.measureText(label).width;
+      const canvas = off ? b.signCanvasOff : b.signCanvasOn;
+      if (!canvas) return;
       const x = Math.round(b.x * TT + (b.w * TT) / 2), y = Math.round(b.y * TT - 34);
-      const padX = 20, h = 46;
-      const w = tw + padX * 2 + 18; // room for status indicator
-      const bx = Math.round(x - w / 2), by = y - 28;
-
-      // Solid high-tech obsidian carbon badge with subtle shadow
-      ctx.save();
-      ctx.shadowColor = 'rgba(0, 0, 0, 0.7)';
-      ctx.shadowBlur = 8;
-      ctx.shadowOffsetY = 2;
-      ctx.fillStyle = off ? 'rgba(15, 20, 30, 0.95)' : 'rgba(10, 14, 22, 0.95)';
-      this.rr(bx, by, w, h, 6);
-      ctx.fill();
-      ctx.shadowColor = 'transparent';
-
-      // Glowing neon border: cyan when online, dim slate when offline
-      ctx.strokeStyle = off ? 'rgba(100, 116, 139, 0.4)' : 'rgba(0, 229, 255, 0.85)';
-      ctx.lineWidth = 2;
-      this.rr(bx, by, w, h, 6);
-      ctx.stroke();
-
-      // Glowing status pill dot on left
-      ctx.fillStyle = off ? '#ef4444' : '#10b981';
-      ctx.beginPath();
-      ctx.arc(bx + 18, by + h / 2, 6, 0, Math.PI * 2);
-      ctx.fill();
-
-      // Bold white high-contrast host label
-      ctx.fillStyle = off ? '#94a3b8' : '#ffffff';
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(label, bx + 32, by + h / 2 + 1);
-      ctx.restore();
+      const bx = Math.round(x - b.signW / 2), by = y - 28;
+      ctx.drawImage(canvas, bx - b.signPad, by - b.signPad);
     }
   }
 
