@@ -204,6 +204,7 @@ function attach(key) {
   const host = s ? s.host : 'localhost';
   const st = connectTerminal(key, host, sessionName, term, () => { fitTerm(); term.focus(); });
   active = st;
+  if (view === 'town' && townView) { $('termwin').classList.add('attached'); townView.activeKey = key; townView.needsRedraw = true; }
   $('placeholder').style.display = 'none';
   $('t-detach').style.display = '';
   $('t-split').style.display = '';
@@ -229,6 +230,7 @@ function detach() {
   try { active.ws.close(); } catch {}
   active = null;
   term.reset(); // clean screen: stale content must not linger behind the placeholder
+  if (view === 'town' && townView) { $('termwin').classList.remove('attached'); townView.activeKey = null; townView.needsRedraw = true; }
   $('placeholder').style.display = 'flex';
   $('t-detach').style.display = 'none';
   $('t-split').style.display = 'none';
@@ -645,6 +647,7 @@ async function refresh() {
     if (typeof d.pi === 'string' && d.pi) defaultCmd = d.pi;
     if (d.net) setNetReadout(d.net); else $('net').textContent = ''; // netDisplay: false
     hosts = d.hosts || [];
+    if (townView && view === 'town') townView.update(hosts, active && active.key);
     renderChips();
     populateHostSelect();
     setConnBanner(d.configError ? `⚠ config.json unreadable (${d.configError}) — showing last good host list` : null);
@@ -661,9 +664,9 @@ async function refresh() {
   } finally {
     refreshing = false;
   }
-  // the chips/badges are the only consumers of this poll: a hidden tab or a hidden
-  // panel (Ctrl+B) gets no updates (server-side polling follows the terminal WS)
-  if (!document.hidden && !document.body.classList.contains('panel-hidden')) refreshTimer = setTimeout(refresh, pollMs);
+  // the chips/badges are the only consumers of this poll in list view; in town
+  // view the scene needs it too, so a hidden panel (Ctrl+B) doesn't stop it there
+  if (!document.hidden && !(document.body.classList.contains('panel-hidden') && view !== 'town')) refreshTimer = setTimeout(refresh, pollMs);
 }
 // hidden tabs stop polling entirely (the browser only throttles them to ~1/s);
 // one immediate refresh when the tab comes back. A hidden tab must also not hold a
@@ -675,7 +678,7 @@ document.addEventListener('visibilitychange', () => {
     if (refreshTimer) { clearTimeout(refreshTimer); refreshTimer = null; }
     if (active) { hiddenAttachKey = active.key; detach(); }
   } else {
-    if (!refreshTimer && !refreshing && !document.body.classList.contains('panel-hidden')) {
+    if (!refreshTimer && !refreshing && (view === 'town' || !document.body.classList.contains('panel-hidden'))) {
       refreshTimer = setTimeout(refresh, 0);
     }
     if (hiddenAttachKey) {
@@ -696,8 +699,11 @@ function setPanelHidden(hidden) {
   document.body.classList.toggle('panel-hidden', hidden);
   localStorage.setItem('pc.panel', hidden ? 'hidden' : 'shown');
   // pause/resume the 5 s GET poll: with the panel hidden nothing on screen uses it
-  // (the terminal keeps working via its own WS; server-side polling follows that WS)
-  if (hidden) {
+  // (the terminal keeps working via its own WS; server-side polling follows that WS).
+  // Exception: town view — the scene is fed by the poll, so Ctrl+B only hides the
+  // header there and the poll keeps running.
+  const pause = hidden && view !== 'town';
+  if (pause) {
     if (refreshTimer) { clearTimeout(refreshTimer); refreshTimer = null; }
   } else if (!refreshTimer && !refreshing && !document.hidden) {
     refreshTimer = setTimeout(refresh, 0);
@@ -727,6 +733,34 @@ function getTheme() {
   return 'town';
 }
 setTheme(localStorage.getItem('pc.theme') || 'town');
+
+// ---------- view: Town (default) or List ----------
+// Town renders herdr-world's town as the main page (public/town.js +
+// /vendor/town-art.js): building per host, desk per session. List is the old
+// chip list — the power-user view and the phone default.
+let townView = null;
+let view = 'list';
+if (window.TownView) {
+  townView = new TownView($('town'), { attach: (k) => attach(k) });
+  window.__townview = townView; // debug handle
+  view = localStorage.getItem('pc.view') || (innerWidth < 640 ? 'list' : 'town');
+}
+function setView(v) {
+  if (v === 'town' && !townView) v = 'list'; // no art bundle → list only
+  view = v;
+  localStorage.setItem('pc.view', v);
+  document.body.classList.toggle('view-town', v === 'town');
+  $('view-toggle').textContent = v === 'town' ? 'List' : 'Town';
+  if (townView) {
+    if (v === 'town') { townView.update(hosts, active && active.key); townView.start(); }
+    else townView.stop();
+  }
+  // surfaces over Town wear the Town skin: the terminal is always dark-scoped there
+  try { term.options.theme = getTermTheme(v === 'town' ? 'town' : getTheme()); } catch {}
+  setTimeout(fitTerm, 50);
+}
+$('view-toggle').onclick = () => setView(view === 'town' ? 'list' : 'town');
+setView(view);
 
 // ---------- cwd completion: subdirectories on the chosen host (local or ssh) ----------
 let dirsTimer = null;
