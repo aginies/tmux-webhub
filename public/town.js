@@ -48,6 +48,8 @@
       this.naps = new Map(); // 'host:name' -> nap state (idle agents take the sofa)
       this.ambient = new Map(); // 'amb:host' -> { key, hostKey, name, b, home, cycle }
       this.ambientNaps = new Map(); // 'amb:host' -> nap state (ambient workers, always idle)
+      this.bus = null; // { route, stop, roadY, cycleMs, haltMs, speed, riders }
+      this.busRode = new Set(); // agent keys riding the current bus (hidden while aboard)
       this.nav = new Map();  // hostKey -> TA.TownNavigation (A* through the building)
       this.needsRedraw = true;
       this.raf = null;
@@ -213,6 +215,94 @@
       this.nav.clear(); // navigation grids are bound to the building objects
       this.reanchorNaps();
       this.syncAmbientDefs();
+      this.setupBus();
+    }
+
+    // the town's bus: it loops along the road by the town center, halting at
+    // the main stop where idle agents can wait and board (the film's bus).
+    setupBus() {
+      if (!this.town) { this.bus = null; return; }
+      const layout = this.town.layout;
+      const route = TA.townBusRoute(layout);
+      if (!route || !route.stops.length) { this.bus = null; return; }
+      // the stop nearest the town center is the main stop
+      const c = layout.center;
+      const cx = (c.x + c.w / 2) * TT, cy = (c.y + c.h) * TT;
+      let stop = route.stops[0], best = Infinity;
+      for (const s of route.stops) {
+        const d = Math.abs(s.wait.x - cx) + Math.abs(s.wait.y - cy);
+        if (d < best) { best = d; stop = s; }
+      }
+      this.bus = {
+        route, stop,
+        roadY: stop.wait.y,
+        cycleMs: 22000, // between arrivals
+        haltMs: 3500,   // how long it halts at the stop
+        speed: 300,     // px / s
+        riders: [],     // agent names aboard the current bus
+      };
+      this.busRode.clear();
+    }
+
+    // the bus position at time t: { x, y, hazard, riders } or null (between runs)
+    busAt(t) {
+      if (!this.bus) return null;
+      const b = this.bus;
+      const W = this.town.layout.width * TT;
+      const roadLeft = -40, roadRight = W + 40;
+      const stopX = b.stop.wait.x - 46; // the bus halts just short of the stop
+      const driveIn = (stopX - roadLeft) / b.speed * 1000;
+      const driveOut = (roadRight - stopX) / b.speed * 1000;
+      const enterMs = 0, arriveMs = driveIn, departMs = arriveMs + b.haltMs, exitMs = departMs + driveOut;
+      const cycleMs = exitMs + 4000; // a gap between runs
+      const phase = (t * 1000) % cycleMs;
+      if (phase < enterMs || phase >= exitMs) return null;
+      const eo = (u) => u < .5 ? 2 * u * u : 1 - Math.pow(-2 * u + 2, 2) / 2;
+      let x, hazard = false;
+      if (phase < arriveMs) x = roadLeft + (stopX - roadLeft) * eo((phase - enterMs) / driveIn);
+      else if (phase < departMs) { x = stopX; hazard = true; }
+      else x = stopX + (roadRight - stopX) * Math.pow((phase - departMs) / driveOut, 2);
+      return { x, y: b.roadY, hazard, riders: b.riders };
+    }
+
+    // waypoints from a point inside the building out to the main bus stop's
+    // queue (out the door, up to the road, along the road to the stop)
+    busWaypoints(b, from, spot) {
+      const stop = this.bus.stop;
+      const ex = b.entryX * TT + 8;
+      const entry = { x: ex, y: (b.y + 1) * TT + 13 };
+      const doorTop = { x: ex, y: b.y * TT + 2 };
+      const roadPt = { x: ex, y: stop.wait.y };
+      const dest = spot || stop.wait;
+      return [from, entry, doorTop, roadPt, dest];
+    }
+
+    // board the bus: every agent waiting at the main stop gets on (shown in
+    // the windows) and is hidden while aboard
+    boardBus() {
+      const board = (map) => {
+        for (const [key, nap] of [...map]) {
+          if (nap.phase !== 'waiting-bus') continue;
+          const name = this.agentName(key);
+          if (name) this.bus.riders.push(name);
+          this.busRode.add(key);
+          map.delete(key);
+        }
+      };
+      board(this.naps);
+      board(this.ambientNaps);
+    }
+
+    // advance the bus: board riders when it halts, release them when it leaves
+    updateBus(t) {
+      if (!this.bus) { this._busHalt = false; this._busVisible = false; return; }
+      const bus = this.busAt(t);
+      const isHalt = !!(bus && bus.hazard);
+      const isVisible = !!bus;
+      if (isHalt && !this._busHalt) this.boardBus();
+      if (this._busVisible && !isVisible) { this.bus.riders = []; this.busRode.clear(); }
+      this._busHalt = isHalt;
+      this._busVisible = isVisible;
     }
 
     // one ambient (extra) idle worker per online host — keeps the town alive
@@ -273,9 +363,13 @@
       ];
     }
 
-    // deterministic idle activity for an agent (by name): mostly nap, some water
+    // deterministic idle activity for an agent (by name): mostly nap, some
+    // water, a few catch the bus
     activityFor(name) {
-      return hash(name) % 5 === 0 ? 'water' : 'nap';
+      const h = hash(name);
+      if (this.bus && h % 7 === 0) return 'bus';
+      if (h % 5 === 0) return 'water';
+      return 'nap';
     }
 
     // the idle plan: which idle agents leave the desk, with what activity, and
@@ -284,6 +378,7 @@
     idlePlan() {
       const plan = new Map(); // key -> { activity, spot, b }
       if (!this.town) return plan;
+      let busI = 0; // global queue index at the main bus stop
       for (const b of this.town.layout.buildings) {
         if (this.hostOff(b.hostKey)) continue;
         const sofa = this.sofaSpots(b);
@@ -300,7 +395,9 @@
           const name = key.slice(b.hostKey.length + 1);
           let activity = this.activityFor(name);
           let spot = null;
-          if (activity === 'water' && waterI < 2) { spot = { ...this.coolerPos(b) }; waterI++; }
+          if (activity === 'bus' && this.bus && busI < 4) {
+            spot = { ...TA.townQueueSpot(this.bus.stop, busI++) };
+          } else if (activity === 'water' && waterI < 2) { spot = { ...this.coolerPos(b) }; waterI++; }
           else { activity = 'nap'; if (sofaI < sofa.length) spot = sofa[sofaI++]; }
           if (spot) plan.set(key, { activity, spot, b });
         }
@@ -440,7 +537,7 @@
         const nap = this.naps.get(key);
         if (!nap) return null;
         if (nap.phase === 'checking') { const fp = this.frontPos(nap.b); return [fp.x, fp.y]; }
-        if (nap.phase === 'activity' && nap.p) return [nap.p.spot.x, nap.p.spot.y];
+        if ((nap.phase === 'activity' || nap.phase === 'waiting-bus') && nap.p) return [nap.p.spot.x, nap.p.spot.y];
         const r = this.napPos(nap, t);
         return [r[0], r[1]];
       };
@@ -485,8 +582,9 @@
         this.startWalk(key, 'to-front', [at.feet, at.entry, [fp.x, fp.y]], p, at.b);
       }
       if (REDUCED) for (const [key, nap] of [...this.naps]) {
+        const toBus = nap.p && nap.p.activity === 'bus';
         if (nap.phase === 'to-front' || nap.phase === 'checking' || nap.phase === 'to-activity')
-          this.naps.set(key, { phase: 'activity', start: t, p: nap.p, b: nap.b });
+          this.naps.set(key, { phase: toBus ? 'waiting-bus' : 'activity', start: t, p: nap.p, b: nap.b });
         else if (nap.phase === 'to-desk') this.naps.delete(key);
       }
     }
@@ -567,7 +665,7 @@
       for (const [key, nap] of this.naps) {
         let px, py;
         if (nap.phase === 'checking') { const fp = this.frontPos(nap.b); px = fp.x; py = fp.y; }
-        else if (nap.phase === 'activity' && nap.p) { px = nap.p.spot.x; py = nap.p.spot.y; }
+        else if ((nap.phase === 'activity' || nap.phase === 'waiting-bus') && nap.p) { px = nap.p.spot.x; py = nap.p.spot.y; }
         else { const r = this.napPos(nap, performance.now() / 1000); px = r[0]; py = r[1]; }
         if (wx >= px - 15 && wx <= px + 15 && wy >= py - 16 && wy <= py + 10) {
           const s = this.sessions.get(key);
@@ -788,13 +886,18 @@
           } else if (nap.phase === 'checking' && t - nap.start >= this.checkMs() / 1000) {
             const fp = this.frontPos(nap.b);
             const p = nap.p;
-            if (p && p.spot) map.set(key, this.makeWalk(key, 'to-activity', [[fp.x, fp.y], [p.spot.x, p.spot.y]], p, nap.b));
-            else {
+            if (p && p.spot) {
+              const wps = (p.activity === 'bus' && this.bus)
+                ? this.busWaypoints(nap.b, [fp.x, fp.y], p.spot)
+                : [[fp.x, fp.y], [p.spot.x, p.spot.y]];
+              map.set(key, this.makeWalk(key, 'to-activity', wps, p, nap.b));
+            } else {
               const at = this.deskFeet(key);
               if (at) map.set(key, this.makeWalk(key, 'to-desk', [[fp.x, fp.y], at.entry, at.feet], null, nap.b));
             }
           } else if (nap.phase === 'to-activity' && t - nap.start >= dur) {
-            map.set(key, { ...nap, phase: 'activity', start: t });
+            const phase = (nap.p && nap.p.activity === 'bus') ? 'waiting-bus' : 'activity';
+            map.set(key, { ...nap, phase, start: t });
           } else if (nap.phase === 'to-desk' && t - nap.start >= dur) {
             map.delete(key);
           } else if (isAmbient && nap.phase === 'activity' && t - nap.start >= this.activityMs(nap.p.activity) / 1000) {
@@ -810,8 +913,9 @@
       };
       if (this.naps.size) advance(this.naps, false);
       if (this.ambientNaps.size) advance(this.ambientNaps, true);
+      this.updateBus(t);
 
-      const animate = !REDUCED && (this.town ? this.sessions.size : 0) > 0;
+      const animate = !REDUCED && !!this.town && (this.sessions.size > 0 || this.ambient.size > 0 || !!this.bus);
       if (REDUCED && !this.needsRedraw) return;
       if (!animate && !this.needsRedraw && !this.target) return;
       this.needsRedraw = false;
@@ -862,7 +966,7 @@
         // (walking, checking, at an activity) means the chair is empty
         list.push([info.cell.y * TT + 52, () => this.drawPod(info, name, state, t, key, frame, !nap, bubbles)]);
         if (nap) {
-          if (nap.phase === 'checking' || nap.phase === 'activity') {
+          if (nap.phase === 'checking' || nap.phase === 'activity' || nap.phase === 'waiting-bus') {
             const pos = nap.phase === 'checking' ? this.frontPos(nap.b) : (nap.p && nap.p.spot);
             if (pos) list.push([pos.y + 8, () => this.drawAgentAt(key, nap, pos, bubbles)]);
           } else {
@@ -874,13 +978,20 @@
       // ambient workers (the extra idle workers, one per host)
       for (const [key, nap] of this.ambientNaps) {
         if (!this.ambient.has(key)) continue;
-        if (nap.phase === 'checking' || nap.phase === 'activity') {
+        if (nap.phase === 'checking' || nap.phase === 'activity' || nap.phase === 'waiting-bus') {
           const pos = nap.phase === 'checking' ? this.frontPos(nap.b) : (nap.p && nap.p.spot);
           if (pos) list.push([pos.y + 8, () => this.drawAgentAt(key, nap, pos, bubbles)]);
         } else {
           const r = this.napPos(nap, t);
           if (r[3] < 1) list.push([r[1] + 2, () => this.drawWalker(key, nap, r, t)]);
         }
+      }
+      // the bus stop and the bus (on the street, depth-sorted by feet y)
+      if (this.bus) {
+        const s = this.bus.stop;
+        list.push([s.wait.y + 1, () => this.drawBusStop(s)]);
+        const bus = this.busAt(t);
+        if (bus) list.push([bus.y + 8, () => this.drawBus(bus)]);
       }
       list.sort((a, b) => a[0] - b[0]).forEach((e) => e[1]());
 
@@ -1080,6 +1191,71 @@
       ctx.arc(cx, cy, 2, 0, Math.PI * 2);
       ctx.fill();
       ctx.restore();
+    }
+
+    // rounded-rect path (single radius or [tl, tr, br, bl])
+    rr(x, y, w, h, r) {
+      const { ctx } = this;
+      const [a, b, c, d] = Array.isArray(r) ? r : [r, r, r, r];
+      ctx.beginPath();
+      ctx.moveTo(x + a, y);
+      ctx.lineTo(x + w - b, y); ctx.arcTo(x + w, y, x + w, y + b, b);
+      ctx.lineTo(x + w, y + h - c); ctx.arcTo(x + w, y + h, x + w - c, y + h, c);
+      ctx.lineTo(x + d, y + h); ctx.arcTo(x, y + h, x, y + h - d, d);
+      ctx.lineTo(x, y + a); ctx.arcTo(x, y, x + a, y, a);
+      ctx.closePath();
+    }
+
+    // a London bus stop: a dark pole and a white flag with the red roundel;
+    // red while someone waits
+    drawBusStop(stop) {
+      const { ctx } = this;
+      const x = stop.wait.x, y = stop.wait.y;
+      const waiting = this.busWaiting();
+      ctx.fillStyle = 'rgba(0,0,0,.25)'; ctx.fillRect(x + 12, y + 1, 5, 2);
+      ctx.fillStyle = '#3b3b3b'; ctx.fillRect(x + 12, y - 43, 3, 44);
+      this.rr(x + 1, y - 66, 26, 22, 2);
+      ctx.fillStyle = waiting ? '#d4252b' : '#f6f2e6'; ctx.fill();
+      ctx.strokeStyle = '#3b3b3b'; ctx.lineWidth = 1; ctx.stroke();
+      const ring = waiting ? '#fff' : '#d4252b';
+      ctx.beginPath(); ctx.arc(x + 14, y - 55, 5.5, 0, Math.PI * 2);
+      ctx.strokeStyle = ring; ctx.lineWidth = 3; ctx.stroke();
+      ctx.fillStyle = ring; ctx.fillRect(x + 5, y - 56.5, 18, 3);
+    }
+
+    // a red London double-decker, side on, its riders in the windows
+    drawBus(bus) {
+      const { ctx } = this;
+      ctx.save(); ctx.translate(Math.round(bus.x), Math.round(bus.y));
+      const L = -31, T0 = -34, w = 62, h = 42;
+      ctx.fillStyle = 'rgba(0,0,0,.3)'; ctx.fillRect(L + 3, T0 + h + 2, w - 6, 4);
+      ctx.fillStyle = '#222';
+      [L + 12, L + 44].forEach((cx) => { ctx.beginPath(); ctx.arc(cx, T0 + h + 1, 5, 0, Math.PI * 2); ctx.fill(); });
+      this.rr(L, T0, w, h, [7, 10, 2, 2]); ctx.fillStyle = '#d4252b'; ctx.fill();
+      ctx.fillStyle = '#f6f2e6'; ctx.fillRect(L + 1, T0 + h * .44, w - 2, 3);
+      const deck = (x0, y0, ww, list) => {
+        ctx.fillStyle = '#bfe3f2'; ctx.fillRect(x0, y0, ww, 11);
+        ctx.save(); ctx.beginPath(); ctx.rect(x0, y0, ww, 11); ctx.clip();
+        list.forEach((k, i) => ctx.drawImage(TA.townCharacter(TA.townLookFor(k), 'right', 0, 'stand', false), x0 + 1 + i * 12, y0 + 1));
+        ctx.restore();
+        ctx.fillStyle = '#d4252b';
+        for (let px = x0 + 9; px < x0 + ww; px += 11) ctx.fillRect(px, y0, 2, 11);
+      };
+      deck(L + 4, T0 + 4, w - 16, bus.riders.slice(0, 4));
+      deck(L + 4, T0 + 22, w - 19, bus.riders.slice(4));
+      ctx.fillStyle = '#222'; ctx.fillRect(L + w - 10, T0 + 3, 8, 4);
+      ctx.fillStyle = '#bfe3f2'; ctx.fillRect(L + w - 10, T0 + 9, 8, 4); ctx.fillRect(L + w - 10, T0 + 21, 8, 4);
+      this.rr(L, T0, w, h, [7, 10, 2, 2]); ctx.strokeStyle = '#3b3b3b'; ctx.lineWidth = 2; ctx.stroke();
+      if (bus.hazard) { this.rr(L - 3, T0 - 3, w + 6, h + 6, 9); ctx.strokeStyle = '#ffb300'; ctx.lineWidth = 2; ctx.stroke(); }
+      ctx.restore();
+    }
+
+    // true while any agent is waiting at the main bus stop
+    busWaiting() {
+      const isWait = (nap) => nap && nap.phase === 'waiting-bus';
+      for (const nap of this.naps.values()) if (isWait(nap)) return true;
+      for (const nap of this.ambientNaps.values()) if (isWait(nap)) return true;
+      return false;
     }
 
     drawSign(b) {
