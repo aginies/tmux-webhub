@@ -183,6 +183,10 @@
      the terminal window float above it. The scene is a night town — always
      the dark void, whatever the selected skin (style guide: surfaces over
      Town wear the Town skin). */
+  /* nothing scrolls in Town view — the scene is one fixed canvas; hiding
+     overflow also stops a transient scrollbar when the floating terminal
+     window briefly sticks past a shrunken viewport */
+  body.view-town { overflow: hidden; }
   #townwrap { display: none; position: fixed; inset: 0; z-index: 0; }
   #townwrap canvas { width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; }
   #townwrap canvas.dragging { cursor: grabbing; }
@@ -252,10 +256,25 @@
   body.view-town #termwin.attached { display: flex; }
   /* fullscreen: the window fills the area under the header (same as the phone
      media query) — toggled by the ⛶ button in the termbar */
-  body.view-town #termwin.attached.fs { inset: 0; width: 100%; height: 100%; right: 0; bottom: 0; border-radius: 0; border: 0; }
+  /* !important: the move/resize feature sets inline left/top, which must not
+     survive fullscreen (or the window overflows #main and a scrollbar appears) */
+  body.view-town #termwin.attached.fs { inset: 0 !important; width: 100% !important; height: 100% !important; border-radius: 0; border: 0; }
+  /* Town view: the terminal window can be moved (drag the bar) and resized
+     (drag the corner grip) — see the termwin move/resize block in app.js */
+  body.view-town #termbar { cursor: move; user-select: none; touch-action: none; }
+  body.view-town #termbar button { cursor: pointer; }
+  #termbar.dragging { cursor: grabbing; }
+  #term-resize {
+    display: none; position: absolute; right: 0; bottom: 0; width: 18px; height: 18px;
+    cursor: nwse-resize; touch-action: none; opacity: .6;
+    background: linear-gradient(135deg, transparent 0 6px, rgba(167,181,218,.55) 6px 8px, transparent 8px 11px, rgba(167,181,218,.55) 11px 13px, transparent 13px);
+  }
+  #term-resize:hover { opacity: 1; }
+  body.view-town #termwin.attached #term-resize { display: block; }
   @media (max-width: 640px) {
-    body.view-town #termwin.attached { inset: 0; width: 100%; height: 100%; right: 0; bottom: 0; border-radius: 0; border: 0; }
+    body.view-town #termwin.attached { inset: 0 !important; width: 100% !important; height: 100% !important; border-radius: 0; border: 0; }
     #town-ctl button { width: 44px; height: 44px; } /* touch targets */
+    body.view-town #termwin.attached #term-resize { display: none; } /* fullscreen sheet on phones: nothing to resize */
   }
   #conn {
     display: none; padding: 4px 12px; flex: 0 0 auto;
@@ -539,6 +558,7 @@
       <div id="placeholder">click a session above to attach — sessions are grouped by host (config.json)</div>
       <div id="term"></div>
     </div>
+    <div id="term-resize" title="Drag to resize"></div>
     </div>
   </main>
 </div>

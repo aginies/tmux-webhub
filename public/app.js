@@ -96,7 +96,15 @@ function fitTerm() {
     } catch {}
   }
 }
-window.addEventListener('resize', fitTerm);
+window.addEventListener('resize', () => {
+  fitTerm();
+  if (window.termwinClamp) {
+    window.termwinClamp();
+    // second pass next frame: a transient scrollbar can shrink the work
+    // area on the first layout, and the final clamp must use its real size
+    requestAnimationFrame(() => window.termwinClamp());
+  }
+});
 
 // ---------- two-finger touch scroll (smartphone) ----------
 // xterm's built-in touch handling only tracks the first finger (one-finger drag
@@ -415,6 +423,99 @@ $('t-full').onclick = () => {
   $('t-full').title = fs ? 'Exit fullscreen' : 'Fullscreen (the terminal window fills the screen)';
   setTimeout(fitTerm, 50);
 };
+
+// ---------- Town view: move & resize the floating terminal window ----------
+// The CSS parks the window with right/bottom; the first move or resize
+// converts it to explicit left/top (relative to #main, its offset parent).
+// Moving: drag the termbar (buttons excluded). Resizing: drag the corner
+// grip. Both are clamped so the window can't be lost off-screen, and both
+// are inactive on phones (the window is a fullscreen sheet there).
+(function () {
+  const win = $('termwin'), bar = $('termbar'), grip = $('term-resize');
+  const phone = () => matchMedia('(max-width: 640px)').matches;
+  const usable = () => view === 'town' && !!townView && win.classList.contains('attached') && !phone();
+  const area = () => $('main').getBoundingClientRect(); // work area under the header
+  // keep the window inside the work area; if it is bigger than the area,
+  // pin it to the bottom-right corner so the resize grip stays reachable
+  const clampLT = (x, y) => {
+    const a = area(), w = win.offsetWidth, h = win.offsetHeight;
+    const cx = w > a.width ? a.width - w : Math.min(Math.max(x, 0), a.width - w);
+    const cy = h > a.height ? a.height - h : Math.min(Math.max(y, 0), a.height - h);
+    return [cx, cy];
+  };
+  const toLT = () => {
+    if (win.style.left) return;
+    const r = win.getBoundingClientRect(), a = area();
+    win.style.left = (r.left - a.left) + 'px';
+    win.style.top = (r.top - a.top) + 'px';
+    win.style.right = 'auto';
+    win.style.bottom = 'auto';
+  };
+  window.termwinClamp = () => { // also called on viewport resize
+    if (!usable() || !win.style.left || win.classList.contains('fs')) return;
+    const [x, y] = clampLT(parseFloat(win.style.left) || 0, parseFloat(win.style.top) || 0);
+    win.style.left = x + 'px';
+    win.style.top = y + 'px';
+  };
+
+  let drag = null;
+  bar.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0 || !usable() || e.target.closest('button')) return;
+    if (win.classList.contains('fs')) { // dragging out of fullscreen: float from the grab
+      win.classList.remove('fs');
+      $('t-full').title = 'Fullscreen (the terminal window fills the screen)';
+    }
+    toLT();
+    const r = win.getBoundingClientRect();
+    drag = { dx: e.clientX - r.left, dy: e.clientY - r.top };
+    try { bar.setPointerCapture(e.pointerId); } catch {}
+    bar.classList.add('dragging');
+    e.preventDefault();
+  });
+  bar.addEventListener('pointermove', (e) => {
+    if (!drag) return;
+    const [x, y] = clampLT(e.clientX - area().left - drag.dx, e.clientY - area().top - drag.dy);
+    win.style.left = x + 'px';
+    win.style.top = y + 'px';
+  });
+  const endDrag = (e) => {
+    if (!drag) return;
+    drag = null;
+    bar.classList.remove('dragging');
+    try { bar.releasePointerCapture(e.pointerId); } catch {}
+  };
+  bar.addEventListener('pointerup', endDrag);
+  bar.addEventListener('pointercancel', endDrag);
+
+  let rs = null;
+  grip.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0 || !usable() || win.classList.contains('fs')) return;
+    toLT();
+    const r = win.getBoundingClientRect();
+    rs = { x: e.clientX, y: e.clientY, w: r.width, h: r.height };
+    try { grip.setPointerCapture(e.pointerId); } catch {}
+    e.preventDefault();
+  });
+  grip.addEventListener('pointermove', (e) => {
+    if (!rs) return;
+    const a = area();
+    // grow/shrink within the space left of the window's current position,
+    // so the window never grows past the work area (the grip follows the
+    // cursor until it hits the area edge)
+    const posL = parseFloat(win.style.left) || 0, posT = parseFloat(win.style.top) || 0;
+    win.style.width = Math.min(Math.max(rs.w + (e.clientX - rs.x), 320), Math.max(320, a.width - posL)) + 'px';
+    win.style.height = Math.min(Math.max(rs.h + (e.clientY - rs.y), 200), Math.max(200, a.height - posT)) + 'px';
+    fitTerm(); // immediate xterm reflow; the tmux resize send is throttled inside
+  });
+  const endResize = (e) => {
+    if (!rs) return;
+    rs = null;
+    try { grip.releasePointerCapture(e.pointerId); } catch {}
+    fitTerm();
+  };
+  grip.addEventListener('pointerup', endResize);
+  grip.addEventListener('pointercancel', endResize);
+})();
 
 // ---------- display names: explicit tmux name, else cwd basename (disambiguated per host) ----------
 // A bare-numeric name is tmux's default ("0", "1", …) — anonymous, so the cwd
