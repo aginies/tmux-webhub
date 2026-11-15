@@ -207,7 +207,7 @@ function attach(key) {
   if (view === 'town' && townView) { $('termwin').classList.add('attached'); townView.activeKey = key; townView.needsRedraw = true; }
   $('placeholder').style.display = 'none';
   $('t-detach').style.display = '';
-  $('t-split').style.display = '';
+  syncTermButtons();
   // no term.reset() here: detach() above already cleared the screen when a session
   // was active, and a fresh tmux attach full-redraws it when we come from a
   // closed/detached state — a second reset was redundant
@@ -233,13 +233,23 @@ function detach() {
   if (view === 'town' && townView) { $('termwin').classList.remove('attached'); townView.activeKey = null; townView.needsRedraw = true; }
   $('placeholder').style.display = 'flex';
   $('t-detach').style.display = 'none';
-  $('t-split').style.display = 'none';
+  syncTermButtons();
   $('keys-bg').classList.remove('open');
   $('rn-bg').classList.remove('open');
   $('t-name').textContent = 'no session selected';
   $('t-cwd').textContent = '';
   $('t-local').style.display = 'none';
   renderChips();
+}
+
+// Termbar buttons that only make sense per view: split view is a List-view
+// feature (the Town floating window is too small for two panes — the ⤢ icon
+// is hidden there), fullscreen only makes sense in Town (List is already
+// full-area). Called from attach/detach/setView so the buttons track the view.
+function syncTermButtons() {
+  const inTown = view === 'town' && !!townView;
+  $('t-split').style.display = inTown ? 'none' : (active ? '' : 'none');
+  $('t-full').style.display = inTown && active ? '' : 'none';
 }
 
 // tmux counts our own web client once its ws is open; subtract it to get the number of
@@ -395,6 +405,15 @@ $('t-split').onclick = () => {
   } else {
     openSplit();
   }
+};
+
+// Fullscreen toggle (Town view): the floating terminal window fills the area
+// under the header, xterm re-fits to the new size
+$('t-full').onclick = () => {
+  const win = $('termwin');
+  const fs = win.classList.toggle('fs');
+  $('t-full').title = fs ? 'Exit fullscreen' : 'Fullscreen (the terminal window fills the screen)';
+  setTimeout(fitTerm, 50);
 };
 
 // ---------- display names: explicit tmux name, else cwd basename (disambiguated per host) ----------
@@ -761,6 +780,7 @@ function setView(v) {
   }
   // surfaces over Town wear the Town skin: the terminal is always dark-scoped there
   try { term.options.theme = getTermTheme(v === 'town' ? 'town' : getTheme()); } catch {}
+  syncTermButtons();
   setTimeout(fitTerm, 50);
 }
 $('view-toggle').onclick = () => setView(view === 'town' ? 'list' : 'town');

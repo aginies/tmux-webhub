@@ -233,6 +233,9 @@
     background: var(--panel);
   }
   body.view-town #termwin.attached { display: flex; }
+  /* fullscreen: the window fills the area under the header (same as the phone
+     media query) — toggled by the ⛶ button in the termbar */
+  body.view-town #termwin.attached.fs { inset: 0; width: 100%; height: 100%; right: 0; bottom: 0; border-radius: 0; border: 0; }
   @media (max-width: 640px) {
     body.view-town #termwin.attached { inset: 0; width: 100%; height: 100%; right: 0; bottom: 0; border-radius: 0; border: 0; }
   }
@@ -511,6 +514,7 @@
       <span class="tcwd" id="t-cwd"></span>
       <span class="tlocal" id="t-local">● also attached locally</span>
       <button id="t-split" title="Split view (attach another session side by side)" style="display:none">⤢</button>
+      <button id="t-full" title="Fullscreen (the terminal window fills the screen)" style="display:none">⛶</button>
       <button id="t-detach" title="Detach (the session keeps running in tmux)" style="display:none">✕</button>
     </div>
     <div id="termwrap">
