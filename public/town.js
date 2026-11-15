@@ -330,6 +330,18 @@
         ship.trailCanvas = tc;
       }
 
+      // Smart Eco activity tracking
+      this.lastActivityTime = performance.now();
+      const onUserActive = () => {
+        this.lastActivityTime = performance.now();
+        this.needsRedraw = true;
+      };
+      window.addEventListener('pointerdown', onUserActive, { passive: true });
+      window.addEventListener('pointermove', onUserActive, { passive: true });
+      window.addEventListener('keydown', onUserActive, { passive: true });
+      window.addEventListener('focus', onUserActive);
+      window.addEventListener('blur', () => { this.needsRedraw = true; });
+
       canvas.addEventListener('wheel', (e) => this.onWheel(e), { passive: false });
       canvas.addEventListener('pointerdown', (e) => this.onPointerDown(e));
       window.addEventListener('pointermove', (e) => this.onPointerMove(e));
@@ -467,14 +479,18 @@
       items.push([(center.y + center.h) * TT, () => g.drawImage(TA.paintTownCenter(center.w), center.x * TT, center.y * TT)]);
       items.sort((a, b) => a[0] - b[0]).forEach((i) => i[1]());
 
-      // Subtle glowing cyan transit guideline on the road
-      const roadY = (layout.roads[0] + 1) * TT;
+      // Subtle segmented glowing cyan transit guideline on the road (at same level as shuttle centerline)
+      const busRoute = TA.townBusRoute(layout);
+      const busStop = busRoute && busRoute.stops[0];
+      const roadY = busStop ? (busStop.wait.y - 27) : ((layout.roads[0] + 1) * TT + 29);
       g.strokeStyle = 'rgba(0, 229, 255, 0.35)';
-      g.lineWidth = 1;
+      g.lineWidth = 1.5;
+      g.setLineDash([16, 12]);
       g.beginPath();
       g.moveTo(-M, roadY);
       g.lineTo(Wp, roadY);
       g.stroke();
+      g.setLineDash([]);
 
       // buildings: interior (floors, walls, desks' furniture), lounge, facade;
       // roofs are kept for the per-frame layer (they fade when you look inside)
@@ -1434,9 +1450,17 @@
       this.raf = requestAnimationFrame(this.frame);
       if (document.hidden) return;
 
-      // Throttle static rendering to 15 FPS (~66ms); uncap to full display Hz during camera interaction/easing
+      // Smart Eco Frame Throttle:
+      // 1. Camera moving / dragging / easing: full display refresh rate (60Hz-120Hz)
+      // 2. Unfocused window (user in another app/terminal): 1 FPS (~1000ms)
+      // 3. Inactive for >15s (no mouse/keyboard): 2 FPS (~500ms)
+      // 4. Normal active static viewing: 15 FPS (~66ms)
       const isMoving = !!this.target || !!this.drag || !!this.pinch;
-      if (!isMoving && this._lastFrameTime && (now - this._lastFrameTime < 66)) {
+      const isUnfocused = typeof document.hasFocus === 'function' && !document.hasFocus();
+      const isInactive = (now - this.lastActivityTime) > 15000;
+      const minInterval = isMoving ? 0 : isUnfocused ? 1000 : isInactive ? 500 : 66;
+
+      if (!isMoving && this._lastFrameTime && (now - this._lastFrameTime < minInterval)) {
         return;
       }
       this._lastFrameTime = now;
@@ -1521,10 +1545,12 @@
       const T = this.town;
       const { x: camx, y: camy, z } = this.cam;
       const ox = w / 2, oy = h / 2;
-      ctx.save();
-      ctx.translate(ox, oy);
-      ctx.scale(z, z);
-      ctx.translate(-camx, -camy);
+
+      // Direct camera affine transform matrix (zero save/restore matrix stack overhead)
+      const a = this.dpr * z, d = this.dpr * z;
+      const e = this.dpr * (ox - camx * z), f = this.dpr * (oy - camy * z);
+      this.worldA = a; this.worldD = d; this.worldE = e; this.worldF = f;
+      ctx.setTransform(a, 0, 0, d, e, f);
       ctx.imageSmoothingEnabled = false;
 
       // Clip T.base to only the visible viewport rect (avoids copying ~4.5 million offscreen pixels)
@@ -1625,7 +1651,9 @@
         ctx.lineWidth = 2 / z;
         ctx.strokeRect(X - 30, Y - 12, 108, 110);
       }
-      ctx.restore();
+
+      // Reset to screen coordinates for thought bubbles (direct identity matrix)
+      ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
 
       // thought bubbles in screen space: constant size at every zoom, like the film
       for (const [x, y, kind] of bubbles) {
@@ -1939,7 +1967,7 @@
       ship.hullOffsetX = padL;
     }
 
-    // Pre-calculate and bake Orbital Sessions manifest (runs in update(), zero per-frame text/pill operations)
+    // Pre-calculate Orbital Sessions manifest positions & text measurements (runs in update(), not in render loop)
     updateStorageShipLayout() {
       if (!this.town || !this.town.storageShip) return;
       const ship = this.town.storageShip;
@@ -1954,100 +1982,51 @@
       const items = [];
       const hostItems = [];
 
-      // Offscreen canvas for pre-baked text and pill boxes
-      const mc = document.createElement('canvas');
-      mc.width = w; mc.height = h;
-      const mctx = mc.getContext('2d');
-
-      // Title Banner Header Text
-      mctx.font = '700 13px "JetBrains Mono", monospace';
-      mctx.fillStyle = '#00e5ff';
-      mctx.textAlign = 'left';
-      mctx.textBaseline = 'middle';
-      mctx.fillText('📦 ORBITAL SESSIONS // MANIFEST', 18, 20);
-
-      mctx.textAlign = 'right';
-      mctx.font = '700 12px "JetBrains Mono", monospace';
-      mctx.fillStyle = '#f1fa8c';
-      mctx.fillText(this.sessions.size + ' ACTIVE SESSIONS', w - 18, 20);
-      mctx.textAlign = 'left';
-
       hosts.forEach((hKey, idx) => {
         const rowY = 36 + idx * rowH;
         const hostItem = { host: hKey, x: x + 12, y: y + rowY + 2, w: 126, h: rowH - 6 };
         hostItems.push(hostItem);
 
-        // Row background strip
-        mctx.fillStyle = idx % 2 === 0 ? 'rgba(15, 23, 42, 0.65)' : 'rgba(10, 16, 28, 0.65)';
-        mctx.fillRect(10, rowY, w - 20, rowH - 2);
-
-        // Host status dot & name
-        const off = this.hostOff(hKey);
-        mctx.fillStyle = off ? '#ef4444' : '#10b981';
-        mctx.beginPath();
-        mctx.arc(24, rowY + rowH / 2 - 1, 4.5, 0, Math.PI * 2);
-        mctx.fill();
-
-        mctx.font = '700 13px "JetBrains Mono", monospace';
-        mctx.fillStyle = off ? '#64748b' : '#38bdf8';
-        mctx.fillText(hKey.toUpperCase(), 36, rowY + rowH / 2 - 1);
-
         const prefix = hKey + ':';
         const hostSessions = [];
         for (const [key, s] of this.sessions) {
-          if (key.startsWith(prefix)) hostSessions.push({ key, name: s.name, activity: s.activity });
+          if (key.startsWith(prefix)) hostSessions.push({ key, name: s.name });
         }
 
         const pills = [];
         let pillX = 148;
-        if (hostSessions.length === 0) {
-          mctx.font = 'italic 11px "JetBrains Mono", monospace';
-          mctx.fillStyle = '#64748b';
-          mctx.fillText(off ? '(offline / polling disabled)' : '(idle / no sessions)', 148, rowY + rowH / 2 - 1);
-        } else {
-          mctx.font = '600 11.5px "JetBrains Mono", monospace';
+        if (hostSessions.length > 0) {
           for (const s of hostSessions) {
             const label = s.name;
             const tw = measureCtx.measureText(label).width;
-            const pw = tw + 18, ph = 20;
-            const py = rowY + (rowH - ph) / 2 - 1;
+            const pw = Math.round(tw + 18), ph = 20;
+            const py = rowY + Math.round((rowH - ph) / 2) - 1;
             if (pillX + pw > w - 16) break;
 
             const pill = { key: s.key, name: label, x: x + pillX, y: y + py, w: pw, h: ph, host: hKey };
             pills.push(pill);
             items.push(pill);
-
-            // Draw baked pill box
-            mctx.fillStyle = 'rgba(8, 12, 22, 0.88)';
-            mctx.fillRect(pillX, py, pw, ph);
-
-            mctx.strokeStyle = 'rgba(0, 229, 255, 0.45)';
-            mctx.lineWidth = 1;
-            mctx.strokeRect(pillX, py, pw, ph);
-
-            // Activity dot inside pill
-            mctx.fillStyle = s.activity ? '#10b981' : '#64748b';
-            mctx.fillRect(pillX + 5, py + ph / 2 - 2, 4, 4);
-
-            // Text
-            mctx.fillStyle = '#f8fafc';
-            mctx.fillText(label, pillX + 13, py + ph / 2);
-
             pillX += pw + 8;
           }
         }
 
-        hostRows.push({ hostKey: hKey, rowY: y + rowY, rowH, hostItem, pills });
+        hostRows.push({
+          hostKey: hKey,
+          rowY: y + rowY,
+          rowH,
+          hostItem,
+          pills,
+          hasSessions: hostSessions.length > 0,
+        });
       });
 
-      ship.manifestCanvas = mc;
       ship.hostRows = hostRows;
       ship.items = items;
       ship.hostItems = hostItems;
       ship.totalSessions = this.sessions.size;
     }
 
-    // Orbital Storage Starship / Data Vault to the left of the Town Hall (ultra-fast single blit)
+    // Orbital Storage Starship / Data Vault to the left of the Town Hall (crisp native vector typography)
     drawStorageShip(ctx, t) {
       if (!this.town || !this.town.storageShip) return;
       const ship = this.town.storageShip;
@@ -2058,32 +2037,77 @@
         ctx.drawImage(ship.hullCanvas, x - (ship.hullOffsetX || 14), y);
       }
 
-      // 2. Blit pre-baked manifest canvas (all text, rows, pills, dots)
-      if (ship.manifestCanvas) {
-        ctx.drawImage(ship.manifestCanvas, x, y);
-      }
+      // 2. Title Banner Header Text (crisp vector font at native screen resolution)
+      ctx.font = '700 13px "JetBrains Mono", monospace';
+      ctx.fillStyle = '#00e5ff';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('📦 ORBITAL SESSIONS // MANIFEST', x + 18, y + 20);
 
-      // 3. Dynamic hover and active highlights only
-      if (this.hover && this.hover.type === 'host-sign') {
-        const item = (ship.hostItems || []).find((h) => h.host === this.hover.host);
-        if (item) {
+      ctx.textAlign = 'right';
+      ctx.font = '700 12px "JetBrains Mono", monospace';
+      ctx.fillStyle = '#f1fa8c';
+      ctx.fillText((ship.totalSessions || 0) + ' ACTIVE SESSIONS', x + w - 18, y + 20);
+      ctx.textAlign = 'left';
+
+      // 3. Render manifest rows and pills with razor-sharp vector text
+      const rows = ship.hostRows || [];
+      for (let idx = 0; idx < rows.length; idx++) {
+        const row = rows[idx];
+        const rowY = row.rowY, rowH = row.rowH, hKey = row.hostKey;
+        const off = this.hostOff(hKey);
+        const isHostHover = this.hover && this.hover.type === 'host-sign' && this.hover.host === hKey;
+
+        // Row background strip
+        ctx.fillStyle = idx % 2 === 0 ? 'rgba(15, 23, 42, 0.65)' : 'rgba(10, 16, 28, 0.65)';
+        ctx.fillRect(x + 10, rowY, w - 20, rowH - 2);
+
+        // Host name hover highlight
+        if (isHostHover) {
           ctx.fillStyle = 'rgba(0, 229, 255, 0.18)';
-          ctx.fillRect(item.x, item.y, item.w, item.h);
+          ctx.fillRect(row.hostItem.x, row.hostItem.y, row.hostItem.w, row.hostItem.h);
           ctx.strokeStyle = '#00e5ff';
           ctx.lineWidth = 1.5;
-          ctx.strokeRect(item.x, item.y, item.w, item.h);
+          ctx.strokeRect(row.hostItem.x, row.hostItem.y, row.hostItem.w, row.hostItem.h);
         }
-      }
 
-      for (const p of ship.items || []) {
-        const isHover = this.hover && this.hover.type === 'manifest-session' && this.hover.key === p.key;
-        const isActive = p.key === this.activeKey;
-        if (isHover || isActive) {
-          ctx.fillStyle = isActive ? 'rgba(0, 229, 255, 0.28)' : 'rgba(56, 189, 248, 0.22)';
-          ctx.fillRect(p.x, p.y, p.w, p.h);
-          ctx.strokeStyle = isActive ? '#00e5ff' : '#38bdf8';
-          ctx.lineWidth = 1.5;
-          ctx.strokeRect(p.x, p.y, p.w, p.h);
+        // Host status dot & name
+        ctx.fillStyle = off ? '#ef4444' : '#10b981';
+        ctx.beginPath();
+        ctx.arc(x + 24, rowY + rowH / 2 - 1, 4.5, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.font = '700 13px "JetBrains Mono", monospace';
+        ctx.fillStyle = off ? '#64748b' : isHostHover ? '#00e5ff' : '#38bdf8';
+        ctx.fillText(hKey.toUpperCase(), x + 36, rowY + rowH / 2 - 1);
+
+        if (!row.hasSessions) {
+          ctx.font = 'italic 11px "JetBrains Mono", monospace';
+          ctx.fillStyle = '#64748b';
+          ctx.fillText(off ? '(offline / polling disabled)' : '(idle / no sessions)', x + 148, rowY + rowH / 2 - 1);
+        } else {
+          ctx.font = '600 11.5px "JetBrains Mono", monospace';
+          for (const p of row.pills) {
+            const isHover = this.hover && this.hover.type === 'manifest-session' && this.hover.key === p.key;
+            const isActive = p.key === this.activeKey;
+            const s = this.sessions.get(p.key);
+
+            // Pill box
+            ctx.fillStyle = isActive ? 'rgba(0, 229, 255, 0.28)' : isHover ? 'rgba(56, 189, 248, 0.24)' : 'rgba(8, 12, 22, 0.88)';
+            ctx.fillRect(p.x, p.y, p.w, p.h);
+
+            ctx.strokeStyle = isActive ? '#00e5ff' : isHover ? '#38bdf8' : 'rgba(0, 229, 255, 0.45)';
+            ctx.lineWidth = 1;
+            ctx.strokeRect(p.x, p.y, p.w, p.h);
+
+            // Activity dot inside pill
+            ctx.fillStyle = (s && s.activity) ? '#10b981' : '#64748b';
+            ctx.fillRect(p.x + 5, p.y + p.h / 2 - 2, 4, 4);
+
+            // Text (rendered with crisp subpixel antialiasing at native resolution)
+            ctx.fillStyle = isActive ? '#00e5ff' : '#f8fafc';
+            ctx.fillText(p.name, p.x + 13, p.y + p.h / 2);
+          }
         }
       }
     }
@@ -2231,13 +2255,12 @@
         const gy = Math.round(h * g.ny - (camy - 500) * 0.025);
         const rot = t * g.speed;
 
-        ctx.save();
         ctx.translate(gx, gy);
         ctx.rotate(g.angle); // fixed tilt angle
         ctx.scale(1, g.tilt); // 3D inclination
         ctx.rotate(rot); // slow continuous cosmic rotation!
         ctx.drawImage(g.canvas, -g.offset, -g.offset);
-        ctx.restore();
+        ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
       }
     }
 
@@ -2340,7 +2363,6 @@
         if (!sprite) continue;
 
         const sx = Math.round(ship.x), sy = Math.round(ship.y);
-        ctx.save();
         ctx.translate(sx, sy);
         ctx.rotate(ship.angle);
         ctx.scale(1.6, 1.6); // Prominent, majestic scale
@@ -2353,7 +2375,7 @@
 
         // Draw the spaceship sprite centered
         ctx.drawImage(sprite, -sprite.width / 2, -sprite.height / 2);
-        ctx.restore();
+        ctx.setTransform(this.worldA, 0, 0, this.worldD, this.worldE, this.worldF);
       }
     }
 
