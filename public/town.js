@@ -2260,7 +2260,7 @@
       const minY = camy - halfH;
       const maxY = camy + halfH;
 
-      // Count currently active ships (max 1-2 allowed simultaneously)
+      // Count currently active ships (strictly max 1 allowed simultaneously)
       let activeCount = 0;
       for (const ship of this.spaceTraffic) if (ship.active) activeCount++;
 
@@ -2268,8 +2268,8 @@
         if (!ship.active) {
           // Ship is in hyperspace standby cooldown
           ship.cooldown = (ship.cooldown || 0) - dt;
-          // Launch pass when cooldown expired and at most 1 other ship is flying
-          if (ship.cooldown <= 0 && activeCount < 2) {
+          // Launch pass only when cooldown expired and NO OTHER ship is flying (strictly 1 at a time)
+          if (ship.cooldown <= 0 && activeCount === 0) {
             ship.active = true;
             activeCount++;
 
