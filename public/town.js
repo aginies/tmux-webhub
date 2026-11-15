@@ -111,7 +111,7 @@
         const names = (h.sessions || []).map((s) => s.name);
         sigRooms.push(h.name + ':' + names.join(','));
         for (const s of h.sessions || []) {
-          sessions.set(h.name + ':' + s.name, { host: h, name: s.name, activity: !!s.activity, cwd: s.cwd || '' });
+          sessions.set(h.name + ':' + s.name, { host: h, name: s.name, activity: !!s.activity, cwd: s.cwd || '', preview: s.preview || '' });
         }
       }
       this.sessions = sessions;
@@ -1061,6 +1061,10 @@
       const screenFrame = state === 'working' ? frame % 7 : state === 'idle' ? frame % 2 : 0;
       ctx.drawImage(TA.townScreen(state, screenFrame), X + slot.chairX, Y + 13);
 
+      // tiny live preview: the session's last lines, floating above the monitor
+      const s = this.sessions.get(key);
+      if (s && s.preview) this.drawPreview(X + slot.chairX, Y, s.preview, name);
+
       // glow: working (blue), active session (accent, steady)
       const isActive = key === this.activeKey;
       if (state === 'working' || isActive) {
@@ -1080,6 +1084,48 @@
         ctx.lineWidth = 1.5;
         ctx.strokeRect(X - 6.5, Y - 4.5, 61, 61);
       }
+    }
+
+    // tiny live preview: the session's last lines, floating above the monitor.
+    // A small dark terminal with a few lines of the live pane text.
+    drawPreview(mx, Y, preview, name) {
+      const { ctx } = this;
+      const W = 46, H = 30, pad = 2, fs = 5, lh = 5;
+      // last non-empty lines
+      const lines = preview.split('\n').map((l) => l.replace(/\s+$/, '')).filter((l) => l.length > 0);
+      const shown = lines.slice(-5);
+      if (!shown.length) return;
+      const maxChars = Math.floor((W - pad * 2) / (fs * 0.62));
+      // position: above the monitor (mx is the monitor's left edge)
+      const x = mx - 15, y = Y - 18 - H;
+      // background + border
+      ctx.save();
+      ctx.fillStyle = 'rgba(10,12,20,0.92)';
+      ctx.strokeStyle = 'rgba(120,140,180,0.5)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.rect(x + 0.5, y + 0.5, W, H);
+      ctx.fill();
+      ctx.stroke();
+      // a little pointer down to the monitor
+      ctx.fillStyle = 'rgba(10,12,20,0.92)';
+      ctx.beginPath();
+      ctx.moveTo(mx + 3, y + H);
+      ctx.lineTo(mx + 9, y + H);
+      ctx.lineTo(mx + 6, y + H + 3);
+      ctx.closePath();
+      ctx.fill();
+      // text
+      ctx.font = fs + 'px ui-monospace, Menlo, monospace';
+      ctx.textBaseline = 'top';
+      shown.forEach((l, i) => {
+        let txt = l.length > maxChars ? '…' + l.slice(-(maxChars - 1)) : l;
+        // color: prompt lines ($ or >) brighter, dim otherwise
+        const isPrompt = /^[$>\u276f#%]/.test(l.trim()) || /\$\s/.test(l);
+        ctx.fillStyle = isPrompt ? '#9fe89f' : '#8a93a8';
+        ctx.fillText(txt, x + pad, y + pad + i * lh);
+      });
+      ctx.restore();
     }
 
     drawPlus(b) {

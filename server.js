@@ -260,6 +260,8 @@ st=$?
 if [ -n "$out" ]; then
   printf '%s\\n' "$out" | while IFS='\t' read -r n a c w cmd; do
     pe=''
+    # tiny live preview: the pane's last 6 lines, base64 (one token, no tabs)
+    cap=$(tmux capture-pane -p -t "$n" -S -6 2>/dev/null | base64 | tr -d '\n')
     case "$cmd" in
       pi|pi-bolt)
         # a session-file append always coincides with window output, so a stale window
@@ -281,7 +283,7 @@ if [ -n "$out" ]; then
         fi
         ;;
     esac
-    printf '%s\t%s\t%s\t%s\t%s\t%s\\n' "$n" "$a" "$c" "$w" "$cmd" "$pe"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\\n' "$n" "$a" "$c" "$w" "$cmd" "$pe" "$cap"
   done
 fi
 echo "__NOW__$now"
@@ -359,7 +361,7 @@ async function listHostSessions(host) {
   }
   const seenCache = new Set();
   const sessions = rows.map((line) => {
-    const [name, attached, pth, act, cmd, piLast] = line.split('\t');
+    const [name, attached, pth, act, cmd, piLast, cap] = line.split('\t');
     const actSec = parseInt(act, 10) || 0;
     const ageMs = remoteNow ? (remoteNow - actSec) * 1000 : -1; // -1 = unknown clock → not active
     // window fallback: the window produced output within the last ACTIVE_WINDOW_MS
@@ -376,11 +378,17 @@ async function listHostSessions(host) {
       if (!hm) { hm = new Map(); piLastCache.set(host.name, hm); }
       hm.set(cacheKey, piEntry);
     } else if (hostMap) hostMap.delete(cacheKey);
+    // decode the tiny pane preview (base64 → the last 6 lines of the pane)
+    let preview = '';
+    if (cap) {
+      try { preview = Buffer.from(cap, 'base64').toString('utf8').trim(); } catch { preview = ''; }
+    }
     return {
       name,
       attached: parseInt(attached, 10) || 0,
       cwd: pth || '',
       activity: piActive(cmd, piEntry, winActive),
+      preview,
     };
   });
   // prune this host's cached panes that no longer exist (scoped to the host's map)
