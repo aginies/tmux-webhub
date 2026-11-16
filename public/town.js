@@ -591,11 +591,22 @@
       items.push([(center.y + center.h) * TT, () => gg.drawImage(TA.paintTownCenter(center.w), center.x * TT, center.y * TT)]);
       items.sort((a, b) => a[0] - b[0]).forEach((i) => i[1]());
 
-      // Subtle segmented glowing cyan transit guideline on the road (at same level as shuttle centerline)
+      // Segmented glowing cyan transit guideline on the shuttle's road (at the
+      // shuttle centerline): soft glow underlay + dashed neon core. Everything
+      // is baked into the ground layer, so the richer look is free per frame.
       const busRoute = TA.townBusRoute(layout);
       const busStop = busRoute && busRoute.stops[0];
       const roadY = busStop ? (busStop.wait.y - 27) : ((layout.roads[0] + 1) * TT + 29);
-      gg.strokeStyle = 'rgba(0, 229, 255, 0.35)';
+      gg.lineCap = 'round';
+      for (const [gw, ga] of [[9, 'rgba(0, 229, 255, 0.05)'], [5, 'rgba(0, 229, 255, 0.10)']]) {
+        gg.strokeStyle = ga;
+        gg.lineWidth = gw;
+        gg.beginPath();
+        gg.moveTo(-M, roadY);
+        gg.lineTo(Wp, roadY);
+        gg.stroke();
+      }
+      gg.strokeStyle = 'rgba(0, 229, 255, 0.45)';
       gg.lineWidth = 1.5;
       gg.setLineDash([16, 12]);
       gg.beginPath();
@@ -603,6 +614,7 @@
       gg.lineTo(Wp, roadY);
       gg.stroke();
       gg.setLineDash([]);
+      gg.lineCap = 'butt';
 
       // The offices layer is transparent elsewhere: the EVA repair crew is
       // drawn between it and the ground so buildings occlude the astronauts.
