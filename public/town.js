@@ -63,6 +63,7 @@
       this.nav = new Map();  // hostKey -> TA.TownNavigation (A* through the building)
       this.previewCache = new Map(); // name -> { raw, canvas } offscreen cached tactical cards
       this.layoutCols = 0; // host buildings per row (0 = vendor auto; 2 in portrait)
+      this.lift = new Map(); // hostKey -> 0..1 office deploy state (1 online, 0 offline)
       this.needsRedraw = true;
       this.raf = null;
       this.pointers = new Map();
@@ -469,6 +470,27 @@
       return h > w ? 2 : 0;
     }
 
+    // Per-host deploy value (0 = retracted/offline → 1 = deployed/online),
+    // eased each frame so a host going down collapses its office canopy and
+    // coming back up redeploys it.
+    hostLift(hostKey) {
+      const v = this.lift.get(hostKey);
+      if (v != null) return v;
+      return this.hostOff(hostKey) ? 0 : 1;
+    }
+
+    updateHostLift() {
+      if (!this.town || !this.town.roofs) return;
+      const k = REDUCED ? 1 : 0.1;
+      for (const r of this.town.roofs) {
+        const key = r.host;
+        const target = this.hostOff(key) ? 0 : 1;
+        const cur = this.lift.has(key) ? this.lift.get(key) : target;
+        const next = cur + (target - cur) * k;
+        this.lift.set(key, Math.abs(target - next) < 0.004 ? target : next);
+      }
+    }
+
     /* ---------- building the static scene ---------- */
 
     buildTown(hosts) {
@@ -825,8 +847,6 @@
 
     // how long the ✓ ("report done") shows at the front desk
     checkMs() { return 1800; }
-    // how long an agent lingers at its idle activity before it would cycle
-    activityMs(a) { return a === 'water' ? 6000 : 14000; }
 
     // stand to the left of the reception counter, facing it — the report spot
     frontPos(b) {
@@ -1224,10 +1244,11 @@
     }
 
     // A desk's holographic screen projection → click attaches (pops up) the session.
+    // The projection stays drawn while a session is idle (its agent naps away),
+    // so it remains the attach target alongside the worker.
     previewAt(wx, wy) {
       if (!this.town) return null;
       for (const [key, info] of this.town.cells) {
-        if (this.naps.has(key)) continue; // agent away → no projection shown
         const r = this.podGeom(info).screen;
         if (wx >= r.x && wx <= r.x + r.w && wy >= r.y && wy <= r.y + r.h) {
           return { name: info.name, info, key };
@@ -1344,6 +1365,13 @@
           this.target = null;
           this.needsRedraw = true;
         }
+        return;
+      }
+      // Hover only over the map canvas itself. The floating terminal window
+      // (and other overlays) sits on top of the map in town view; hovering the
+      // console must not leak map tooltips through from underneath.
+      if (e.target !== this.cv) {
+        this.setHover(null, null);
         return;
       }
       this.updateHover(e);
@@ -1577,6 +1605,7 @@
       if (this.naps.size) advance(this.naps);
       this.updateBus(t);
       this.updateRepairCrew(t);
+      this.updateHostLift();
       this.updateSpaceTraffic(t);
 
       const animate = !REDUCED && !!this.town;
@@ -1618,7 +1647,12 @@
       const e = this.dpr * (ox - camx * z), f = this.dpr * (oy - camy * z);
       this.worldA = a; this.worldD = d; this.worldE = e; this.worldF = f;
       ctx.setTransform(a, 0, 0, d, e, f);
-      ctx.imageSmoothingEnabled = false;
+      // Smooth upscaling for the pixel sprites (astronauts, desks, screens,
+      // guard, furniture) and the baked art. Nearest-neighbour made every zoom
+      // step and HiDPI factor look chunky; bilinear minification/magnification
+      // gives a finer, less blocky view at negligible GPU cost.
+      ctx.imageSmoothingEnabled = true;
+      if ('imageSmoothingQuality' in ctx) ctx.imageSmoothingQuality = 'high';
 
       // Clip T.base to only the visible viewport rect (avoids copying ~4.5 million offscreen pixels)
       const halfW = (w / 2) / z + 20;
@@ -1685,11 +1719,17 @@
       }
       list.sort((a, b) => a[0] - b[0]).forEach((e) => e[1]());
 
-      // roofs (light glass — the desks stay visible underneath, batched without save/restore)
+      // roofs (light glass — the desks stay visible underneath, batched without save/restore).
+      // A host's canopy retracts when it goes offline and redeploys on reconnect,
+      // so a down office visibly "shrinks".
       const ra = this.roofAlpha();
-      ctx.globalAlpha = ra;
       for (const r of T.roofs) {
-        ctx.drawImage(r.c, r.x, r.y);
+        const lift = this.hostLift(r.host);
+        if (lift <= 0.01) continue;
+        const w = r.c.width * (0.25 + 0.75 * lift);
+        const h = r.c.height * lift;
+        ctx.globalAlpha = ra * (0.3 + 0.7 * lift);
+        ctx.drawImage(r.c, r.x + (r.c.width - w) / 2, r.y + (r.c.height - h), w, h);
       }
       ctx.globalAlpha = 1;
       for (const r of T.roofs) {
@@ -1831,11 +1871,18 @@
         ctx.globalAlpha = 1;
       }
       if (isActive) {
-        // frame the holographic projection (the session's live output), not
-        // the astronaut — click the projection to attach, the astronaut to rename
-        ctx.strokeStyle = 'rgba(0, 229, 255, 0.75)';
-        ctx.lineWidth = 1.5;
-        ctx.strokeRect(cx - 54, Y + 40, 108, 54);
+        // Frame the holographic projection of the session currently displayed
+        // in the terminal, so it's obvious which office preview is live. Line
+        // width is held constant in screen space (/z) — a fixed 1.5px world
+        // line all but disappears when the whole town is zoomed out.
+        const bx = cx - 54, by = Y + 40, bw = 108, bh = 54;
+        const lw = 2 / this.cam.z;
+        ctx.strokeStyle = 'rgba(239, 68, 68, 0.30)';
+        ctx.lineWidth = lw * 2.5;
+        ctx.strokeRect(bx - lw, by - lw, bw + lw * 2, bh + lw * 2);
+        ctx.strokeStyle = 'rgba(239, 68, 68, 0.95)';
+        ctx.lineWidth = lw;
+        ctx.strokeRect(bx, by, bw, bh);
       }
     }
 
@@ -1935,9 +1982,7 @@
       // supersampled card back to its world rect; smoothing on for the
       // downsample so the packed glyphs don't alias).
       ctx.globalAlpha = holoAlpha;
-      ctx.imageSmoothingEnabled = true;
       ctx.drawImage(cached.canvas, projX, projY, W, H);
-      ctx.imageSmoothingEnabled = false;
       ctx.globalAlpha = 1;
 
       // Moving holographic scanning beam drifting down the display (stepped at 10 FPS)
@@ -2473,9 +2518,38 @@
     // space station office module effects: blinking navigation beacons
     drawStationEffects(b, t) {
       const { ctx } = this;
-      // Blinking station anti-collision beacons on module corners
-      const blinkRed = Math.floor(t * 2) % 2 === 0;
-      const blinkCyan = Math.floor(t * 2 + 0.5) % 2 === 0;
+      const lift = this.hostLift(b.hostKey);
+      const dim = 1 - lift;
+
+      // Offline hosts get a heavy shadow over the whole office, so a down host
+      // reads as dark/powered-off at a glance rather than just a retracted roof.
+      if (dim > 0.02) {
+        ctx.globalAlpha = 0.65 * dim;
+        ctx.fillStyle = '#03060c';
+        ctx.fillRect(b.x * TT - 4, b.y * TT - 12, b.w * TT + 8, b.h * TT + 44);
+        ctx.globalAlpha = 1;
+      }
+
+      // Under-glow: an online office hovers on its thrusters; the glow fades
+      // as the host goes down and the ship settles.
+      if (lift > 0.05) {
+        const gx = b.x * TT + (b.w * TT) * 0.15;
+        const gw = (b.w * TT) * 0.7;
+        const gy = (b.y + b.h) * TT + 4;
+        ctx.globalAlpha = 0.28 * lift;
+        ctx.fillStyle = '#00e5ff';
+        ctx.fillRect(gx, gy, gw, 2);
+        ctx.globalAlpha = 0.14 * lift;
+        ctx.fillRect(gx + gw * 0.12, gy + 2, gw * 0.76, 3);
+        ctx.globalAlpha = 1;
+      }
+
+      // Blinking station anti-collision beacons on module corners. Offline
+      // hosts flash only the red "grounded" beacon, slower.
+      const off = lift <= 0.5;
+      const blinkRed = off ? Math.floor(t) % 2 === 0 : Math.floor(t * 2) % 2 === 0;
+      const blinkCyan = !off && Math.floor(t * 2 + 0.5) % 2 === 0;
+      ctx.globalAlpha = 0.5 + 0.5 * lift;
       if (blinkRed) {
         ctx.fillStyle = '#ef4444';
         ctx.fillRect(b.x * TT - 2, b.y * TT - 2, 4, 4);
@@ -2486,6 +2560,7 @@
         ctx.fillRect((b.x + b.w) * TT - 2, b.y * TT - 2, 4, 4);
         ctx.fillRect(b.x * TT - 2, (b.y + b.h) * TT - 2, 4, 4);
       }
+      ctx.globalAlpha = 1;
     }
 
     // true while any agent is waiting at the main bus stop

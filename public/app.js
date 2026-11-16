@@ -423,13 +423,15 @@ $('t-split').onclick = () => {
 };
 
 // Fullscreen toggle (Town view): the floating terminal window fills the area
-// under the header, xterm re-fits to the new size
-$('t-full').onclick = () => {
+// under the header, xterm re-fits to the new size. Used by the ⛶ button and by
+// a double-click on the title bar (see the termwin move block below).
+function toggleFullscreen() {
   const win = $('termwin');
   const fs = win.classList.toggle('fs');
   $('t-full').title = fs ? 'Exit fullscreen' : 'Fullscreen (the terminal window fills the screen)';
   setTimeout(fitTerm, 50);
-};
+}
+$('t-full').onclick = toggleFullscreen;
 
 // ---------- Town view: move & resize the floating terminal window ----------
 // The CSS parks the window with right/bottom; the first move or resize
@@ -471,19 +473,32 @@ let townWinGeo = null;
   let drag = null;
   bar.addEventListener('pointerdown', (e) => {
     if (e.button !== 0 || !usable() || e.target.closest('button')) return;
-    if (win.classList.contains('fs')) { // dragging out of fullscreen: float from the grab
-      win.classList.remove('fs');
-      $('t-full').title = 'Fullscreen (the terminal window fills the screen)';
-    }
-    toLT();
+    // Delay any style change (exit-fullscreen / toLT) until the pointer moves,
+    // so a stationary double-click can toggle fullscreen with no side effects.
     const r = win.getBoundingClientRect();
-    drag = { dx: e.clientX - r.left, dy: e.clientY - r.top };
+    drag = { dx: e.clientX - r.left, dy: e.clientY - r.top, floated: false };
     try { bar.setPointerCapture(e.pointerId); } catch {}
     bar.classList.add('dragging');
     e.preventDefault();
   });
   bar.addEventListener('pointermove', (e) => {
     if (!drag) return;
+    if (!drag.floated) {
+      drag.floated = true;
+      if (win.classList.contains('fs')) { // dragging out of fullscreen: float from the grab
+        win.classList.remove('fs');
+        $('t-full').title = 'Fullscreen (the terminal window fills the screen)';
+        toLT();
+        const r = win.getBoundingClientRect(); // geometry just changed — re-anchor under the cursor
+        drag.dx = e.clientX - r.left;
+        drag.dy = e.clientY - r.top;
+        const [x, y] = clampLT(e.clientX - area().left - drag.dx, e.clientY - area().top - drag.dy);
+        win.style.left = x + 'px';
+        win.style.top = y + 'px';
+        return;
+      }
+      toLT();
+    }
     const [x, y] = clampLT(e.clientX - area().left - drag.dx, e.clientY - area().top - drag.dy);
     win.style.left = x + 'px';
     win.style.top = y + 'px';
@@ -496,6 +511,13 @@ let townWinGeo = null;
   };
   bar.addEventListener('pointerup', endDrag);
   bar.addEventListener('pointercancel', endDrag);
+  // Double-click the title bar toggles fullscreen (same as ⛶). `click.detail`
+  // is used instead of `dblclick` so the drag handlers' preventDefault() can't
+  // swallow it, and buttons in the bar (⛶/✕/⤢) are excluded.
+  bar.addEventListener('click', (e) => {
+    if (e.detail !== 2 || e.button !== 0 || !usable() || e.target.closest('button')) return;
+    toggleFullscreen();
+  });
 
   let rs = null;
   grip.addEventListener('pointerdown', (e) => {
@@ -777,12 +799,11 @@ async function refresh() {
     if (typeof d.pi === 'string' && d.pi) defaultCmd = d.pi;
     if (d.net) setNetReadout(d.net); else $('net').textContent = ''; // netDisplay: false
     hosts = d.hosts || [];
-    if (townView) townView.connected = true;
     if (townView && view === 'town') townView.update(hosts, active && active.key);
-    if (view === 'list') {
-      renderChips();
-      populateHostSelect();
-    }
+    if (view === 'list') renderChips();
+    // keep the +New host select current in both views (the Town "+" button
+    // relies on it being populated even when the list isn't shown)
+    populateHostSelect();
     setConnBanner(d.configError ? `⚠ config.json unreadable (${d.configError}) — showing last good host list` : null);
     if (active) {
       const s = findSession(active.key);
@@ -791,7 +812,6 @@ async function refresh() {
     }
   } catch {
     netFails++;
-    if (townView) townView.connected = false;
     // one failed poll is normal (a server restart, a Wi-Fi blip) — stay silent so a
     // quick blip doesn't flash a scary banner over perfectly good data; two in a row
     // means the server is actually gone
@@ -826,8 +846,8 @@ document.addEventListener('visibilitychange', () => {
     }
   }
 });
-window.addEventListener('online', () => { if (townView) { townView.connected = true; townView.needsRedraw = true; } });
-window.addEventListener('offline', () => { if (townView) { townView.connected = false; townView.needsRedraw = true; } });
+window.addEventListener('online', () => { if (townView) townView.needsRedraw = true; });
+window.addEventListener('offline', () => { if (townView) townView.needsRedraw = true; });
 
 // ---------- panel toggle ----------
 const header = $('header');
@@ -890,6 +910,7 @@ if (window.TownView) {
     openSettings: () => { $('edit-config').click(); },
     // "+" at a building's reception: +New with that host preselected
     newSession: (host) => {
+      populateHostSelect(); // ensure the drop-down is filled even in Town view
       const sel = $('ns-host');
       if ([...sel.options].some((o) => o.value === host)) sel.value = host;
       $('new-session').click();
@@ -899,7 +920,6 @@ if (window.TownView) {
     // click a desk's astronaut: propose renaming that session
     rename: (k) => openRename(k),
   });
-  window.__townview = townView; // debug handle
   view = localStorage.getItem('pc.view') || (innerWidth < 640 ? 'list' : 'town');
 }
 function setView(v) {
@@ -1041,8 +1061,6 @@ let cfgBase = null;      // full config snapshot from GET — the save base, so 
 let cfgCsrf = null;      // one-use CSRF token from GET /api/config — required to save (PUT)
 let cfgHostDraft = [];   // working copy of the host list for this modal open
 let cfgTokenUnchanged = true;
-
-const escAttr = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
 // --- hosts ---
 function renderHostRow(host, idx) {

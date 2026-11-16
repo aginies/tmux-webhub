@@ -216,6 +216,23 @@ function validateSshHost(ssh) {
   return SSH_HOST_RE.test(ssh) || SSH_USER_HOST_RE.test(ssh);
 }
 
+// Optional ssh field for the host add/update APIs: undefined = absent (OK), '' =
+// clear (OK), otherwise must be a valid SSH host. Returns an error string, or null
+// if the value is acceptable.
+function validateSshField(ssh) {
+  if (ssh === undefined) return null;
+  if (typeof ssh !== 'string') return 'ssh must be a string';
+  if (ssh !== '' && !validateSshHost(ssh)) return 'invalid SSH host: ' + ssh;
+  return null;
+}
+// Optional cmd field for the host add/update APIs: undefined = absent (OK),
+// otherwise must be a string. Returns an error string, or null if acceptable.
+function validateCmdField(cmd) {
+  if (cmd === undefined) return null;
+  if (typeof cmd !== 'string') return 'cmd must be a string';
+  return null;
+}
+
 // spaces and the remote shell would otherwise re-split them (tabs in -F format etc.).
 function shellQuote(s) {
   return /^[A-Za-z0-9._~/-]*$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`;
@@ -1168,15 +1185,10 @@ async function handleAddHost(req, res, send) {
   if (typeof name !== 'string' || !NAME_RE.test(name)) {
     return send(400, { error: 'name must match ' + NAME_RE.source });
   }
-  if (ssh !== undefined && typeof ssh !== 'string') {
-    return send(400, { error: 'ssh must be a string' });
-  }
-  if (ssh !== undefined && ssh !== '' && !validateSshHost(ssh)) {
-    return send(400, { error: 'invalid SSH host: ' + ssh });
-  }
-  if (cmd !== undefined && typeof cmd !== 'string') {
-    return send(400, { error: 'cmd must be a string' });
-  }
+  const sshErr = validateSshField(ssh);
+  if (sshErr) return send(400, { error: sshErr });
+  const cmdErr = validateCmdField(cmd);
+  if (cmdErr) return send(400, { error: cmdErr });
   let cfg;
   try { cfg = readConfig(false); } catch (e) { return send(500, { error: 'cannot read config: ' + e.message }); }
   if (!cfg.hosts) cfg.hosts = [];
@@ -1218,12 +1230,13 @@ async function handleUpdateHost(req, res, name, send) {
   const entry = ((cfg && cfg.hosts) || []).find((h) => h && h.name === name);
   if (!entry) return send(404, { error: 'host not found: ' + name });
   if (parsed.ssh !== undefined) {
-    if (typeof parsed.ssh !== 'string') return send(400, { error: 'ssh must be a string' });
-    if (parsed.ssh !== '' && !validateSshHost(parsed.ssh)) return send(400, { error: 'invalid SSH host: ' + parsed.ssh });
+    const sshErr = validateSshField(parsed.ssh);
+    if (sshErr) return send(400, { error: sshErr });
     entry.ssh = parsed.ssh;
   }
   if (parsed.cmd !== undefined) {
-    if (typeof parsed.cmd !== 'string') return send(400, { error: 'cmd must be a string' });
+    const cmdErr = validateCmdField(parsed.cmd);
+    if (cmdErr) return send(400, { error: cmdErr });
     entry.cmd = parsed.cmd;
   }
   if (parsed.enabled !== undefined) {

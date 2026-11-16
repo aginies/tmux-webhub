@@ -345,18 +345,6 @@
   .dirlist div:hover { background: var(--chip-hover); }
   .dirlist .dim { color: var(--dim); font-size: 12px; }
   #cfg-modal { width: 640px; max-width: calc(100vw - 32px); }
-  /* line-number gutter: font/line-height/padding-top MUST match #cfg-text exactly,
-     and the textarea must not wrap (wrap="off") or the numbering drifts */
-  .cfg-edit {
-    display: flex; height: 340px; resize: vertical; overflow: auto;
-    border: 1px solid var(--border); border-radius: 6px; background: var(--chip);
-  }
-  .cfg-lines {
-    flex: 0 0 auto; min-width: 32px; padding: 8px 6px; overflow: hidden;
-    text-align: right; white-space: pre; user-select: none; color: var(--dim);
-    font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    background: rgba(0,0,0,.18); border-right: 1px solid var(--border);
-  }
   /* friendly settings form */
   .cfg-note { font-size: 12px; color: var(--dim); margin-bottom: 12px; }
   .cfg-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 12px; overflow-x: auto; }
@@ -517,7 +505,6 @@
        the keyboard on Chromium; iOS scrolls the visual viewport instead) */
     #modal-bg, #cfg-bg, #rn-bg { align-items: flex-end; }
     .modal, #cfg-modal { width: 100%; max-width: 100%; border-radius: 12px 12px 0 0; }
-    .cfg-edit { height: min(340px, 40vh); }
   }
   /* touch devices: targets >= 44 px (style guide hit areas); 16 px inputs stop
      iOS auto-zoom on focus */
@@ -592,7 +579,7 @@
 
 <div id="modal-bg">
   <div class="modal" id="modal">
-    <h2>New pi session</h2>
+    <h2>New tmux session</h2>
     <div>
       <label>Host</label>
       <select id="ns-host"></select>

@@ -95,7 +95,6 @@
       return c;
     };
     sp.plant = createHydro();
-    sp.cactus = createHydro();
 
     // Water cooler -> Nutrient Synthesizer
     const createSynth = () => {
