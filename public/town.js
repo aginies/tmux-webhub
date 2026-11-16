@@ -31,6 +31,15 @@
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
   const hash = (s) => { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return Math.abs(h); };
 
+  // buildTownSprites() is pure and layout-independent (a fixed set of pixel art), so
+  // bake it once instead of re-rasterizing every sprite on each town rebuild — a
+  // session create/kill or host up/down used to regenerate the whole set for no reason.
+  let _townSprites = null;
+  function townSprites() {
+    if (!_townSprites) _townSprites = TA.buildTownSprites();
+    return _townSprites;
+  }
+
   class TownView {
     constructor(canvas, api) {
       this.cv = canvas;
@@ -445,6 +454,11 @@
         }
       }
       this.sessions = sessions;
+      // Prune the offscreen preview cards of sessions that no longer exist — each
+      // entry is a supersampled canvas (up to ~1.5 MB at high zoom/HiDPI) keyed by
+      // host:name, and nothing else ever removes it, so the cache would grow without
+      // bound as sessions come and go over the page's lifetime.
+      for (const k of [...this.previewCache.keys()]) if (!sessions.has(k)) this.previewCache.delete(k);
       this.hosts = hosts;
       const hostSig = JSON.stringify(sigHosts);
       const sig = JSON.stringify([sigHosts, sigRooms]);
@@ -536,7 +550,7 @@
         : 'wide';
       this.layoutCols = cols;
       const { layout } = TA.layoutTown(input, formFactor);
-      const sp = TA.buildTownSprites();
+      const sp = townSprites();
       const M = 32; // margin around the layout (the film uses spec.margin * TT)
       const Wp = layout.width * TT + 2 * M, Hp = layout.height * TT + 2 * M;
 
