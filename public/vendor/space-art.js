@@ -563,46 +563,48 @@
     // Space Background (pure transparent, allowing full-viewport animated cosmic sky & galaxies to shine through without any rectangular boundaries)
     paintTownGround: () => document.createElement('canvas'),
 
-    // Millennium Falcon-style hull silhouette: a rounded saucer deck with two
-    // forward mandibles, a starboard cockpit pod and a port radar dish.
+    // Millennium Falcon-style hull silhouette: saucer deck, long forward
+    // mandibles, a prominent starboard cockpit pod and a port radar dish.
     drawSpaceshipHullPath: (ctx, w, h) => {
       const cx = w / 2;
-      const bowY = 8;                         // saucer deck top rim
-      const mandW = Math.max(11, w * 0.06);   // bow prong width
-      const gap = Math.max(10, w * 0.09);     // half the dock notch width
+      const bowY = 10;                        // saucer deck top rim
+      const mandW = Math.max(16, w * 0.085);  // bow prong width
+      const gap = Math.max(15, w * 0.12);     // half the loading-jaw width
       ctx.beginPath();
 
-      // Bow: forward mandibles with a docking notch between them
+      // Bow: long forward mandibles with a wide loading-jaw notch between them
       ctx.moveTo(cx - gap - mandW, bowY);
-      ctx.lineTo(cx - gap - mandW, 3);
+      ctx.lineTo(cx - gap - mandW, 2);
+      ctx.lineTo(cx - gap, 2);
       ctx.lineTo(cx - gap, bowY);
       ctx.lineTo(cx + gap, bowY);
-      ctx.lineTo(cx + gap, 3);
+      ctx.lineTo(cx + gap, 2);
+      ctx.lineTo(cx + gap + mandW, 2);
       ctx.lineTo(cx + gap + mandW, bowY);
 
-      // Starboard flank with a cockpit-pod bump
-      ctx.lineTo(w - 18, bowY);
-      ctx.lineTo(w - 8, h * 0.34);
-      ctx.lineTo(w - 3, h * 0.42);
-      ctx.lineTo(w - 3, h * 0.62);
-      ctx.lineTo(w - 8, h * 0.66);
-      ctx.lineTo(w - 13, h - 24);
+      // Starboard flank with a prominent cylindrical cockpit-pod bump
+      ctx.lineTo(w - 26, bowY);
+      ctx.lineTo(w - 16, h * 0.30);
+      ctx.lineTo(w - 5, h * 0.38);
+      ctx.lineTo(w - 5, h * 0.64);
+      ctx.lineTo(w - 16, h * 0.70);
+      ctx.lineTo(w - 18, h - 24);
 
       // Stern engine nacelles (port & starboard) with a centre dock cutout
-      ctx.lineTo(w - 13, h - 5);
-      ctx.lineTo(cx + 32, h - 5);
-      ctx.lineTo(cx + 22, h - 19);
-      ctx.lineTo(cx - 22, h - 19);
-      ctx.lineTo(cx - 32, h - 5);
-      ctx.lineTo(13, h - 5);
-      ctx.lineTo(13, h - 24);
+      ctx.lineTo(w - 18, h - 5);
+      ctx.lineTo(cx + 34, h - 5);
+      ctx.lineTo(cx + 24, h - 19);
+      ctx.lineTo(cx - 24, h - 19);
+      ctx.lineTo(cx - 34, h - 5);
+      ctx.lineTo(18, h - 5);
+      ctx.lineTo(18, h - 24);
 
-      // Port flank with a radar-dish bump
-      ctx.lineTo(8, h * 0.66);
-      ctx.lineTo(3, h * 0.62);
-      ctx.lineTo(3, h * 0.42);
-      ctx.lineTo(8, h * 0.34);
-      ctx.lineTo(18, bowY);
+      // Port flank with a prominent radar-dish bump
+      ctx.lineTo(16, h * 0.70);
+      ctx.lineTo(5, h * 0.64);
+      ctx.lineTo(5, h * 0.38);
+      ctx.lineTo(16, h * 0.30);
+      ctx.lineTo(26, bowY);
       ctx.closePath();
     },
 
@@ -724,14 +726,14 @@
         ctx.fillRect(lx + lw - 2, ly + lh - 6, 2, 6);
       }
 
-      // Stern thruster plasma engine bells (at bottom of ship)
+      // Stern engine vent strip (Falcon's distinctive rear glow band)
       const engY = Y - 12;
+      ctx.fillStyle = '#0a121e';
+      ctx.fillRect(16, engY - 2, X - 32, 12);
       ctx.fillStyle = '#00e5ff';
-      ctx.fillRect(20, engY, 24, 8);
-      ctx.fillRect(X - 44, engY, 24, 8);
+      for (let x = 20; x < X - 40; x += 22) ctx.fillRect(x, engY, 16, 8);
       ctx.fillStyle = '#ffffff';
-      ctx.fillRect(26, engY + 2, 12, 4);
-      ctx.fillRect(X - 38, engY + 2, 12, 4);
+      for (let x = 24; x < X - 40; x += 22) ctx.fillRect(x, engY + 2, 8, 4);
 
       ctx.restore(); // end clip
 
@@ -748,22 +750,42 @@
       ctx.restore();
 
       // ---- Millennium Falcon surface details ----
-      // Radar dish (port flank): mast + round dish
-      ctx.fillStyle = '#94a3b8';
-      ctx.fillRect(7, Y * 0.44, 3, Y * 0.06);
+      // Radar dish (port flank): mast + round dish with concentric rings
+      ctx.fillStyle = '#64748b';
+      ctx.fillRect(10, Y * 0.44, 3, Y * 0.07);
       ctx.fillStyle = '#334155';
       ctx.beginPath();
-      ctx.arc(9, Y * 0.40, 8, 0, Math.PI * 2);
+      ctx.arc(12, Y * 0.38, 11, 0, Math.PI * 2);
       ctx.fill();
       ctx.strokeStyle = '#cbd5e1';
-      ctx.lineWidth = 1;
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      ctx.strokeStyle = 'rgba(0, 229, 255, 0.35)';
+      ctx.beginPath();
+      ctx.arc(12, Y * 0.38, 5, 0, Math.PI * 2);
       ctx.stroke();
 
-      // Cockpit pod (starboard flank): body + glowing panoramic viewport
+      // Cockpit pod (starboard flank): cylindrical body + panoramic canopy
       ctx.fillStyle = '#0f172a';
-      ctx.fillRect(X - 15, Y * 0.40, 9, Y * 0.20);
+      ctx.fillRect(X - 20, Y * 0.38, 14, Y * 0.26);
       ctx.fillStyle = '#00e5ff';
-      ctx.fillRect(X - 12, Y * 0.45, 3, Y * 0.10);
+      ctx.fillRect(X - 16, Y * 0.44, 7, Y * 0.12);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(X - 14, Y * 0.46, 3, Y * 0.06);
+
+      // Dorsal quad-laser turret (upper deck)
+      const dx = X * 0.20, dy = Y * 0.30;
+      ctx.fillStyle = '#334155';
+      ctx.beginPath();
+      ctx.arc(dx, dy, 7, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#64748b';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.fillStyle = '#94a3b8';
+      ctx.fillRect(dx - 1, dy - 9, 2, 5);
+      ctx.fillRect(dx - 7, dy - 4, 3, 2);
+      ctx.fillRect(dx + 4, dy - 4, 3, 2);
 
       // Concentric saucer ring lines (faint plate seams)
       ctx.strokeStyle = 'rgba(0, 229, 255, 0.10)';
@@ -772,8 +794,16 @@
       ctx.ellipse(X / 2, Y * 0.52, X * 0.46, Y * 0.36, 0, 0, Math.PI * 2);
       ctx.stroke();
       ctx.beginPath();
-      ctx.ellipse(X / 2, Y * 0.52, X * 0.30, Y * 0.22, 0, 0, Math.PI * 2);
+      ctx.ellipse(X / 2, Y * 0.52, X * 0.32, Y * 0.24, 0, 0, Math.PI * 2);
       ctx.stroke();
+
+      // Patchwork hull greebles (subtle panel shading)
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.05)';
+      ctx.fillRect(X * 0.10, Y * 0.34, X * 0.12, 3);
+      ctx.fillRect(X * 0.62, Y * 0.62, X * 0.14, 3);
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.16)';
+      ctx.fillRect(X * 0.24, Y * 0.64, X * 0.12, 3);
+      ctx.fillRect(X * 0.55, Y * 0.30, X * 0.10, 3);
 
       return canvas;
     },

@@ -719,6 +719,20 @@
       this._busVisible = isVisible;
     }
 
+    // A random exterior repair spot on an office hull, plus its weld point on
+    // the hull surface (so the laser flare lands on the ship, not in space).
+    repairSpot(b) {
+      const px = b.x * TT, py = b.y * TT;
+      const w = b.w * TT, h = b.h * TT;
+      const off = 14;                        // stand-off distance from the hull
+      const f = 0.25 + Math.random() * 0.5;  // 0.25..0.75 along an edge
+      const side = Math.floor(Math.random() * 4);
+      if (side === 0) return { x: px + f * w, y: py - off, wx: px + f * w, wy: py - 2 };          // top
+      if (side === 1) return { x: px + w + off, y: py + f * h, wx: px + w + 2, wy: py + f * h };  // right
+      if (side === 2) return { x: px + f * w, y: py + h + off, wx: px + f * w, wy: py + h + 2 };  // bottom
+      return { x: px - off, y: py + f * h, wx: px - 2, wy: py + f * h };                         // left
+    }
+
     // EVA Astronaut Repair Crew: arrive in the shuttle, repair all starship offices on the outside, and depart in the shuttle
     updateRepairCrew(t) {
       if (!this.bus || !this.town) return;
@@ -734,6 +748,8 @@
         if (isHalt && (t - crew.lastCycleTime > 10)) {
           crew.state = 'repairing';
           crew.shipIndex = 0;
+          crew.targetShip = -1;   // force fresh random repair spots
+          crew.t1 = null; crew.t2 = null;
           crew.shipStartTime = t;
           crew.weldingStart = 0;
           crew.a1.x = stopX - 14; crew.a1.y = stopY;
@@ -769,11 +785,15 @@
           return;
         }
         const b = buildings[crew.shipIndex];
-        const t1x = b.x * TT - 14, t1y = (b.y + b.h * 0.45) * TT;
-        const t2x = (b.x + b.w) * TT + 14, t2y = (b.y + b.h * 0.55) * TT;
+        // pick fresh random repair spots once per office
+        if (!crew.t1 || crew.targetShip !== crew.shipIndex) {
+          crew.targetShip = crew.shipIndex;
+          crew.t1 = this.repairSpot(b);
+          crew.t2 = this.repairSpot(b);
+        }
 
-        const arr1 = moveAstronaut(crew.a1, t1x, t1y);
-        const arr2 = moveAstronaut(crew.a2, t2x, t2y);
+        const arr1 = moveAstronaut(crew.a1, crew.t1.x, crew.t1.y);
+        const arr2 = moveAstronaut(crew.a2, crew.t2.x, crew.t2.y);
 
         if (arr1 && arr2) {
           if (!crew.weldingStart) crew.weldingStart = t;
@@ -865,11 +885,9 @@
       };
 
       let w1 = null, w2 = null;
-      if (currentShip && crew.weldingStart) {
-        const t1x = currentShip.x * TT - 14, t1y = (currentShip.y + currentShip.h * 0.45) * TT;
-        const t2x = (currentShip.x + currentShip.w) * TT + 14, t2y = (currentShip.y + currentShip.h * 0.55) * TT;
-        if (Math.hypot(crew.a1.x - t1x, crew.a1.y - t1y) < 5) w1 = { x: t1x + 8, y: t1y };
-        if (Math.hypot(crew.a2.x - t2x, crew.a2.y - t2y) < 5) w2 = { x: t2x - 8, y: t2y };
+      if (currentShip && crew.weldingStart && crew.t1 && crew.t2) {
+        if (Math.hypot(crew.a1.x - crew.t1.x, crew.a1.y - crew.t1.y) < 5) w1 = { x: crew.t1.wx, y: crew.t1.wy };
+        if (Math.hypot(crew.a2.x - crew.t2.x, crew.a2.y - crew.t2.y) < 5) w2 = { x: crew.t2.wx, y: crew.t2.wy };
       }
 
       drawWorker(crew.a1, w1);
