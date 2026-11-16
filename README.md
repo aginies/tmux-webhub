@@ -7,7 +7,7 @@ you detach. A plain **list** view is one click away. New sessions run whatever
 `cmd` is set to (default `pi`); existing ones attach to whatever is already
 running in them — pi, bash, a build, anything.
 
-![tmux-webhub demo](demo.mp4)
+![tmux-webhub demo](demo.gif)
 
 ![tmux-webhub main dashboard](images/main.png)
 
