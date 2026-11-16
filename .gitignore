@@ -7,5 +7,3 @@ plan/
 error
 *.log
 
-# local screencast sources (converted to demo.gif)
-*.mp4
