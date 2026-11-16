@@ -60,6 +60,10 @@
         a1: { x: 0, y: 0, dir: 'right', look: { tone: 0, hair: 0, isRepair: true } },
         a2: { x: 0, y: 0, dir: 'left', look: { tone: 1, hair: 1, isRepair: true } },
       };
+      // Imperial Station Security Guard: the obsidian (black) stormtrooper look
+      // is drawn by the space-art.js `townCharacter` override when isGuard/isImperial is set.
+      this.guardLook = { isGuard: true, isImperial: true };
+      this.guards = []; // { x, y, minX, maxX, dir, off } — one patrol per office entry
       this.nav = new Map();  // hostKey -> TA.TownNavigation (A* through the building)
       this.previewCache = new Map(); // name -> { raw, canvas } offscreen cached tactical cards
       this.layoutCols = 0; // host buildings per row (0 = vendor auto; 2 in portrait)
@@ -491,6 +495,34 @@
       }
     }
 
+    // The reception guards patrol left ↔ right in front of each office entrance,
+    // very slowly — and stand still when their host is offline/disabled.
+    updateGuards(t) {
+      if (!this.guards) return;
+      const speed = 6; // px/s — a very slow patrol
+      for (const g of this.guards) {
+        if (this.hostOff(g.hostKey)) continue; // office down → guard stands still
+        const range = g.maxX - g.minX;
+        const half = range / speed; // seconds to walk one way
+        const phase = (t + g.off) % (2 * half);
+        if (phase < half) { g.x = g.minX + phase * speed; g.dir = 'right'; }
+        else { g.x = g.maxX - (phase - half) * speed; g.dir = 'left'; }
+      }
+    }
+
+    drawGuard(g, t) {
+      const { ctx } = this;
+      const off = this.hostOff(g.hostKey);
+      const wf = off ? 0 : Math.floor(t * 9) % 4; // walk cycle only when active
+      const c = TA.townCharacter(this.guardLook, g.dir, wf, 'stand', false);
+      const gs = 1.6; // taller guard (matches the previous seated scale)
+      const w = c.width * gs, h = c.height * gs;
+      const bob = off ? 0 : (wf % 2 ? -1 : 0);
+      ctx.fillStyle = 'rgba(0,0,0,.22)';
+      ctx.fillRect(Math.round(g.x) - 5, Math.round(g.y) - 1, 10, 3);
+      ctx.drawImage(this.char2x(c), Math.round(g.x) - w / 2, Math.round(g.y) - h + 1 + bob, w, h);
+    }
+
     /* ---------- building the static scene ---------- */
 
     buildTown(hosts) {
@@ -512,35 +544,49 @@
       const sp = TA.buildTownSprites();
       const M = 32; // margin around the layout (the film uses spec.margin * TT)
       const Wp = layout.width * TT + 2 * M, Hp = layout.height * TT + 2 * M;
-      const base = document.createElement('canvas');
-      base.width = Wp; base.height = Hp;
-      const g = base.getContext('2d');
-      g.imageSmoothingEnabled = false;
-      g.drawImage(TA.paintTownGround(layout, { x: -M, y: -M, w: Wp, h: Hp }), 0, 0);
-      g.translate(M, M);
+
+      // Two baked layers so the EVA repair astronauts pass *behind* the offices
+      // (occluded by the modules) while staying visible over the street:
+      //   ground — grass/roads + town center + transit guideline
+      //   base   — office interiors, furniture, guard and facades
+      const ground = document.createElement('canvas');
+      ground.width = Wp; ground.height = Hp;
+      const gg = ground.getContext('2d');
+      gg.imageSmoothingEnabled = false;
+      gg.drawImage(TA.paintTownGround(layout, { x: -M, y: -M, w: Wp, h: Hp }), 0, 0);
+      gg.translate(M, M);
 
       // landscape + town center, depth-sorted by feet y
       const items = [];
       const center = layout.center;
-      items.push([(center.y + center.h) * TT, () => g.drawImage(TA.paintTownCenter(center.w), center.x * TT, center.y * TT)]);
+      items.push([(center.y + center.h) * TT, () => gg.drawImage(TA.paintTownCenter(center.w), center.x * TT, center.y * TT)]);
       items.sort((a, b) => a[0] - b[0]).forEach((i) => i[1]());
 
       // Subtle segmented glowing cyan transit guideline on the road (at same level as shuttle centerline)
       const busRoute = TA.townBusRoute(layout);
       const busStop = busRoute && busRoute.stops[0];
       const roadY = busStop ? (busStop.wait.y - 27) : ((layout.roads[0] + 1) * TT + 29);
-      g.strokeStyle = 'rgba(0, 229, 255, 0.35)';
-      g.lineWidth = 1.5;
-      g.setLineDash([16, 12]);
-      g.beginPath();
-      g.moveTo(-M, roadY);
-      g.lineTo(Wp, roadY);
-      g.stroke();
-      g.setLineDash([]);
+      gg.strokeStyle = 'rgba(0, 229, 255, 0.35)';
+      gg.lineWidth = 1.5;
+      gg.setLineDash([16, 12]);
+      gg.beginPath();
+      gg.moveTo(-M, roadY);
+      gg.lineTo(Wp, roadY);
+      gg.stroke();
+      gg.setLineDash([]);
+
+      // The offices layer is transparent elsewhere: the EVA repair crew is
+      // drawn between it and the ground so buildings occlude the astronauts.
+      const base = document.createElement('canvas');
+      base.width = Wp; base.height = Hp;
+      const g = base.getContext('2d');
+      g.imageSmoothingEnabled = false;
+      g.translate(M, M);
 
       // buildings: interior (floors, walls, desks' furniture), lounge, facade;
       // roofs are kept for the per-frame layer (they fade when you look inside)
       const cells = new Map(), roofs = [];
+      this.guards = [];
       layout.buildings.forEach((b, i) => {
         const theme = TA.TOWN_HOST_THEMES[i % TA.TOWN_HOST_THEMES.length];
         g.drawImage(TA.paintTownInterior(b, theme, {
@@ -550,13 +596,13 @@
         b.plants.forEach((p) => g.drawImage(sp.plant, p.x * TT, (p.y + 1) * TT - 24));
         const L = b.lounge;
         g.drawImage(sp.sofa, (L.x + 1) * TT - 1, (L.y + 1) * TT - 8);
+        g.drawImage(sp.sofa, (L.x + 1) * TT - 1, (L.y + 3) * TT - 8); // second sofa, one below the other
         g.drawImage(sp.coffee, (L.x + 7) * TT + 1, (L.y + 1) * TT - 10);
         g.drawImage(sp.cooler, (L.x + 8) * TT + 2, (L.y + 1) * TT - 12);
         if (sp.pingpong) g.drawImage(sp.pingpong, (L.x + 11) * TT, (L.y + 1) * TT - 8);
         const cx = b.doorX * TT, cy = (b.counter.y + 1) * TT - 8;
-        g.drawImage(sp.chair, cx - 7, cy - 14);
-        g.drawImage(TA.townCharacter({ isGuard: true, isImperial: true }, 'down', 0, 'sit', false), cx - 7, cy - 11);
-        g.drawImage(sp.counter, cx - 41, cy);
+        // The imperial guard patrols the office entrance, left ↔ right.
+        this.guards.push({ x: cx - 26, y: cy + 9, minX: cx - 26, maxX: cx + 26, dir: 'left', off: ((b.doorX * 0.731) % 4), hostKey: b.hostKey });
         // "+" new-session button right of the reception counter ("à l'accueil")
         b.plus = { x: cx + 44, y: cy - 3, s: 18 };
         g.drawImage(TA.paintTownFacade(b, theme), b.x * TT, (b.y + b.h) * TT);
@@ -574,7 +620,7 @@
       const storageShip = { x: shipX, y: shipY, w: shipW, h: shipH, items: [], hostItems: [] };
       this.bakeStorageShipHull(storageShip);
 
-      this.town = { layout, base, M, sp, cells, roofs, Wp, Hp, storageShip };
+      this.town = { layout, ground, base, M, sp, cells, roofs, Wp, Hp, storageShip };
       this.nav.clear(); // navigation grids are bound to the building objects
       this.reanchorNaps();
       this.setupBus();
@@ -601,7 +647,10 @@
         cycleMs: 22000, // between arrivals
         haltMs: 3500,   // how long it halts at the stop
         speed: 300,     // px / s
-        riders: [],     // agent names aboard the current bus
+        riders: [],     // worker names aboard (shown in the passenger window)
+        crew: this.repairCrew.state === 'waiting-arrival'
+          ? [this.repairCrew.a1.look, this.repairCrew.a2.look] // repair crew rides aboard
+          : [],
       };
       this.busRode.clear();
     }
@@ -624,7 +673,7 @@
       if (phase < arriveMs) x = roadLeft + (stopX - roadLeft) * eo((phase - enterMs) / driveIn);
       else if (phase < departMs) { x = stopX; hazard = true; }
       else x = stopX + (roadRight - stopX) * Math.pow((phase - departMs) / driveOut, 2);
-      return { x, y: b.roadY, hazard, riders: b.riders };
+      return { x, y: b.roadY, hazard, riders: b.riders, crew: b.crew };
     }
 
     // waypoints from a point inside the building out to the main bus stop's
@@ -689,6 +738,7 @@
           crew.weldingStart = 0;
           crew.a1.x = stopX - 14; crew.a1.y = stopY;
           crew.a2.x = stopX + 14; crew.a2.y = stopY;
+          this.bus.crew = []; // the crew has gotten off the shuttle
         }
         return;
       }
@@ -719,8 +769,8 @@
           return;
         }
         const b = buildings[crew.shipIndex];
-        const t1x = b.x * TT + 12, t1y = (b.y + b.h * 0.45) * TT;
-        const t2x = (b.x + b.w) * TT - 12, t2y = (b.y + b.h * 0.55) * TT;
+        const t1x = b.x * TT - 14, t1y = (b.y + b.h * 0.45) * TT;
+        const t2x = (b.x + b.w) * TT + 14, t2y = (b.y + b.h * 0.55) * TT;
 
         const arr1 = moveAstronaut(crew.a1, t1x, t1y);
         const arr2 = moveAstronaut(crew.a2, t2x, t2y);
@@ -750,6 +800,7 @@
         if (isHalt) {
           crew.state = 'waiting-arrival';
           crew.lastCycleTime = t;
+          this.bus.crew = [crew.a1.look, crew.a2.look]; // board the shuttle
         }
       }
     }
@@ -815,10 +866,10 @@
 
       let w1 = null, w2 = null;
       if (currentShip && crew.weldingStart) {
-        const t1x = currentShip.x * TT + 12, t1y = (currentShip.y + currentShip.h * 0.45) * TT;
-        const t2x = (currentShip.x + currentShip.w) * TT - 12, t2y = (currentShip.y + currentShip.h * 0.55) * TT;
-        if (Math.hypot(crew.a1.x - t1x, crew.a1.y - t1y) < 5) w1 = { x: t1x - 8, y: t1y };
-        if (Math.hypot(crew.a2.x - t2x, crew.a2.y - t2y) < 5) w2 = { x: t2x + 8, y: t2y };
+        const t1x = currentShip.x * TT - 14, t1y = (currentShip.y + currentShip.h * 0.45) * TT;
+        const t2x = (currentShip.x + currentShip.w) * TT + 14, t2y = (currentShip.y + currentShip.h * 0.55) * TT;
+        if (Math.hypot(crew.a1.x - t1x, crew.a1.y - t1y) < 5) w1 = { x: t1x + 8, y: t1y };
+        if (Math.hypot(crew.a2.x - t2x, crew.a2.y - t2y) < 5) w2 = { x: t2x - 8, y: t2y };
       }
 
       drawWorker(crew.a1, w1);
@@ -854,6 +905,19 @@
       return { x: cx - 26, y: cy + 4 };
     }
 
+    // Waypoints straight to an idle agent's rest spot (sofa / water / food /
+    // bus queue), skipping the reception check-in. `from` is an optional
+    // mid-walk [x, y]; otherwise the desk is the start.
+    restWaypoints(at, p, from) {
+      const spot = [p.spot.x, p.spot.y];
+      if (p.activity === 'bus' && this.bus) {
+        return from
+          ? this.busWaypoints(at.b, from, p.spot)
+          : [at.feet, at.entry, ...this.busWaypoints(at.b, at.entry, p.spot).slice(1)];
+      }
+      return from ? [from, spot] : [at.feet, at.entry, spot];
+    }
+
     // the water / nutrient synthesizer spots in the lounge
     coolerSpots(b) {
       const L = b.lounge;
@@ -874,33 +938,49 @@
     }
 
     sofaSpots(b) {
-      // two nappers on the Star Wars banquette booth
+      // two nappers per sofa — one sofa above, the second below
       const L = b.lounge;
-      const sx = (L.x + 1) * TT - 1, sy = (L.y + 1) * TT - 8;
+      const sx = (L.x + 1) * TT - 1;
+      const sy1 = (L.y + 1) * TT - 8;
+      const sy2 = (L.y + 3) * TT - 8;
       return [
-        { x: sx + 14, y: sy + 9, side: -1 },
-        { x: sx + 34, y: sy + 9, side: 1 },
+        { x: sx + 14, y: sy1 + 9, side: -1 },
+        { x: sx + 34, y: sy1 + 9, side: 1 },
+        { x: sx + 14, y: sy2 + 9, side: -1 },
+        { x: sx + 34, y: sy2 + 9, side: 1 },
+      ];
+    }
+
+    // two idle workers square off at a ping-pong table in the lounge
+    pingpongSpots(b) {
+      const L = b.lounge;
+      const px = (L.x + 11) * TT, py = (L.y + 1) * TT + 4;
+      return [
+        { x: px - 8, y: py, dir: 'right' },
+        { x: px + 8, y: py, dir: 'left' },
       ];
     }
 
     // deterministic idle activity for an agent (by name): sleep on sofa, drink water, or eat food
     activityFor(name) {
-      const h = hash(name);
-      if (this.bus && h % 11 === 0) return 'bus';
-      const m = h % 3;
+      // idle workers only rest — they never take the shuttle; only killed
+      // sessions depart by bus (see the departure block in syncNaps).
+      const m = hash(name) % 3;
       if (m === 0) return 'nap';
       if (m === 1) return 'drink';
       return 'eat';
     }
 
-    // the idle plan: idle agents leave the desk to sleep on the sofa, drink water, or eat food
+    // the idle plan: idle agents leave the desk to sleep, drink, eat, or play
+    // ping-pong. Eating/drinking stay capped at their spots; overflow goes to
+    // the sofa first, then a ping-pong match, so no spot gets crowded.
     idlePlan() {
       const plan = new Map(); // key -> { activity, spot, b }
       if (!this.town) return plan;
-      let busI = 0; // global queue index at the main bus stop
       for (const b of this.town.layout.buildings) {
         if (this.hostOff(b.hostKey)) continue;
         const sofa = this.sofaSpots(b);
+        const ping = this.pingpongSpots(b);
         const drinks = this.coolerSpots(b);
         const foods = this.foodSpots(b);
         const idle = [];
@@ -910,22 +990,19 @@
           if (s && !s.activity) idle.push(key);
         }
         idle.sort();
-        let sofaI = 0, drinkI = 0, eatI = 0;
+        let sofaI = 0, pingI = 0, drinkI = 0, eatI = 0;
         for (const key of idle) {
           const name = key.slice(b.hostKey.length + 1);
-          let activity = this.activityFor(name);
-          let spot = null;
-          if (activity === 'bus' && this.bus && busI < 4) {
-            spot = { ...TA.townQueueSpot(this.bus.stop, busI++) };
-          } else if (activity === 'nap' && sofaI < sofa.length) {
-            spot = { ...sofa[sofaI++] };
-          } else if (activity === 'drink') {
-            spot = { ...drinks[drinkI++ % drinks.length] };
-          } else {
-            activity = 'eat';
-            spot = { ...foods[eatI++ % foods.length] };
-          }
-          if (spot) plan.set(key, { activity, spot, b });
+          const want = this.activityFor(name); // 'nap' | 'drink' | 'eat'
+          let activity, spot;
+          if (want === 'nap' && sofaI < sofa.length) { activity = 'nap'; spot = { ...sofa[sofaI++] }; }
+          else if (want === 'drink' && drinkI < drinks.length) { activity = 'drink'; spot = { ...drinks[drinkI++] }; }
+          else if (want === 'eat' && eatI < foods.length) { activity = 'eat'; spot = { ...foods[eatI++] }; }
+          else if (sofaI < sofa.length) { activity = 'nap'; spot = { ...sofa[sofaI++] }; }
+          else if (pingI < ping.length) { activity = 'pingpong'; spot = { ...ping[pingI++] }; }
+          else if (drinkI < drinks.length) { activity = 'drink'; spot = { ...drinks[drinkI++] }; }
+          else { activity = 'eat'; spot = { ...foods[eatI++ % foods.length] }; }
+          plan.set(key, { activity, spot, b });
         }
       }
       return plan;
@@ -955,6 +1032,23 @@
     agentLook(key) {
       const name = this.agentName(key);
       return TA.townLookFor(name || 'you');
+    }
+
+    // The astronauts are painted at 12×18 (plus a 1px outline). Render each
+    // unique sprite once at 2× (crisp nearest upscale) so the per-frame
+    // bilinear draw has more source pixels to work with — sharper, not blurry.
+    char2x(c) {
+      if (!this._char2x) this._char2x = new Map();
+      let big = this._char2x.get(c);
+      if (big) return big;
+      big = document.createElement('canvas');
+      big.width = c.width * 2;
+      big.height = c.height * 2;
+      const bctx = big.getContext('2d');
+      bctx.imageSmoothingEnabled = false;
+      bctx.drawImage(c, 0, 0, big.width, big.height);
+      this._char2x.set(c, big);
+      return big;
     }
 
     buildWalk(b, waypoints) {
@@ -1031,8 +1125,8 @@
       if (!this.town) { this.naps.clear(); return; }
       const t = performance.now() / 1000;
       const plan = this.idlePlan();
-      // killed sessions: their agent checks in at the front desk, then takes
-      // the bus (whether it was at the desk or already idle)
+      // killed sessions: their agent walks straight out and takes the shuttle
+      // bus (the one the repair crew arrives on) — no front-desk stop.
       const current = new Set(this.sessions.keys());
       for (const [key, info] of [...this.lastSessions]) {
         if (current.has(key)) continue; // still alive
@@ -1040,16 +1134,15 @@
         if (!this.bus) { this.naps.delete(key); continue; } // no bus: agent leaves
         const b = this.town.layout.buildings.find((x) => x.hostKey === info.b.hostKey) || this.town.layout.buildings[0];
         if (!b) continue;
-        const fp = this.frontPos(b);
         const p = { activity: 'bus', spot: this.bus.stop.wait, b };
         const existing = this.naps.get(key);
         if (existing) {
-          // already idle: redirect from the current position to the front desk
+          // already idle: route from the current position out to the stop
           const r = this.napPos(existing, t);
-          this.naps.set(key, { ...this.makeWalk(key, 'to-front', [[r[0], r[1]], [fp.x, fp.y]], p, b), name: info.name, leaving: true });
+          this.naps.set(key, { ...this.makeWalk(key, 'to-activity', this.busWaypoints(b, [r[0], r[1]], p.spot), p, b), name: info.name, leaving: true });
         } else {
-          // at the desk: walk out
-          this.naps.set(key, { ...this.makeWalk(key, 'to-front', [info.feet, info.entry, [fp.x, fp.y]], p, b), name: info.name, leaving: true });
+          // at the desk: out through the entry, up to the road, along to the stop
+          this.naps.set(key, { ...this.makeWalk(key, 'to-activity', [info.feet, info.entry, ...this.busWaypoints(b, info.entry, p.spot).slice(1)], p, b), name: info.name, leaving: true });
         }
       }
       const posOf = (key) => {
@@ -1077,16 +1170,14 @@
             if (from) this.startWalk(key, 'to-desk', [from, at.entry, at.feet], null, at.b);
           }
         } else if (nap.phase === 'to-desk') {
-          // went idle again mid-return: head to the front desk
+          // went idle again mid-return: head straight to the rest spot
           const from = posOf(key);
-          const fp = this.frontPos(at.b);
-          this.startWalk(key, 'to-front', [from, at.entry, [fp.x, fp.y]], p, at.b);
+          this.startWalk(key, 'to-activity', this.restWaypoints(at, p, from), p, at.b);
         } else if (nap.phase === 'to-activity') {
           // reassigned to a different spot mid-walk
           if (nap.p && (nap.p.spot.x !== p.spot.x || nap.p.spot.y !== p.spot.y)) {
             const from = posOf(key);
-            const fp = this.frontPos(at.b);
-            this.startWalk(key, 'to-activity', [from, [fp.x, fp.y], [p.spot.x, p.spot.y]], p, at.b);
+            this.startWalk(key, 'to-activity', this.restWaypoints(at, p, from), p, at.b);
           }
         } else if (nap.phase === 'activity') {
           if (nap.p && (nap.p.spot.x !== p.spot.x || nap.p.spot.y !== p.spot.y)) {
@@ -1095,13 +1186,12 @@
         }
         // 'to-front' and 'checking' advance in frame()
       }
-      // fresh idle sessions: leave the desk for the front desk (check-in)
+      // fresh idle sessions: leave the desk straight to the rest spot
       for (const [key, p] of plan) {
         if (this.naps.has(key)) continue;
         const at = this.deskFeet(key);
         if (!at) continue;
-        const fp = this.frontPos(at.b);
-        this.startWalk(key, 'to-front', [at.feet, at.entry, [fp.x, fp.y]], p, at.b);
+        this.startWalk(key, 'to-activity', this.restWaypoints(at, p), p, at.b);
       }
       // remember each live session's desk state (for departure detection)
       for (const key of current) {
@@ -1132,7 +1222,7 @@
         const r = this.napPos(nap, t);
         const from = [r[0], r[1]];
         if (!p) this.startWalk(key, 'to-desk', [from, at.entry, at.feet], null, at.b);
-        else this.startWalk(key, 'to-front', [from, at.entry, [this.frontPos(at.b).x, this.frontPos(at.b).y]], p, at.b);
+        else this.startWalk(key, 'to-activity', this.restWaypoints(at, p, from), p, at.b);
       }
     }
 
@@ -1606,6 +1696,7 @@
       this.updateBus(t);
       this.updateRepairCrew(t);
       this.updateHostLift();
+      this.updateGuards(t);
       this.updateSpaceTraffic(t);
 
       const animate = !REDUCED && !!this.town;
@@ -1638,6 +1729,8 @@
         ctx.textAlign = 'left';
         return;
       }
+      // Distant space traffic flies behind the offices (screen space), not over them
+      this.drawSpaceTraffic(ctx, t);
       const T = this.town;
       const { x: camx, y: camy, z } = this.cam;
       const ox = w / 2, oy = h / 2;
@@ -1664,6 +1757,12 @@
       const sw = Math.max(0, worldRight - worldLeft);
       const sh = Math.max(0, worldBottom - worldTop);
       if (sw > 0 && sh > 0) {
+        ctx.drawImage(T.ground, worldLeft, worldTop, sw, sh, worldLeft - T.M, worldTop - T.M, sw, sh);
+        // EVA repair astronauts fly *behind* the offices (over the street,
+        // occluded by the modules) — like the starships, not over them.
+        if (this.repairCrew && this.repairCrew.state !== 'waiting-arrival') {
+          this.drawRepairCrew(ctx, t);
+        }
         ctx.drawImage(T.base, worldLeft, worldTop, sw, sh, worldLeft - T.M, worldTop - T.M, sw, sh);
       }
 
@@ -1714,8 +1813,9 @@
         const bus = this.busAt(t);
         if (bus) list.push([bus.y + 8, () => this.drawBus(bus, t)]);
       }
-      if (this.repairCrew && this.repairCrew.state !== 'waiting-arrival') {
-        list.push([Math.max(this.repairCrew.a1.y, this.repairCrew.a2.y), () => this.drawRepairCrew(ctx, t)]);
+      // the imperial guards patrol each office entrance (in front of the facade)
+      for (const g of this.guards) {
+        list.push([g.y + 2, () => this.drawGuard(g, t)]);
       }
       list.sort((a, b) => a[0] - b[0]).forEach((e) => e[1]());
 
@@ -1748,9 +1848,6 @@
       // Orbital Storage Starship with live host/session manifest
       this.drawStorageShip(ctx, t);
 
-      // Iconic Sci-Fi Space Traffic: Falcon, X-Wing, Enterprise soaring through space!
-      this.drawSpaceTraffic(ctx, t);
-
       // hover / active highlights — the clickable "square" follows the target:
       // the projected screen for attach, the seated astronaut for rename.
       if (this.hover && (this.hover.type === 'pod' || this.hover.type === 'agent')) {
@@ -1781,6 +1878,7 @@
       if (!spot) return;
       const { ctx } = this;
       const c = TA.townCharacter(look, 'down', 0, 'stand', true); // eyes closed
+      const sprite = this.char2x(c);
       const w = c.width * AS, h = c.height * AS;
       const x = spot.x, y = spot.y;
       ctx.fillStyle = 'rgba(0,0,0,.18)';
@@ -1789,7 +1887,7 @@
       ctx.save();
       ctx.translate(Math.round(x), Math.round(y));
       ctx.rotate((spot.side || 0) * Math.PI / 2);
-      ctx.drawImage(c, -w / 2, -h / 2, w, h);
+      ctx.drawImage(sprite, -w / 2, -h / 2, w, h);
       ctx.restore();
       bubbles.push([x + (spot.side || 0) * 16, y - 12, 'sleep']);
     }
@@ -1805,7 +1903,7 @@
       const w = c.width * AS, h = c.height * AS;
       ctx.fillStyle = 'rgba(0,0,0,.2)';
       ctx.fillRect(Math.round(x) - 5, Math.round(y) - 1, 10, 3);
-      ctx.drawImage(c, Math.round(x) - w / 2, Math.round(y) - h + 1, w, h);
+      ctx.drawImage(this.char2x(c), Math.round(x) - w / 2, Math.round(y) - h + 1, w, h);
       if (nap.phase === 'checking') bubbles.push([x, y - h - 4, 'done']);
       else if (nap.p) {
         const act = nap.p.activity;
@@ -1827,7 +1925,7 @@
       const bob = wf % 2 ? -1 : 0;
       ctx.fillStyle = 'rgba(0,0,0,.22)';
       ctx.fillRect(Math.round(x) - 5, Math.round(y) - 1, 10, 3);
-      ctx.drawImage(c, Math.round(x) - w / 2, Math.round(y) - h + 1 + bob, w, h);
+      ctx.drawImage(this.char2x(c), Math.round(x) - w / 2, Math.round(y) - h + 1 + bob, w, h);
     }
 
     drawPod(info, name, state, t, key, frame, seated, bubbles) {
@@ -1846,7 +1944,7 @@
         const typing = state === 'working' && !REDUCED ? Math.floor(t * 7 + hash(name)) % 2 : 0;
         const c = TA.townCharacter(TA.townLookFor(name), 'down', typing, 'sit', state === 'idle');
         const cw = c.width * AS, ch = c.height * AS;
-        ctx.drawImage(c, cx - cw / 2, Y + 25 - ch, cw, ch);
+        ctx.drawImage(this.char2x(c), cx - cw / 2, Y + 25 - ch, cw, ch);
         if (state === 'idle' && bubbles) bubbles.push([cx, Y - 12, 'sleep']); // Zzz above chair
       }
 
@@ -2317,13 +2415,16 @@
       const deck = (x0, y0, ww, list) => {
         ctx.fillStyle = 'rgba(0, 229, 255, 0.25)'; ctx.fillRect(x0, y0, ww, 10);
         ctx.save(); ctx.beginPath(); ctx.rect(x0, y0, ww, 10); ctx.clip();
-        list.forEach((k, i) => ctx.drawImage(TA.townCharacter(TA.townLookFor(k), 'right', 0, 'stand', false), x0 + 1 + i * 12, y0));
+        list.forEach((p, i) => {
+          const look = typeof p === 'string' ? TA.townLookFor(p) : p;
+          ctx.drawImage(TA.townCharacter(look, 'right', 0, 'stand', false), x0 + 1 + i * 12, y0);
+        });
         ctx.restore();
         ctx.strokeStyle = 'rgba(0, 229, 255, 0.6)';
         ctx.strokeRect(x0, y0, ww, 10);
       };
 
-      deck(L + 8, T0 + 7, w - 22, bus.riders);
+      deck(L + 8, T0 + 7, w - 22, [...(bus.crew || []), ...(bus.riders || [])]);
 
       // Blinking wingtip beacons (port=red, starboard=green)
       const blink = Math.floor(t * 3) % 2 === 0;
@@ -2400,7 +2501,8 @@
       }
     }
 
-    // iconic sci-fi space traffic: Millennium Falcon, X-Wing, Star Trek Enterprise (max 1-2 active at a time)
+    // iconic sci-fi space traffic: Millennium Falcon, X-Wing, Star Trek Enterprise (max 1 active at a time).
+    // They fly in the distant sky (screen space) behind the town, not over the offices.
     updateSpaceTraffic(t) {
       if (!this.spaceTraffic || !this.cv) return;
       const w = this.cv.clientWidth, h = this.cv.clientHeight;
@@ -2408,17 +2510,9 @@
       const dt = this.trafficLastT ? Math.min(0.1, t - this.trafficLastT) : 0.016;
       this.trafficLastT = t;
 
-      const z = (this.cam && this.cam.z) || 1;
-      const camx = (this.cam && this.cam.x) || 700;
-      const camy = (this.cam && this.cam.y) || 700;
-
-      // Wrap boundaries relative to camera viewport
-      const halfW = (w / 2) / z + 120;
-      const halfH = (h / 2) / z + 100;
-      const minX = camx - halfW;
-      const maxX = camx + halfW;
-      const minY = camy - halfH;
-      const maxY = camy + halfH;
+      // Wrap boundaries around the viewport (screen space, with an off-screen margin)
+      const minX = -140, maxX = w + 140;
+      const minY = -120, maxY = h + 120;
 
       // Count currently active ships (strictly max 1 allowed simultaneously)
       let activeCount = 0;
@@ -2498,8 +2592,8 @@
         const sprite = sp[ship.id];
         if (!sprite) continue;
 
-        const sx = Math.round(ship.x), sy = Math.round(ship.y);
-        ctx.translate(sx, sy);
+        ctx.save();
+        ctx.translate(Math.round(ship.x), Math.round(ship.y));
         ctx.rotate(ship.angle);
         ctx.scale(1.6, 1.6); // Prominent, majestic scale
 
@@ -2511,7 +2605,7 @@
 
         // Draw the spaceship sprite centered
         ctx.drawImage(sprite, -sprite.width / 2, -sprite.height / 2);
-        ctx.setTransform(this.worldA, 0, 0, this.worldD, this.worldE, this.worldF);
+        ctx.restore();
       }
     }
 
