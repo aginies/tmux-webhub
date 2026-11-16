@@ -217,6 +217,8 @@ function attach(key) {
     for (const d of [60, 200, 500, 1000]) setTimeout(() => { if (active === st) term.focus(); }, d);
   });
   active = st;
+  // the shortcut bar (⎋ Pg↑ Pg↓ ⌨) lights up the moment the ws is really open
+  st.ws.addEventListener('open', () => { if (active === st) syncTermButtons(); });
   if (view === 'town' && townView) { $('termwin').classList.add('attached'); townView.activeKey = key; townView.needsRedraw = true; }
   $('placeholder').style.display = 'none';
   $('t-detach').style.display = '';
@@ -263,6 +265,12 @@ function syncTermButtons() {
   const inTown = view === 'town' && !!townView;
   $('t-split').style.display = inTown ? 'none' : (active ? '' : 'none');
   $('t-full').style.display = inTown && active ? '' : 'none';
+  // The phone shortcuts only work against a live attach — dim them instead of
+  // letting taps silently do nothing (the classic "sometimes it doesn't work").
+  const ready = !!(active && active.ws && active.ws.readyState === WebSocket.OPEN);
+  for (const id of ['btn-esc', 'btn-pgup', 'btn-pgdn', 'btn-keys']) $(id).disabled = !ready;
+  // drives the floating shortcut bar of the Town view on touch devices (CSS)
+  document.body.classList.toggle('attached', !!active);
 }
 
 // tmux counts our own web client once its ws is open; subtract it to get the number of
@@ -1359,8 +1367,11 @@ document.addEventListener('keydown', (e) => {
 // the byte in bracketed-paste markers, which vim & co. treat as a literal paste,
 // not an Esc key.
 function sendKeys(keys) {
-  if (active && active.ws.readyState === WebSocket.OPEN)
+  if (active && active.ws.readyState === WebSocket.OPEN) {
     active.ws.send(JSON.stringify({ type: 'send-keys', keys }));
+    return true;
+  }
+  return false; // no live attach (or ws still connecting) — nothing was sent
 }
 $('btn-esc').onclick = () => sendKeys(['Escape']);
 
@@ -1494,7 +1505,7 @@ for (const b of $('keys-page2').querySelectorAll('button[data-key], button[data-
         return;
       }
       const name = comboName(b.dataset.key);
-      sendKeys([name]);
+      if (!sendKeys([name])) return; // not sent → no misleading flash
       b.classList.add('sent');
       setTimeout(() => b.classList.remove('sent'), 150);
     };
@@ -1506,7 +1517,7 @@ for (const b of $('keys-page2').querySelectorAll('button[data-key], button[data-
 keysPanel.addEventListener('contextmenu', (e) => e.preventDefault());
 for (const b of $('keys-grid').querySelectorAll('button'))
   b.onclick = () => {
-    sendKeys([b.dataset.key]);
+    if (!sendKeys([b.dataset.key])) return; // not sent → no misleading flash
     b.classList.add('sent'); // brief flash: the key was sent (the app may still not react)
     setTimeout(() => b.classList.remove('sent'), 150);
   };

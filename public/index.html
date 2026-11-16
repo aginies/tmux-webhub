@@ -509,6 +509,24 @@
   /* touch devices: targets >= 44 px (style guide hit areas); 16 px inputs stop
      iOS auto-zoom on focus */
   @media (pointer: coarse) {
+    /* no physical keyboard on touch devices — the shortcut bar keeps its
+       phone buttons in every orientation (the base rule shows only ⌨)
+       and dims them while no session is attached (taps would no-op) */
+    #term-ctl button:not(#btn-keys) { display: inline-flex; }
+    #term-ctl button:disabled { opacity: .35; }
+    /* Town view hides the whole header bar — but on a phone the floating
+       terminal still needs ⎋ Pg↑ Pg↓ ⌨, so keep them as a floating pill
+       while a session is attached (body.attached is set by app.js). Parked
+       below the termbar: on phones the terminal is a fullscreen sheet and
+       its ✕/⛶ buttons live at the very top-right. */
+    body.view-town.attached #term-ctl {
+      display: inline-flex !important;
+      position: fixed; top: 44px; right: 10px; z-index: 6;
+      background: rgba(10, 15, 24, .94);
+      border: 1px solid rgba(0, 229, 255, .35); border-radius: 10px;
+      padding: 4px; gap: 4px;
+      box-shadow: 0 4px 14px rgba(0,0,0,.35);
+    }
     /* :not(.crename) — the chip's ✎ button is also a header <button>; the 44 px
        touch sizing used to leak into it and inflate every session chip */
     header button:not(.crename), #unhide { padding: 11px 12px; min-height: 44px; font-size: 13px; }
