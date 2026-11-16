@@ -26,7 +26,13 @@
   const DESK_COLORS = Object.keys(TA.TOWN_DESK_COLORS);
   const REDUCED = matchMedia('(prefers-reduced-motion: reduce)').matches;
   const Z_MIN = 0.35, Z_MAX = 4;
-  const GUARD_VISOR_COLORS = ['#00e5ff', '#ef4444', '#f59e0b', '#a78bfa', '#34d399', '#f472b6']; // cycled per poll
+  // Memory budget per baked static layer, in source pixels. On HiDPI screens the
+  // ground/base layers bake at 2x; past this budget they fall back to 1x
+  // (16 Mpx ≈ 64 MB per layer at 4 bytes/px; a 4-host town at 2x is ~13 Mpx).
+  const MAX_BAKE_PX = 16e6;
+  const GUARD_VISOR_GOLD = '#f59e0b'; // resting visor colour
+  const GUARD_VISOR_BLINK = '#00e5ff'; // flash colour while acknowledging a poll
+  const GUARD_BLINK_STEP = 0.18; // s per half-blink → 3 blinks over ~1.08 s
 
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
   const hash = (s) => { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return Math.abs(h); };
@@ -72,10 +78,9 @@
       };
       // Imperial Station Security Guard: the obsidian (black) stormtrooper look
       // is drawn by the space-art.js `townCharacter` override when isGuard/isImperial is set.
-      this.guardLook = { isGuard: true, isImperial: true, visor: '#00e5ff' };
-      this.guardVisorIdx = 0;
+      this.guardLook = { isGuard: true, isImperial: true, visor: GUARD_VISOR_GOLD };
+      this.guardBlinkUntil = 0; // timestamp (s) up to which the visors blink after a poll
       this.guards = []; // { x, y, hostKey } — one guard per office entrance
-      this.guardWave = 0; // timestamp (s) guards keep waving hello (set on each poll)
       this.nav = new Map();  // hostKey -> TA.TownNavigation (A* through the building)
       this.previewCache = new Map(); // name -> { raw, canvas } offscreen cached tactical cards
       this.layoutCols = 0; // host buildings per row (0 = vendor auto; 2 in portrait)
@@ -188,10 +193,11 @@
         const rad = g.radius;
         const size = Math.ceil(rad * 2 + 16);
         const c = document.createElement('canvas');
-        c.width = size; c.height = size;
+        c.width = size * 2; c.height = size * 2; // 2x bake for HiDPI crispness
         const ctx = c.getContext('2d');
         const cx = size / 2, cy = size / 2;
 
+        ctx.scale(2, 2);
         ctx.translate(cx, cy);
 
         // Outer diffuse galactic haze
@@ -256,6 +262,7 @@
 
         g.canvas = c;
         g.offset = size / 2;
+        g.size = size;
       }
 
       // Pre-baked pod glow sprites (drawPod): a createRadialGradient + 'lighter' fill per
@@ -279,8 +286,9 @@
       // Pre-baked holographic projection light beam (drawPreview)
       const bakeBeam = (active) => {
         const c = document.createElement('canvas');
-        c.width = 104; c.height = 6;
+        c.width = 208; c.height = 12; // 2x bake (drawn at 104×6)
         const bc = c.getContext('2d');
+        bc.scale(2, 2);
         const cx = 52;
         const beam = bc.createLinearGradient(cx, 0, cx, 6);
         beam.addColorStop(0, active ? 'rgba(0, 229, 255, 0.55)' : 'rgba(0, 180, 255, 0.35)');
@@ -302,8 +310,9 @@
       // Pre-baked settings gear badges (drawCenterBadge)
       const bakeCenterBadge = (hover) => {
         const c = document.createElement('canvas');
-        c.width = 26; c.height = 26;
+        c.width = 52; c.height = 52; // 2x bake (drawn at 26×26)
         const bc = c.getContext('2d');
+        bc.scale(2, 2);
         const cx = 13, cy = 13, R = 8;
         bc.beginPath();
         bc.arc(cx, cy, R + 3, 0, Math.PI * 2);
@@ -424,11 +433,17 @@
       this.nebulaCanvas = nc;
 
       // A portrait↔landscape flip changes how many offices fit per row; re-lay
-      // the town out so every host keeps showing on screen.
+      // the town out so every host keeps showing on screen. Moving to a monitor
+      // with a different devicePixelRatio changes the HiDPI bake scale — re-bake
+      // the static layers too, but leave the camera alone.
       const cols = this.layoutColumns();
-      if (cols !== this.layoutCols && this.town && this.hosts && this.hosts.length) {
-        this.buildTown(this.hosts);
-        this.initialCamera();
+      if (this.town && this.hosts && this.hosts.length) {
+        const relayout = cols !== this.layoutCols;
+        const rebake = this.bakeSFor(this.town.Wp, this.town.Hp) !== this.town.S;
+        if (relayout || rebake) {
+          this.buildTown(this.hosts);
+          if (relayout) this.initialCamera();
+        }
       }
 
       this.needsRedraw = true;
@@ -439,10 +454,8 @@
     update(hosts, activeKey) {
       this.activeKey = activeKey;
       // A poll (SSH sync of each host's tmux sessions) just happened → the
-      // guards raise a hand in greeting and cycle their visor colour.
-      this.guardWave = performance.now() / 1000 + 1.4;
-      this.guardLook.visor = GUARD_VISOR_COLORS[this.guardVisorIdx % GUARD_VISOR_COLORS.length];
-      this.guardVisorIdx++;
+      // guards acknowledge it: visor blinks 3 times, then settles back to gold.
+      this.guardBlinkUntil = performance.now() / 1000 + GUARD_BLINK_STEP * 6;
       const sessions = new Map();
       const sigHosts = [], sigRooms = [];
       for (const h of hosts) {
@@ -517,19 +530,20 @@
       }
     }
 
-    // A stationary station-security guard. On each poll it gives a brief
-    // "hello" wave (one arm raised), otherwise it stands at attention.
+    // A stationary station-security guard. It stands at attention; on each
+    // poll its visor blinks 3 times (gold ↔ cyan), then returns to gold.
     drawGuard(g, t) {
       const { ctx } = this;
       const off = this.hostOff(g.hostKey);
-      const waving = !off && t < this.guardWave;
-      const frame = waving ? Math.floor(t * 3) % 2 : 0; // gentle up/down arm wave
-      const c = TA.townCharacter(this.guardLook, 'down', frame, 'stand', false);
+      const blinking = !off && t < this.guardBlinkUntil;
+      const phase = blinking ? Math.floor((this.guardBlinkUntil - t) / GUARD_BLINK_STEP) % 2 : 0;
+      this.guardLook.visor = phase ? GUARD_VISOR_BLINK : GUARD_VISOR_GOLD;
+      const c = TA.townCharacter(this.guardLook, 'down', 0, 'stand', false);
       const gs = 1.6; // taller guard (matches the previous seated scale)
       const w = c.width * gs, h = c.height * gs;
       ctx.fillStyle = 'rgba(0,0,0,.22)';
       ctx.fillRect(Math.round(g.x) - 5, Math.round(g.y) - 1, 10, 3);
-      ctx.drawImage(this.char2x(c), Math.round(g.x) - w / 2, Math.round(g.y) - h + 1, w, h);
+      ctx.drawImage(this.sprite2x(c), Math.round(g.x) - w / 2, Math.round(g.y) - h + 1, w, h);
     }
 
     /* ---------- building the static scene ---------- */
@@ -553,15 +567,21 @@
       const sp = townSprites();
       const M = 32; // margin around the layout (the film uses spec.margin * TT)
       const Wp = layout.width * TT + 2 * M, Hp = layout.height * TT + 2 * M;
+      // HiDPI: bake the static layers at 2x so the per-frame blit maps ~1:1 onto
+      // device pixels instead of bilinear-upscaling a 1x bake. 1x displays (and
+      // towns past the memory budget) keep the old 1x bakes — zero extra cost.
+      const S = this.bakeSFor(Wp, Hp);
+      this.bakeS = S;
 
       // Two baked layers so the EVA repair astronauts pass *behind* the offices
       // (occluded by the modules) while staying visible over the street:
       //   ground — grass/roads + town center + transit guideline
       //   base   — office interiors, furniture, guard and facades
       const ground = document.createElement('canvas');
-      ground.width = Wp; ground.height = Hp;
+      ground.width = Wp * S; ground.height = Hp * S;
       const gg = ground.getContext('2d');
       gg.imageSmoothingEnabled = false;
+      gg.scale(S, S);
       gg.drawImage(TA.paintTownGround(layout, { x: -M, y: -M, w: Wp, h: Hp }), 0, 0);
       gg.translate(M, M);
 
@@ -587,9 +607,10 @@
       // The offices layer is transparent elsewhere: the EVA repair crew is
       // drawn between it and the ground so buildings occlude the astronauts.
       const base = document.createElement('canvas');
-      base.width = Wp; base.height = Hp;
+      base.width = Wp * S; base.height = Hp * S;
       const g = base.getContext('2d');
       g.imageSmoothingEnabled = false;
+      g.scale(S, S);
       g.translate(M, M);
 
       // buildings: interior (floors, walls, desks' furniture), lounge, facade;
@@ -616,7 +637,8 @@
         b.plus = { x: cx + 44, y: cy - 3, s: 18 };
         g.drawImage(TA.paintTownFacade(b, theme), b.x * TT, (b.y + b.h) * TT);
         this.bakeHostSigns(b);
-        roofs.push({ host: b.hostKey, c: TA.paintTownRoof(b, theme, this.hostOff(b.hostKey)), x: b.x * TT - 4, y: b.y * TT - 12, b });
+        const rc = TA.paintTownRoof(b, theme, this.hostOff(b.hostKey));
+        roofs.push({ host: b.hostKey, c: this.pixelScale(rc, S), lw: rc.width, lh: rc.height, x: b.x * TT - 4, y: b.y * TT - 12, b });
         b.rooms.forEach((r) => r.cells.forEach((cell) => {
           if (cell.deskKey) cells.set(b.hostKey + ':' + cell.deskKey, { cell, b, name: cell.deskKey });
         }));
@@ -629,7 +651,7 @@
       const storageShip = { x: shipX, y: shipY, w: shipW, h: shipH, items: [], hostItems: [] };
       this.bakeStorageShipHull(storageShip);
 
-      this.town = { layout, ground, base, M, sp, cells, roofs, Wp, Hp, storageShip };
+      this.town = { layout, ground, base, M, S, sp, cells, roofs, Wp, Hp, storageShip };
       this.nav.clear(); // navigation grids are bound to the building objects
       this.reanchorNaps();
       this.setupBus();
@@ -854,7 +876,7 @@
           ctx.fillRect(ax + puffOff, ay - h / 2, 3, 3);
         }
 
-        ctx.drawImage(c, ax - w / 2, ay - h + 1, w, h);
+        ctx.drawImage(this.sprite2x(c), ax - w / 2, ay - h + 1, w, h);
 
         // Exterior laser welding & spark effects on hull
         if (weldPoint) {
@@ -1061,12 +1083,33 @@
       return TA.townLookFor(name || 'you');
     }
 
-    // The astronauts are painted at 12×18 (plus a 1px outline). Render each
-    // unique sprite once at 2× (crisp nearest upscale) so the per-frame
-    // bilinear draw has more source pixels to work with — sharper, not blurry.
-    char2x(c) {
-      if (!this._char2x) this._char2x = new Map();
-      let big = this._char2x.get(c);
+    // HiDPI bake scale for the static layers: 2 on dpr>1 screens while the bake
+    // stays inside the per-layer memory budget, else 1 (identical to before).
+    bakeSFor(Wp, Hp) {
+      return (window.devicePixelRatio || 1) > 1 && Wp * Hp * 4 <= MAX_BAKE_PX ? 2 : 1;
+    }
+
+    // Nearest-neighbour pixel-duplicate a baked 1x canvas to S (S=1 → as-is), so
+    // vendor pixel art maps 1:1 onto HiDPI device pixels instead of blurring.
+    pixelScale(c, S) {
+      if (S <= 1) return c;
+      const big = document.createElement('canvas');
+      big.width = c.width * S;
+      big.height = c.height * S;
+      const bctx = big.getContext('2d');
+      bctx.imageSmoothingEnabled = false;
+      bctx.drawImage(c, 0, 0, big.width, big.height);
+      return big;
+    }
+
+    // The vendor pixel art (astronauts 12×18, desks, monitors, bubbles, ships)
+    // is baked at 1x. Render each unique sprite once at 2x (crisp nearest
+    // upscale, cached by canvas identity — townCharacter/townScreen/the sprite
+    // set are memoized, so the cache is bounded) so every per-frame bilinear
+    // draw under a HiDPI transform has real source pixels — sharper, not blurry.
+    sprite2x(c) {
+      if (!this._sprite2x) this._sprite2x = new Map();
+      let big = this._sprite2x.get(c);
       if (big) return big;
       big = document.createElement('canvas');
       big.width = c.width * 2;
@@ -1074,7 +1117,7 @@
       const bctx = big.getContext('2d');
       bctx.imageSmoothingEnabled = false;
       bctx.drawImage(c, 0, 0, big.width, big.height);
-      this._char2x.set(c, big);
+      this._sprite2x.set(c, big);
       return big;
     }
 
@@ -1777,20 +1820,21 @@
       // Clip T.base to only the visible viewport rect (avoids copying ~4.5 million offscreen pixels)
       const halfW = (w / 2) / z + 20;
       const halfH = (h / 2) / z + 20;
+      const S = T.S || 1; // HiDPI bake factor: source rects are in bake pixels
       const worldLeft = Math.max(0, Math.floor(camx - halfW + T.M));
       const worldTop = Math.max(0, Math.floor(camy - halfH + T.M));
-      const worldRight = Math.min(T.base.width, Math.ceil(camx + halfW + T.M));
-      const worldBottom = Math.min(T.base.height, Math.ceil(camy + halfH + T.M));
+      const worldRight = Math.min(T.Wp, Math.ceil(camx + halfW + T.M));
+      const worldBottom = Math.min(T.Hp, Math.ceil(camy + halfH + T.M));
       const sw = Math.max(0, worldRight - worldLeft);
       const sh = Math.max(0, worldBottom - worldTop);
       if (sw > 0 && sh > 0) {
-        ctx.drawImage(T.ground, worldLeft, worldTop, sw, sh, worldLeft - T.M, worldTop - T.M, sw, sh);
+        ctx.drawImage(T.ground, worldLeft * S, worldTop * S, sw * S, sh * S, worldLeft - T.M, worldTop - T.M, sw, sh);
         // EVA repair astronauts fly *behind* the offices (over the street,
         // occluded by the modules) — like the starships, not over them.
         if (this.repairCrew && this.repairCrew.state !== 'waiting-arrival') {
           this.drawRepairCrew(ctx, t);
         }
-        ctx.drawImage(T.base, worldLeft, worldTop, sw, sh, worldLeft - T.M, worldTop - T.M, sw, sh);
+        ctx.drawImage(T.base, worldLeft * S, worldTop * S, sw * S, sh * S, worldLeft - T.M, worldTop - T.M, sw, sh);
       }
 
       // dynamic desk layer, depth-sorted (pods and the moving agents together)
@@ -1853,10 +1897,10 @@
       for (const r of T.roofs) {
         const lift = this.hostLift(r.host);
         if (lift <= 0.01) continue;
-        const w = r.c.width * (0.25 + 0.75 * lift);
-        const h = r.c.height * lift;
+        const w = r.lw * (0.25 + 0.75 * lift);
+        const h = r.lh * lift;
         ctx.globalAlpha = ra * (0.3 + 0.7 * lift);
-        ctx.drawImage(r.c, r.x + (r.c.width - w) / 2, r.y + (r.c.height - h), w, h);
+        ctx.drawImage(r.c, r.x + (r.lw - w) / 2, r.y + (r.lh - h), w, h);
       }
       ctx.globalAlpha = 1;
       for (const r of T.roofs) {
@@ -1892,10 +1936,11 @@
       for (const [x, y, kind] of bubbles) {
         const img = T.sp.bubble[kind];
         if (!img) continue;
+        const img2 = this.sprite2x(img);
         const sx = ox + (x - camx) * z, sy = oy + (y - camy) * z;
         const near = z >= 1.4;
         const bs = near ? clamp(Math.round(z * 1.5), 2, 4) : z < 0.7 ? 1 : 2;
-        ctx.drawImage(img, Math.round(sx - img.width * bs / 2), Math.round(sy - 2 - img.height * bs), img.width * bs, img.height * bs);
+        ctx.drawImage(img2, Math.round(sx - img.width * bs / 2), Math.round(sy - 2 - img.height * bs), img.width * bs, img.height * bs);
       }
     }
 
@@ -1905,7 +1950,7 @@
       if (!spot) return;
       const { ctx } = this;
       const c = TA.townCharacter(look, 'down', 0, 'stand', true); // eyes closed
-      const sprite = this.char2x(c);
+      const sprite = this.sprite2x(c);
       const w = c.width * AS, h = c.height * AS;
       const x = spot.x, y = spot.y;
       ctx.fillStyle = 'rgba(0,0,0,.18)';
@@ -1930,7 +1975,7 @@
       const w = c.width * AS, h = c.height * AS;
       ctx.fillStyle = 'rgba(0,0,0,.2)';
       ctx.fillRect(Math.round(x) - 5, Math.round(y) - 1, 10, 3);
-      ctx.drawImage(this.char2x(c), Math.round(x) - w / 2, Math.round(y) - h + 1, w, h);
+      ctx.drawImage(this.sprite2x(c), Math.round(x) - w / 2, Math.round(y) - h + 1, w, h);
       if (nap.phase === 'checking') bubbles.push([x, y - h - 4, 'done']);
       else if (nap.p) {
         const act = nap.p.activity;
@@ -1952,7 +1997,7 @@
       const bob = wf % 2 ? -1 : 0;
       ctx.fillStyle = 'rgba(0,0,0,.22)';
       ctx.fillRect(Math.round(x) - 5, Math.round(y) - 1, 10, 3);
-      ctx.drawImage(this.char2x(c), Math.round(x) - w / 2, Math.round(y) - h + 1 + bob, w, h);
+      ctx.drawImage(this.sprite2x(c), Math.round(x) - w / 2, Math.round(y) - h + 1 + bob, w, h);
     }
 
     drawPod(info, name, state, t, key, frame, seated, bubbles) {
@@ -1971,17 +2016,18 @@
         const typing = state === 'working' && !REDUCED ? Math.floor(t * 7 + hash(name)) % 2 : 0;
         const c = TA.townCharacter(TA.townLookFor(name), 'down', typing, 'sit', state === 'idle');
         const cw = c.width * AS, ch = c.height * AS;
-        ctx.drawImage(this.char2x(c), cx - cw / 2, Y + 25 - ch, cw, ch);
+        ctx.drawImage(this.sprite2x(c), cx - cw / 2, Y + 25 - ch, cw, ch);
         if (state === 'idle' && bubbles) bubbles.push([cx, Y - 12, 'sleep']); // Zzz above chair
       }
 
       // table over the agent's lower body (also baked in the base canvas)
       const table = sp.tableSmall[this.deskColor(name)];
-      if (table) ctx.drawImage(table, X + 14, Y + 17);
+      if (table) ctx.drawImage(this.sprite2x(table), X + 14, Y + 17, table.width, table.height);
 
       // monitor on the desk — the session state is readable on it
       const screenFrame = state === 'working' ? frame % 7 : state === 'idle' ? frame % 2 : 0;
-      ctx.drawImage(TA.townScreen(state, screenFrame), X + slot.chairX, Y + 13);
+      const scr = TA.townScreen(state, screenFrame);
+      ctx.drawImage(this.sprite2x(scr), X + slot.chairX, Y + 13, scr.width, scr.height);
 
       // holographic live preview: floating tactical projection after the desktop (lower) with radiant light beam
       const isActive = key === this.activeKey;
@@ -2035,7 +2081,7 @@
 
       // Blit pre-baked holographic projection light beam
       ctx.globalAlpha = holoAlpha;
-      ctx.drawImage(active ? this.holoBeamActive : this.holoBeamWorking, projX, emitY);
+      ctx.drawImage(active ? this.holoBeamActive : this.holoBeamWorking, projX, emitY, 104, 6);
       ctx.globalAlpha = 1;
 
       // Console emitter lens / projector head with pulsing flare
@@ -2153,17 +2199,19 @@
       const hover = this.hover && this.hover.type === 'center';
       const cx = (c.x + c.w / 2) * TT, cy = c.y * TT + 12;
       const badge = hover ? this.centerBadgeHover : this.centerBadgeNormal;
-      if (badge) ctx.drawImage(badge, cx - 13, cy - 13);
+      if (badge) ctx.drawImage(badge, cx - 13, cy - 13, 26, 26);
     }
 
     // Pre-bake static cargo carrier hull for Orbital Sessions (saves ~40 drawing ops per frame)
     bakeStorageShipHull(ship) {
       const { w, h } = ship;
       const padL = 14, padR = 14;
+      const S = this.bakeS || 1; // HiDPI: bake the hull at 2x for crisp edges
       const c = document.createElement('canvas');
-      c.width = w + padL + padR;
-      c.height = h + 10;
+      c.width = (w + padL + padR) * S;
+      c.height = (h + 10) * S;
       const ctx = c.getContext('2d');
+      ctx.scale(S, S);
       const x = padL, y = 0;
 
       // Heavy Industrial Cargo / Data-Vault Freighter Hull
@@ -2226,6 +2274,8 @@
 
       ship.hullCanvas = c;
       ship.hullOffsetX = padL;
+      ship.hullW = w + padL + padR; // logical (world-px) size of the bake
+      ship.hullH = h + 10;
     }
 
     // Pre-calculate Orbital Sessions manifest positions & text measurements (runs in update(), not in render loop)
@@ -2295,7 +2345,8 @@
 
       // 1. Blit pre-baked cargo freighter hull
       if (ship.hullCanvas) {
-        ctx.drawImage(ship.hullCanvas, x - (ship.hullOffsetX || 14), y);
+        ctx.drawImage(ship.hullCanvas, x - (ship.hullOffsetX || 14), y,
+          ship.hullW || ship.hullCanvas.width, ship.hullH || ship.hullCanvas.height);
       }
 
       // 2. Title Banner Header Text (crisp vector font at native screen resolution)
@@ -2444,7 +2495,8 @@
         ctx.save(); ctx.beginPath(); ctx.rect(x0, y0, ww, 10); ctx.clip();
         list.forEach((p, i) => {
           const look = typeof p === 'string' ? TA.townLookFor(p) : p;
-          ctx.drawImage(TA.townCharacter(look, 'right', 0, 'stand', false), x0 + 1 + i * 12, y0);
+          const pc = TA.townCharacter(look, 'right', 0, 'stand', false);
+          ctx.drawImage(this.sprite2x(pc), x0 + 1 + i * 12, y0, pc.width, pc.height);
         });
         ctx.restore();
         ctx.strokeStyle = 'rgba(0, 229, 255, 0.6)';
@@ -2523,7 +2575,7 @@
         ctx.rotate(g.angle); // fixed tilt angle
         ctx.scale(1, g.tilt); // 3D inclination
         ctx.rotate(rot); // slow continuous cosmic rotation!
-        ctx.drawImage(g.canvas, -g.offset, -g.offset);
+        ctx.drawImage(g.canvas, -g.offset, -g.offset, g.size, g.size);
         ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
       }
     }
@@ -2631,7 +2683,7 @@
         }
 
         // Draw the spaceship sprite centered
-        ctx.drawImage(sprite, -sprite.width / 2, -sprite.height / 2);
+        ctx.drawImage(this.sprite2x(sprite), -sprite.width / 2, -sprite.height / 2, sprite.width, sprite.height);
         ctx.restore();
       }
     }
@@ -2702,11 +2754,13 @@
       const w = Math.round(tw + padX * 2 + 18);
 
       const pad = 12; // margin for shadow blur
+      const S = this.bakeS || 1; // HiDPI: bake the sign at 2x for razor-sharp text
       const renderSign = (off) => {
         const c = document.createElement('canvas');
-        c.width = w + pad * 2;
-        c.height = h + pad * 2;
+        c.width = (w + pad * 2) * S;
+        c.height = (h + pad * 2) * S;
         const sctx = c.getContext('2d');
+        sctx.scale(S, S);
         const bx = pad, by = pad;
 
         sctx.save();
@@ -2759,7 +2813,7 @@
       if (!canvas) return;
       const x = Math.round(b.x * TT + (b.w * TT) / 2), y = Math.round(b.y * TT - 34);
       const bx = Math.round(x - b.signW / 2), by = y - 28;
-      ctx.drawImage(canvas, bx - b.signPad, by - b.signPad);
+      ctx.drawImage(canvas, bx - b.signPad, by - b.signPad, b.signW + b.signPad * 2, b.signH + b.signPad * 2);
     }
   }
 

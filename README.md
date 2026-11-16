@@ -15,7 +15,7 @@ running in them — pi, bash, a build, anything.
   session a desk with a live holographic projection of its output. Click the
   projection to attach, the astronaut to rename, a building to zoom in;
   wheel/pinch to zoom, drag to pan. Imperial guards stand at the entrances and
-  wave on each poll, an EVA repair crew shuttles in to patch hulls, idle agents
+  blink their visors on each poll, an EVA repair crew shuttles in to patch hulls, idle agents
   take breaks, and a host that goes offline retracts its office canopy.
 - **Two-factor + token auth** — TLS by default; one access token gates the
   page, the API and the WebSocket; optional TOTP two-factor (scan a QR at first
@@ -65,7 +65,8 @@ session list; both show the same live data.
   resize, double-click the title bar (or **⛶**) for fullscreen. **⤢ Split**
   attaches a second session side by side in the same window.
 - **It's alive** — imperial security guards stand at each office entrance and
-  give a wave on every poll (their visor colour cycles); an EVA repair crew
+  blink their visors three times on every poll (gold ↔ cyan, then back to
+  gold); an EVA repair crew
   arrives by shuttle and welds patches onto a hull; idle agents leave their
   desks to nap, drink, eat, or play ping-pong; a killed session walks out to
   the shuttle and departs. When a host goes offline its office canopy retracts

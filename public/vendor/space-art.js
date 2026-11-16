@@ -1088,7 +1088,7 @@
         ctx.fillStyle = '#1e293b';
         ctx.fillRect(3.5, 4, 13, 2);
 
-        // Sentry Tactical Visor: Glowing narrow slit HUD optic (colour cycles per poll)
+        // Sentry Tactical Visor: Glowing narrow slit HUD optic (blinks per poll, rests gold)
         ctx.fillStyle = (look && look.visor) || '#00e5ff';
         ctx.fillRect(6.5, 5.5, 7, 1.5);
         ctx.fillStyle = '#ffffff';
