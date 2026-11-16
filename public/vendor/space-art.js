@@ -1088,8 +1088,8 @@
         ctx.fillStyle = '#1e293b';
         ctx.fillRect(3.5, 4, 13, 2);
 
-        // Sentry Tactical Visor: Glowing narrow slit HUD optic (cyan / amber)
-        ctx.fillStyle = '#00e5ff';
+        // Sentry Tactical Visor: Glowing narrow slit HUD optic (colour cycles per poll)
+        ctx.fillStyle = (look && look.visor) || '#00e5ff';
         ctx.fillRect(6.5, 5.5, 7, 1.5);
         ctx.fillStyle = '#ffffff';
         ctx.fillRect(8.5, 5.5, 3, 1);
@@ -1115,13 +1115,21 @@
         ctx.fillStyle = '#020617';
         ctx.fillRect(7, 9.5, 6, 1.5);
 
-        // 4. Dark Armored Arms & Black Security Gloves
+        // 4. Dark Armored Arms & Black Security Gloves (right arm raises to wave)
+        const wave = (frame % 2) === 1;
         ctx.fillStyle = '#1e293b';
-        ctx.fillRect(3, 11, 3, 4);
-        ctx.fillRect(14, 11, 3, 4);
-        ctx.fillStyle = '#020617'; // black gloves
-        ctx.fillRect(3, 14, 3, 2);
-        ctx.fillRect(14, 14, 3, 2);
+        ctx.fillRect(3, 11, 3, 4);          // left arm (always at side)
+        ctx.fillRect(14, 11, 3, 4);         // right arm
+        ctx.fillStyle = '#020617';
+        ctx.fillRect(3, 14, 3, 2);          // left glove
+        if (wave) {
+          ctx.fillStyle = '#1e293b';
+          ctx.fillRect(15, 5, 2, 6);        // raised forearm
+          ctx.fillStyle = '#020617';
+          ctx.fillRect(15, 3.5, 2, 2);      // raised glove (hand up)
+        } else {
+          ctx.fillRect(14, 14, 3, 2);       // right glove (at side)
+        }
 
         // 5. Dark Armored Legs & Blast Boots
         ctx.fillStyle = '#1e293b';
@@ -1308,7 +1316,7 @@
       };
       return (look, dir, frame, pose, eyesClosed) => {
         // same key shape as the original cached impl (R0(look)|dir|frame|pose|eyes)
-        const key = `${look && (look.isGuard || look.isImperial || look.empire) ? 'guard' : ''}${look && look.isRepair ? 'rep' : ''}${look && look.skin}${look && look.hair}${look && look.shirt}${look && look.pants}${look && look.style}${look && (look.outfit ?? "")}${look && (look.accessory ?? "")}|${dir}|${frame}|${pose}|${eyesClosed ? 1 : 0}`;
+        const key = `${look && (look.isGuard || look.isImperial || look.empire) ? 'guard' : ''}${look && look.isRepair ? 'rep' : ''}${look && look.skin}${look && look.hair}${look && look.shirt}${look && look.pants}${look && look.style}${look && (look.outfit ?? "")}${look && (look.accessory ?? "")}${look && look.visor ? '~' + look.visor : ''}|${dir}|${frame}|${pose}|${eyesClosed ? 1 : 0}`;
         let c = cache.get(key);
         if (!c) { c = render(look, dir, frame, pose, eyesClosed); cache.set(key, c); }
         return c;
