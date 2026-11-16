@@ -62,6 +62,7 @@
       };
       this.nav = new Map();  // hostKey -> TA.TownNavigation (A* through the building)
       this.previewCache = new Map(); // name -> { raw, canvas } offscreen cached tactical cards
+      this.layoutCols = 0; // host buildings per row (0 = vendor auto; 2 in portrait)
       this.needsRedraw = true;
       this.raf = null;
       this.pointers = new Map();
@@ -405,6 +406,14 @@
       nctx.fillRect(0, 0, w, h);
       this.nebulaCanvas = nc;
 
+      // A portrait↔landscape flip changes how many offices fit per row; re-lay
+      // the town out so every host keeps showing on screen.
+      const cols = this.layoutColumns();
+      if (cols !== this.layoutCols && this.town && this.hosts && this.hosts.length) {
+        this.buildTown(this.hosts);
+        this.initialCamera();
+      }
+
       this.needsRedraw = true;
     }
 
@@ -450,6 +459,16 @@
       return !h || h.enabled === false || h.state === 'offline' || !!h.error;
     }
 
+    // How many host offices to lay out per row. 0 = leave it to the vendor
+    // (one row for ≤4 hosts, a square-ish grid above that). A portrait
+    // viewport (taller than wide) wraps into two columns so the offices fill
+    // the height instead of a long horizontal strip.
+    layoutColumns() {
+      const w = this.cv.clientWidth || 0, h = this.cv.clientHeight || 0;
+      if (!w || !h) return 0;
+      return h > w ? 2 : 0;
+    }
+
     /* ---------- building the static scene ---------- */
 
     buildTown(hosts) {
@@ -462,7 +481,12 @@
           deskSeats: (h.sessions || []).map(() => 1),
         })),
       };
-      const { layout } = TA.layoutTown(input, 'wide');
+      const cols = this.layoutColumns();
+      const formFactor = cols
+        ? { formFactor: 'wide', roomColumns: 3, deskColumns: 8, buildingColumns: cols }
+        : 'wide';
+      this.layoutCols = cols;
+      const { layout } = TA.layoutTown(input, formFactor);
       const sp = TA.buildTownSprites();
       const M = 32; // margin around the layout (the film uses spec.margin * TT)
       const Wp = layout.width * TT + 2 * M, Hp = layout.height * TT + 2 * M;
@@ -1169,8 +1193,8 @@
 
     podAt(wx, wy) {
       if (!this.town) return null;
-      // moving agents first: a napper on the sofa or a walker in between is
-      // the same session as its desk
+      // moving agents: a napper on the sofa or a walker in between is the
+      // same session as its desk (click attach directly)
       for (const [key, nap] of this.naps) {
         let px, py;
         if (nap.phase === 'checking') { const fp = this.frontPos(nap.b); px = fp.x; py = fp.y; }
@@ -1181,9 +1205,44 @@
           if (info) return { name: info.name, info, key };
         }
       }
+      return null;
+    }
+
+    // Geometry of a desk's two click targets (world coordinates): the seated
+    // astronaut (rename) and the holographic screen projection (attach). Both
+    // match how drawPod / drawPreview place them, so hit boxes line up with
+    // the art at every zoom.
+    podGeom(info) {
+      const { cell } = info;
+      const X = (cell.x + 1) * TT, Y = cell.y * TT;
+      const cx = X + TA.townDeskSlots(cell.seats)[0].chairX + 7;
+      const aw = 12 * AS, ah = 18 * AS; // character sprite is 12×18, scaled by AS
+      return {
+        agent: { x: cx - aw / 2, y: Y + 25 - ah, w: aw, h: ah },
+        screen: { x: cx - 54, y: Y + 40, w: 108, h: 54 }, // drawPreview's projX/projY
+      };
+    }
+
+    // A desk's holographic screen projection → click attaches (pops up) the session.
+    previewAt(wx, wy) {
+      if (!this.town) return null;
       for (const [key, info] of this.town.cells) {
-        const X = (info.cell.x + 1) * TT, Y = info.cell.y * TT;
-        if (wx >= X - 32 && wx <= X + 84 && wy >= Y - 15 && wy <= Y + 102) {
+        if (this.naps.has(key)) continue; // agent away → no projection shown
+        const r = this.podGeom(info).screen;
+        if (wx >= r.x && wx <= r.x + r.w && wy >= r.y && wy <= r.y + r.h) {
+          return { name: info.name, info, key };
+        }
+      }
+      return null;
+    }
+
+    // A desk's seated astronaut → click renames the session.
+    agentAt(wx, wy) {
+      if (!this.town) return null;
+      for (const [key, info] of this.town.cells) {
+        if (this.naps.has(key)) continue; // the astronaut has left the desk
+        const r = this.podGeom(info).agent;
+        if (wx >= r.x && wx <= r.x + r.w && wy >= r.y && wy <= r.y + r.h) {
           return { name: info.name, info, key };
         }
       }
@@ -1340,6 +1399,10 @@
         if (this.api.toggleHost) this.api.toggleHost(signHost);
         return;
       }
+      const screen = this.previewAt(wx, wy);
+      if (screen) { this.api.attach(screen.key); return; }
+      const agent = this.agentAt(wx, wy);
+      if (agent) { if (this.api.rename) this.api.rename(agent.key); return; }
       const pod = this.podAt(wx, wy);
       if (pod) { this.api.attach(pod.key); return; }
       const plus = this.plusAt(wx, wy);
@@ -1382,11 +1445,13 @@
         this.setHover({ type: 'host-sign', host: signHost }, e);
         return;
       }
-      const pod = this.podAt(wx, wy);
-      const plus = pod ? null : this.plusAt(wx, wy);
-      const b = pod || plus ? null : this.buildingAt(wx, wy);
-      const c = pod || plus || b ? null : this.centerAt(wx, wy);
-      this.setHover(pod ? { type: 'pod', ...pod } : plus ? { type: 'plus', host: plus } : b ? { type: 'building', b } : c ? { type: 'center' } : null, e);
+      const screen = this.previewAt(wx, wy);
+      const agent = screen ? null : this.agentAt(wx, wy);
+      const pod = screen || agent ? null : this.podAt(wx, wy);
+      const plus = screen || agent || pod ? null : this.plusAt(wx, wy);
+      const b = screen || agent || pod || plus ? null : this.buildingAt(wx, wy);
+      const c = screen || agent || pod || plus || b ? null : this.centerAt(wx, wy);
+      this.setHover(screen ? { type: 'pod', ...screen } : agent ? { type: 'agent', ...agent } : pod ? { type: 'pod', ...pod } : plus ? { type: 'plus', host: plus } : b ? { type: 'building', b } : c ? { type: 'center' } : null, e);
     }
 
     setHover(hover, e) {
@@ -1399,7 +1464,10 @@
         if (hover.type === 'pod') {
           const s = this.sessions.get(hover.key);
           const st = s ? (s.activity ? 'active' : 'idle') : '—';
-          tip.innerHTML = '<b></b><span class="dim"> · ' + hover.info.b.hostKey + ' · ' + st + (s && s.cwd ? ' · ' + s.cwd : '') + '</span>';
+          tip.innerHTML = '<b></b><span class="dim"> · ' + hover.info.b.hostKey + ' · ' + st + (s && s.cwd ? ' · ' + s.cwd : '') + ' · click to attach</span>';
+          tip.firstChild.textContent = hover.name;
+        } else if (hover.type === 'agent') {
+          tip.innerHTML = '<b></b><span class="dim"> · ' + hover.info.b.hostKey + ' · click to rename</span>';
           tip.firstChild.textContent = hover.name;
         } else if (hover.type === 'manifest-session') {
           const s = this.sessions.get(hover.key);
@@ -1430,6 +1498,7 @@
 
     hoverId(hover) {
       if (hover.type === 'pod') return 'pod:' + hover.key;
+      if (hover.type === 'agent') return 'agent:' + hover.key;
       if (hover.type === 'manifest-session') return 'ms:' + hover.key;
       if (hover.type === 'storage-ship') return 'storage-ship';
       if (hover.type === 'plus') return 'plus:' + hover.host;
@@ -1642,12 +1711,14 @@
       // Iconic Sci-Fi Space Traffic: Falcon, X-Wing, Enterprise soaring through space!
       this.drawSpaceTraffic(ctx, t);
 
-      // hover / active highlights
-      if (this.hover && this.hover.type === 'pod') {
-        const X = (this.hover.info.cell.x + 1) * TT, Y = this.hover.info.cell.y * TT;
-        ctx.strokeStyle = 'rgba(0, 229, 255, 0.85)';
+      // hover / active highlights — the clickable "square" follows the target:
+      // the projected screen for attach, the seated astronaut for rename.
+      if (this.hover && (this.hover.type === 'pod' || this.hover.type === 'agent')) {
+        const g = this.podGeom(this.hover.info);
+        ctx.strokeStyle = this.hover.type === 'agent' ? 'rgba(255, 209, 102, 0.9)' : 'rgba(0, 229, 255, 0.85)';
         ctx.lineWidth = 2 / z;
-        ctx.strokeRect(X - 30, Y - 12, 108, 110);
+        const r = this.hover.type === 'agent' ? g.agent : g.screen;
+        ctx.strokeRect(r.x, r.y, r.w, r.h);
       }
 
       // Reset to screen coordinates for thought bubbles (direct identity matrix)
@@ -1760,9 +1831,11 @@
         ctx.globalAlpha = 1;
       }
       if (isActive) {
+        // frame the holographic projection (the session's live output), not
+        // the astronaut — click the projection to attach, the astronaut to rename
         ctx.strokeStyle = 'rgba(0, 229, 255, 0.75)';
         ctx.lineWidth = 1.5;
-        ctx.strokeRect(X - 30, Y - 12, 108, 110);
+        ctx.strokeRect(cx - 54, Y + 40, 108, 54);
       }
     }
 
@@ -1771,6 +1844,10 @@
     drawPreview(mx, Y, preview, cacheKey, sessionName, active = false, t = performance.now() / 1000) {
       const { ctx } = this;
       const W = 108, H = 54, pad = 4.0, fs = 6.6, lh = 7.4;
+      // Supersample the cached card so the terminal text stays crisp once the
+      // town zoom and HiDPI factor (devicePixelRatio × zoom) scale it up. The
+      // factor is quantized to ½-steps so smooth zooming re-rasterizes rarely.
+      const s = Math.min(8, Math.max(1, Math.round((this.dpr * this.cam.z) * 2) / 2));
 
       // position: centered in front of the desk, below the desktop
       const cx = mx + 7;
@@ -1797,13 +1874,14 @@
 
       // Cache the text and HUD panel on an offscreen canvas; only redraw when preview text changes!
       let cached = this.previewCache.get(cacheKey);
-      if (!cached || cached.raw !== preview) {
+      if (!cached || cached.raw !== preview || cached.s !== s) {
         const lines = preview.split('\n').map((l) => l.replace(/\s+$/, '')).filter((l) => l.length > 0);
         const maxChars = Math.floor((W - pad * 2) / (fs * 0.6));
 
         const off = document.createElement('canvas');
-        off.width = W; off.height = H;
+        off.width = Math.round(W * s); off.height = Math.round(H * s);
         const octx = off.getContext('2d');
+        octx.scale(s, s);
 
         // Dark translucent panel
         octx.fillStyle = 'rgba(8, 16, 28, 0.94)';
@@ -1849,13 +1927,17 @@
           octx.fillText(txt, pad, pad + 10.5 + i * lh);
         });
 
-        cached = { raw: preview, canvas: off };
+        cached = { raw: preview, s, canvas: off };
         this.previewCache.set(cacheKey, cached);
       }
 
-      // Blit cached holographic tactical display screen
+      // Blit cached holographic tactical display screen (downsample the
+      // supersampled card back to its world rect; smoothing on for the
+      // downsample so the packed glyphs don't alias).
       ctx.globalAlpha = holoAlpha;
-      ctx.drawImage(cached.canvas, projX, projY);
+      ctx.imageSmoothingEnabled = true;
+      ctx.drawImage(cached.canvas, projX, projY, W, H);
+      ctx.imageSmoothingEnabled = false;
       ctx.globalAlpha = 1;
 
       // Moving holographic scanning beam drifting down the display (stepped at 10 FPS)

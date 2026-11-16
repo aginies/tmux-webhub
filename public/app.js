@@ -896,6 +896,8 @@ if (window.TownView) {
     },
     // click host name: toggle polling on/off in config.json
     toggleHost: (host) => toggleHost(host),
+    // click a desk's astronaut: propose renaming that session
+    rename: (k) => openRename(k),
   });
   window.__townview = townView; // debug handle
   view = localStorage.getItem('pc.view') || (innerWidth < 640 ? 'list' : 'town');
