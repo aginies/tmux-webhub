@@ -1,15 +1,22 @@
 # tmux-webhub
 
-Web dashboard for **tmux** sessions on one or more hosts. Browse every session
-grouped by host, click to attach, type, resize — the session keeps running in
-tmux when you detach. New sessions run whatever `cmd` is set to (default `pi`);
-existing ones attach to whatever is already running in them — pi, bash, a build,
-anything.
+Web dashboard for **tmux** sessions on one or more hosts. The default view is
+an interactive **space station** — one starship per host, one desk per session:
+click a desk to attach, type, resize — the session keeps running in tmux when
+you detach. A plain **list** view is one click away. New sessions run whatever
+`cmd` is set to (default `pi`); existing ones attach to whatever is already
+running in them — pi, bash, a build, anything.
 
-![tmux-webhub demo](https://raw.githubusercontent.com/aginies/tmux-webhub/master/demo.gif)
+![tmux-webhub demo](https://raw.githubusercontent.com/aginies/tmux-webhub/master/demo.mp4)
 
 ![tmux-webhub main dashboard](images/main.png)
 
+- **Space station view (default)** — every host is a starship office and every
+  session a desk with a live holographic projection of its output. Click the
+  projection to attach, the astronaut to rename, a building to zoom in;
+  wheel/pinch to zoom, drag to pan. Imperial guards stand at the entrances and
+  wave on each poll, an EVA repair crew shuttles in to patch hulls, idle agents
+  take breaks, and a host that goes offline retracts its office canopy.
 - **Two-factor + token auth** — TLS by default; one access token gates the
   page, the API and the WebSocket; optional TOTP two-factor (scan a QR at first
   login) — from then on every login needs token + code, and wrong attempts are
@@ -36,6 +43,36 @@ anything.
   settled pi is never shown as active just because its TUI redrew.
 - **Network readout** — the header shows live bandwidth usage (5 s average), or
   is off entirely.
+
+## Space view (default)
+
+The main page is an interactive space station — the art is herdr-world's town,
+re-skinned (MIT, see [LICENSES/herdr-world-MIT.txt](LICENSES/herdr-world-MIT.txt)).
+One starship office per host, one desk per tmux session, laid out in rows that
+fill the viewport. The **List** button in the header switches to the plain
+session list; both show the same live data.
+
+- **Attach** — click a desk's holographic projection (the session's live
+  output) and a floating terminal opens on it. Type, resize, scroll the
+  scrollback — it's a full terminal. Close the window and the session keeps
+  running in tmux.
+- **Rename** — click the astronaut seated at a desk to rename that session
+  (tmux `rename-session`).
+- **Navigate** — click a building to zoom into it, wheel or pinch to zoom, drag
+  to pan. The **+ / − / All** controls zoom about the view and fit the whole
+  fleet.
+- **Floating terminal** — drag the title bar to move it, the corner handle to
+  resize, double-click the title bar (or **⛶**) for fullscreen. **⤢ Split**
+  attaches a second session side by side in the same window.
+- **It's alive** — imperial security guards stand at each office entrance and
+  give a wave on every poll (their visor colour cycles); an EVA repair crew
+  arrives by shuttle and welds patches onto a hull; idle agents leave their
+  desks to nap, drink, eat, or play ping-pong; a killed session walks out to
+  the shuttle and departs. When a host goes offline its office canopy retracts
+  and it redeploys on reconnect. Distant starship traffic (Falcon, X-Wing,
+  Enterprise) crosses the sky.
+
+The scene honours `prefers-reduced-motion` — it stills when the OS asks for it.
 
 ## Install
 
@@ -222,6 +259,9 @@ atomic and JSON-validated, so a broken file can never be saved.
 - **Token** — always masked; typing a new value replaces it.
 - **Two-factor** — shows the enrollment state; disable with a fresh 6-digit
   code.
+- **Theme** — Space (default), classic dark, light, or high contrast. Browser
+  only (stored in `localStorage`), applies to the terminal palette and the scene
+  skin.
 - **Log out** — ends this browser's session (with 2FA: deleted server-side).
 
 The host list and per-host `cmd` apply immediately; server settings (`port`,
