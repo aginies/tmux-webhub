@@ -792,9 +792,12 @@ async function refresh() {
   } catch {
     netFails++;
     if (townView) townView.connected = false;
+    // one failed poll is normal (a server restart, a Wi-Fi blip) — stay silent so a
+    // quick blip doesn't flash a scary banner over perfectly good data; two in a row
+    // means the server is actually gone
     setConnBanner(netFails >= 2
       ? `⚠ server unreachable (${netFails} failed polls) — showing stale data`
-      : '⚠ reconnecting…');
+      : null);
   } finally {
     refreshing = false;
   }

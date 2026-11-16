@@ -115,6 +115,10 @@ const BUF_4MB = 4 * 1024 * 1024;   // maxBuffer: list-sessions / runOn default
 // freeze the UI). Restart-scoped like the other server settings.
 const POLL_MS = Math.min(60000, Math.max(1000, parseInt(CONFIG.pollMs, 10) || 5000));
 const ACTIVE_WINDOW_MS = 2 * POLL_MS; // a session is "active" if it produced output within this window
+// an OFFLINE host (ssh failed) is not re-polled every cycle: a dead host stays dead
+// for minutes, and every check costs its full ConnectTimeout (~2 s) — retry at most
+// once per this interval. Any host that answers (ok/slow) is polled every cycle.
+const OFFLINE_RETRY_MS = 30000;
 // bandwidth readout (header ↓/↑ + /api/sessions "net"): config "netDisplay"
 // (default on). When off the socket hooks aren't attached at all — nothing is counted.
 const NET_DISPLAY = CONFIG.netDisplay !== false;
@@ -254,6 +258,7 @@ function runOn(host, args, timeoutMs = CMD_TIMEOUT_MS, maxBuffer = BUF_4MB, sshO
 // __NOW__ line carrying the host clock. It exits with tmux's own status so the
 // no-server / offline detection below is unchanged. (The \t below are REAL tabs.)
 const LIST_SH = `now=$(date +%s)
+_prevWList=$1
 out=$(tmux list-sessions -F '#{session_name}\t#{session_attached}\t#{pane_current_path}\t#{window_activity}\t#{pane_current_command}')
 st=$?
 [ "$st" -eq 0 ] || printf '%s\\n' "$out" >&2
@@ -261,7 +266,7 @@ if [ -n "$out" ]; then
   printf '%s\\n' "$out" | while IFS='\t' read -r n a c w cmd; do
     pe=''
     # tiny live preview: the pane's last 6 lines, base64 (one token, no tabs).
-    # $1 carries the previous poll's window_activity per session ("name:w" tokens):
+    # $_prevWList carries the previous poll's window_activity per session ("name:w" tokens):
     # window_activity unchanged ⇒ no output since the last poll ⇒ the pane cannot
     # have changed ⇒ emit the sentinel and let Node reuse the cached capture (the
     # __CACHED__ trick above) — no capture-pane/base64 forks while the window is idle.
@@ -272,12 +277,12 @@ if [ -n "$out" ]; then
     _if=$IFS
     IFS='
 '
-    for tok in $1; do
+    for tok in $_prevWList; do
       case $tok in "$n":*) prevw=\${tok#*:} ;;
     esac
     done
     IFS=$_if
-    [ -n "$prevw" ] && [ "$prevw" = "$w" ] || cap=$(tmux capture-pane -p -t "$n" -S -6 2>/dev/null | base64 | tr -d '\\n')
+    [ -n "$prevw" ] && [ "$prevw" = "$w" ] || cap=$(tmux capture-pane -p -t "=$n:" -S -6 2>/dev/null | base64 | tr -d '\\n')
     case "$cmd" in
       pi|pi-bolt)
         # a session-file append always coincides with window output, so a stale window
@@ -293,7 +298,7 @@ if [ -n "$out" ]; then
 '
           set -- $(ls -t "$d"/*.jsonl 2>/dev/null)
           IFS=$_if
-          [ -n "$1" ] && pe=$(tail -n1 "$1")
+          [ -n "$1" ] && pe=$(tail -n1 "$1" | tr '\t' ' ')
         else
           pe='__CACHED__'
         fi
@@ -462,14 +467,24 @@ const hasClients = () => wsClients > 0 || Date.now() - lastSessionsGet < CLIENT_
 let hostsCache = null;    // { hosts: [ { at, name, state, sessions, ...} ], configError } — per-host `at`
 let hostsInflight = null; // shared promise while a poll is running
 const invalidatedHosts = new Set();
-function refreshHosts() {
+const hostBackoff = new Map(); // hostName → nextRetryAt (ms epoch): offline hosts retry at most once per OFFLINE_RETRY_MS
+// Full cache reset (the host LIST itself may have changed): also drop the offline
+// backoff — the edit may have fixed the very host that was backing off
+function resetHostCache() { hostsCache = null; hostBackoff.clear(); }
+function refreshHosts(force = false) {
   if (hostsInflight) return hostsInflight;
-  if (!hasClients()) return Promise.resolve(hostsCache ? hostsCache.hosts : null);
+  if (!force && !hasClients()) return Promise.resolve(hostsCache ? hostsCache.hosts : null);
   const now = Date.now();
   const wanted = loadHosts();
   const cached = new Map((hostsCache ? hostsCache.hosts : []).map((h) => [h.name, h]));
-  // poll only the hosts whose entry is stale (or missing); fresh entries are kept
-  const stale = wanted.filter((h) => !cached.has(h.name) || now - cached.get(h.name).at > POLL_MS - 500);
+  // poll only the hosts whose entry is stale (or missing); fresh entries are kept.
+  // Offline hosts inside their backoff window are skipped — each check costs a full
+  // ConnectTimeout and a dead host stays dead for minutes
+  const stale = wanted.filter((h) => {
+    if (cached.has(h.name) && now - cached.get(h.name).at <= POLL_MS - 500) return false;
+    const retryAt = hostBackoff.get(h.name);
+    return !(retryAt && now < retryAt);
+  });
   if (!stale.length) {
     if (!hostsCache) hostsCache = { hosts: [], configError }; // empty host list, first call
     // the host list may have changed by direct file edit (not via PUT, which nulls the
@@ -480,6 +495,11 @@ function refreshHosts() {
   }
   hostsInflight = Promise.all(stale.map(listHostSessions))
     .then((fresh) => {
+      // offline hosts back off (OFFLINE_RETRY_MS); anything that answers is polled every cycle
+      for (const f of fresh) {
+        if (f.state === 'offline') hostBackoff.set(f.name, Date.now() + OFFLINE_RETRY_MS);
+        else hostBackoff.delete(f.name);
+      }
       const freshByName = new Map(fresh.map((h) => [h.name, h]));
       const hosts = wanted.map((h) => {
         const f = freshByName.get(h.name);
@@ -502,10 +522,14 @@ function refreshHosts() {
 // does not overwrite the invalidation.
 function invalidateHost(name) {
   invalidatedHosts.add(name);
+  hostBackoff.delete(name); // a deliberate invalidation (toggle/rename/kill) re-checks immediately
   if (hostsCache) hostsCache.hosts = hostsCache.hosts.map((h) => (h.name === name ? { ...h, at: 0 } : h));
 }
 setInterval(() => { refreshHosts().catch(() => {}); }, POLL_MS).unref();
-refreshHosts().catch(() => {});
+// prewarm: poll once at startup (force: no client is connected yet) so the first
+// page load after a restart gets an instant response instead of blocking on a full
+// cold poll (SSH handshakes + the offline hosts' ConnectTimeout)
+refreshHosts(true).catch(() => {});
 
 // ---------- tls: self-signed cert on first run (or user-provided via config) ----------
 function ensureCert() {
@@ -876,7 +900,12 @@ tmux new-session -d -s "$1" -c "$d" "$2"`;
 async function handleApiSessions(req, res, url, send) {
   if (req.method === 'GET') {
     lastSessionsGet = Date.now(); // this request IS a client → allow the poll below
-    await refreshHosts(); // fresh cache, or a coalesced poll if stale
+    // serve the cache instantly; only block when there is nothing to serve yet
+    // (first load before the startup prewarm finished). Stale entries refresh in the
+    // background — the client's next poll (5 s) picks up the fresh data, so a slow
+    // host (offline ConnectTimeout, cold SSH handshake) never holds up the page
+    if (!hostsCache) await refreshHosts();
+    else refreshHosts().catch(() => {});
     const snap = hostsCache || { hosts: [], configError: null };
     // strip the internal per-host `at` (would churn the client's change-detection snapshot)
     return send(200, { hosts: snap.hosts.map(({ at, ...h }) => h), pi: PI_CMD, pollMs: POLL_MS, configError: snap.configError, net: NET_DISPLAY ? netRate() : undefined });
@@ -1037,7 +1066,7 @@ async function handleApiConfig(req, res, send) {
     const werr = writeConfigAtomic(parsed);
     if (werr) return send(500, { error: 'cannot write config: ' + werr });
     configTouched(); // don't wait out the loadHosts stat gate
-    hostsCache = null; // the host LIST itself may have changed (added/removed/renamed) → full re-poll
+    resetHostCache(); // the host LIST itself may have changed (added/removed/renamed) → full re-poll
     return send(200, { ok: true });
   }
   return send(405, { error: 'method not allowed' });
@@ -1158,7 +1187,7 @@ async function handleAddHost(req, res, send) {
   const werr = writeConfigAtomic(cfg);
   if (werr) return send(500, { error: 'cannot write config: ' + werr });
   configTouched();
-  hostsCache = null;
+  resetHostCache();
   return send(200, { ok: true, host: name });
 }
 
@@ -1173,7 +1202,7 @@ async function handleRemoveHost(req, res, name, send) {
   const werr = writeConfigAtomic(cfg);
   if (werr) return send(500, { error: 'cannot write config: ' + werr });
   configTouched();
-  hostsCache = null;
+  resetHostCache();
   return send(200, { ok: true, host: name });
 }
 
@@ -1203,7 +1232,7 @@ async function handleUpdateHost(req, res, name, send) {
   const werr = writeConfigAtomic(cfg);
   if (werr) return send(500, { error: 'cannot write config: ' + werr });
   configTouched();
-  hostsCache = null;
+  resetHostCache();
   return send(200, { ok: true, host: name });
 }
 
