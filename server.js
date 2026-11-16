@@ -282,7 +282,7 @@ st=$?
 if [ -n "$out" ]; then
   printf '%s\\n' "$out" | while IFS='\t' read -r n a c w cmd; do
     pe=''
-    # tiny live preview: the pane's last 6 lines, base64 (one token, no tabs).
+    # tiny live preview: the pane's last 9 lines, base64 (one token, no tabs).
     # $_prevWList carries the previous poll's window_activity per session ("name:w" tokens):
     # window_activity unchanged ⇒ no output since the last poll ⇒ the pane cannot
     # have changed ⇒ emit the sentinel and let Node reuse the cached capture (the
@@ -299,7 +299,7 @@ if [ -n "$out" ]; then
     esac
     done
     IFS=$_if
-    [ -n "$prevw" ] && [ "$prevw" = "$w" ] || cap=$(tmux capture-pane -p -t "=$n:" -S -6 2>/dev/null | base64 | tr -d '\\n')
+    [ -n "$prevw" ] && [ "$prevw" = "$w" ] || cap=$(tmux capture-pane -p -t "=$n:" -S -9 2>/dev/null | base64 | tr -d '\\n')
     case "$cmd" in
       pi|pi-bolt)
         # a session-file append always coincides with window output, so a stale window
@@ -429,7 +429,7 @@ async function listHostSessions(host) {
       if (!hm) { hm = new Map(); piLastCache.set(host.name, hm); }
       hm.set(cacheKey, piEntry);
     } else if (hostMap) hostMap.delete(cacheKey);
-    // decode the tiny pane preview (base64 → the last 6 lines of the pane); the
+    // decode the tiny pane preview (base64 → the last 9 lines of the pane); the
     // __CAPCACHED__ sentinel reuses the capture from the last fresh poll (the window
     // produced no output since then, so the pane is unchanged)
     let preview = '';

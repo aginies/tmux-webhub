@@ -509,10 +509,15 @@
   /* touch devices: targets >= 44 px (style guide hit areas); 16 px inputs stop
      iOS auto-zoom on focus */
   @media (pointer: coarse) {
-    header button, #unhide { padding: 11px 12px; min-height: 44px; font-size: 13px; }
+    /* :not(.crename) — the chip's ✎ button is also a header <button>; the 44 px
+       touch sizing used to leak into it and inflate every session chip */
+    header button:not(.crename), #unhide { padding: 11px 12px; min-height: 44px; font-size: 13px; }
     #t-detach { padding: 8px 12px; min-height: 40px; font-size: 13px; }
     #term-ctl button { padding: 11px; min-height: 44px; font-size: 13px; white-space: nowrap; }
-    .chip { padding: 10px 12px; min-height: 44px; font-size: 13px; }
+    /* compact session chips: 44 px made the mobile host strip (and every list
+       row) unnecessarily tall — 34 px is still a comfortable tap target on a
+       chip that is at least a name wide */
+    .chip { padding: 6px 10px; min-height: 34px; font-size: 13px; }
     .modal .row button { padding: 10px 14px; min-height: 44px; }
     .dirlist div { padding: 10px 12px; }
     .modal input, .modal select { padding: 10px 11px; font-size: 16px; }

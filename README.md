@@ -58,6 +58,10 @@ session list; both show the same live data.
   running in tmux.
 - **Rename** — click the astronaut seated at a desk to rename that session
   (tmux `rename-session`).
+- **Hide offices** — each 📦 *Orbital Sessions* manifest row carries an eye +
+  slide switch that shows/hides that host's starship office on the map. Purely
+  visual: polling and sessions keep running, the row stays (dimmed) and its
+  session pills stay clickable — the choice persists in `localStorage`.
 - **Navigate** — click a building to zoom into it, wheel or pinch to zoom, drag
   to pan. The **+ / − / All** controls zoom about the view and fit the whole
   fleet.

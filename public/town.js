@@ -81,6 +81,13 @@
       this.guardLook = { isGuard: true, isImperial: true, visor: GUARD_VISOR_GOLD };
       this.guardBlinkUntil = 0; // timestamp (s) up to which the visors blink after a poll
       this.guards = []; // { x, y, hostKey } — one guard per office entrance
+      // Hosts hidden from the map by the ORBITAL SESSIONS eye toggle (visual
+      // only — polling, sessions and the manifest are untouched). Persisted.
+      this.hiddenHosts = new Set();
+      try {
+        const saved = JSON.parse(localStorage.getItem('pc.hiddenHosts') || '[]');
+        if (Array.isArray(saved)) for (const n of saved) if (typeof n === 'string') this.hiddenHosts.add(n);
+      } catch {}
       this.nav = new Map();  // hostKey -> TA.TownNavigation (A* through the building)
       this.previewCache = new Map(); // name -> { raw, canvas } offscreen cached tactical cards
       this.layoutCols = 0; // host buildings per row (0 = vendor auto; 2 in portrait)
@@ -499,6 +506,25 @@
       return !h || h.enabled === false || h.state === 'offline' || !!h.error;
     }
 
+    isHostHidden(name) {
+      return this.hiddenHosts.has(name);
+    }
+
+    // The eye + slide switch of an ORBITAL SESSIONS row: show/hide that host's
+    // office on the map. Visual only — polling and sessions keep running, the
+    // row stays in the manifest (dimmed) so it can be brought back.
+    toggleHostVisible(name) {
+      if (this.hiddenHosts.has(name)) this.hiddenHosts.delete(name);
+      else this.hiddenHosts.add(name);
+      try { localStorage.setItem('pc.hiddenHosts', JSON.stringify([...this.hiddenHosts])); } catch {}
+      if (this.hosts && this.hosts.length) {
+        this.buildTown(this.hosts);
+        this.updateStorageShipLayout();
+        this.initialCamera();
+      }
+      this.needsRedraw = true;
+    }
+
     // How many host offices per row. One office per ~280px of viewport width,
     // clamped to 1..5 (and by the number of hosts), so wide windows fit more
     // per row instead of being capped at 2.
@@ -550,9 +576,13 @@
 
     buildTown(hosts) {
       if (!hosts.length) { this.town = null; return; }
+      // Hosts hidden by the ORBITAL SESSIONS eye toggle stay out of the map
+      // layout; the others reflow (an all-hidden town is just the citadel +
+      // the storage ship, and the manifest remains the way back).
+      const visible = this.hiddenHosts.size ? hosts.filter((h) => !this.hiddenHosts.has(h.name)) : hosts;
       const input = {
-        hosts: hosts.map((h, i) => ({ key: h.name, displayOrder: i })),
-        rooms: hosts.map((h, i) => ({
+        hosts: visible.map((h, i) => ({ key: h.name, displayOrder: i })),
+        rooms: visible.map((h, i) => ({
           key: 'main', hostKey: h.name, order: i,
           deskKeys: (h.sessions || []).map((s) => s.name),
           deskSeats: (h.sessions || []).map(() => 1),
@@ -588,7 +618,7 @@
       // landscape + town center, depth-sorted by feet y
       const items = [];
       const center = layout.center;
-      items.push([(center.y + center.h) * TT, () => gg.drawImage(TA.paintTownCenter(center.w), center.x * TT, center.y * TT)]);
+      items.push([(center.y + center.h) * TT, () => this.bakeCitadel(gg, center)]);
       items.sort((a, b) => a[0] - b[0]).forEach((i) => i[1]());
 
       // Segmented glowing cyan transit guideline on the shuttle's road (at the
@@ -1133,6 +1163,134 @@
       return big;
     }
 
+    // The command citadel (town center): the vendor pixel-art body plus a
+    // night-time treatment, all baked into the ground layer (free per frame):
+    //   1. a warm shape-following glow behind the building
+    //   2. a lit forecourt light pool on the plaza in front
+    //   3. the body itself
+    //   4. a subtle vertical depth gradient (masked to the silhouette)
+    //   5. a faint mirrored reflection on the plaza below the base
+    //   6. a warm bloom over the lit entrance + main windows
+    // The clock hands move, so they're drawn live (drawCitadelClock).
+    bakeCitadel(gg, center) {
+      const body = TA.paintTownCenter(center.w); // memoized by the vendor
+      const bw = body.width, bh = body.height;   // center.w*16 x 240
+      const x = center.x * TT, y = center.y * TT; // body top-left (tile units)
+      const cx = x + bw / 2;
+      const baseY = y + 228; // bottom of the forecourt steps (the ground line)
+
+      // 1) Warm shape-following glow behind the building (blurred + brightened).
+      const glow = document.createElement('canvas');
+      glow.width = bw + 28; glow.height = bh + 28;
+      const gc = glow.getContext('2d');
+      const canFilter = typeof gc.filter === 'string';
+      if (canFilter) gc.filter = 'blur(7px) brightness(1.5) saturate(1.15)';
+      gc.drawImage(body, 14, 14);
+      gg.save();
+      gg.globalCompositeOperation = 'lighter';
+      gg.globalAlpha = canFilter ? 0.5 : 0.22;
+      gg.drawImage(glow, x - 14, y - 14);
+      gg.restore();
+
+      // 2) Lit forecourt light pool on the plaza in front of the base.
+      gg.save();
+      gg.globalCompositeOperation = 'lighter';
+      const pool = gg.createRadialGradient(cx, baseY, 4, cx, baseY, bw * 0.6);
+      pool.addColorStop(0, 'rgba(255, 214, 130, 0.30)');
+      pool.addColorStop(0.5, 'rgba(255, 190, 100, 0.12)');
+      pool.addColorStop(1, 'rgba(255, 170, 80, 0)');
+      gg.fillStyle = pool;
+      gg.beginPath();
+      gg.ellipse(cx, baseY, bw * 0.6, 24, 0, 0, Math.PI * 2);
+      gg.fill();
+      gg.restore();
+
+      // 3) The body.
+      gg.drawImage(body, x, y);
+
+      // 4) Subtle vertical depth, masked to the silhouette (darker toward the base).
+      const dc = document.createElement('canvas');
+      dc.width = bw; dc.height = bh;
+      const dctx = dc.getContext('2d');
+      dctx.drawImage(body, 0, 0);
+      dctx.globalCompositeOperation = 'source-in';
+      const depth = dctx.createLinearGradient(0, 60, 0, 228);
+      depth.addColorStop(0, 'rgba(0,0,0,0)');
+      depth.addColorStop(1, 'rgba(12, 10, 24, 0.30)');
+      dctx.fillStyle = depth;
+      dctx.fillRect(0, 0, bw, bh);
+      gg.drawImage(dc, x, y);
+
+      // 5) Faint mirrored reflection on the plaza below the base (temp-canvas fade).
+      const reflH = 72;
+      const refl = document.createElement('canvas');
+      refl.width = bw; refl.height = reflH;
+      const rc = refl.getContext('2d');
+      rc.imageSmoothingEnabled = false;
+      rc.save(); rc.translate(0, 228); rc.scale(1, -1);
+      rc.drawImage(body, 0, 0, bw, 228, 0, 0, bw, 228);
+      rc.restore();
+      rc.globalCompositeOperation = 'destination-in';
+      const fg = rc.createLinearGradient(0, 0, 0, reflH);
+      fg.addColorStop(0, 'rgba(255,255,255,0.5)');
+      fg.addColorStop(1, 'rgba(255,255,255,0)');
+      rc.fillStyle = fg; rc.fillRect(0, 0, bw, reflH);
+      gg.save();
+      gg.globalCompositeOperation = 'lighter';
+      gg.globalAlpha = 0.5;
+      gg.drawImage(refl, x, baseY);
+      gg.restore();
+
+      // 6) Warm bloom over the lit entrance + main windows (lower centre).
+      gg.save();
+      gg.globalCompositeOperation = 'lighter';
+      const bloom = gg.createRadialGradient(cx, y + 175, 4, cx, y + 175, 62);
+      bloom.addColorStop(0, 'rgba(255, 200, 110, 0.20)');
+      bloom.addColorStop(1, 'rgba(255, 180, 90, 0)');
+      gg.fillStyle = bloom;
+      gg.fillRect(cx - 62, y + 113, 124, 124);
+      gg.restore();
+    }
+
+    // The citadel's clock tower runs on live time: a fresh face + hands drawn
+    // over the vendor's static clock each frame (the body is baked, but the
+    // hands move). Hour + minute only — calm, and fine under reduced motion.
+    drawCitadelClock(ctx) {
+      const c = this.town.layout.center;
+      const cx = (c.x + c.w / 2) * TT; // clock centre x (world)
+      const cy = c.y * TT + 82;        // clock centre y (world) — vendor bakes it at body-y 82
+      const R = 13;                    // rim radius (a hair over the vendor's 12, to fully cover it)
+      const now = new Date();
+      const min = now.getMinutes() + now.getSeconds() / 60;
+      const hr = (now.getHours() % 12) + min / 60;
+
+      // Face + rim (opaque, covers the vendor's static clock exactly).
+      ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.fillStyle = '#a8862e'; ctx.fill();
+      ctx.beginPath(); ctx.arc(cx, cy, R - 2.5, 0, Math.PI * 2); ctx.fillStyle = '#fbf6e8'; ctx.fill();
+      // Ticks (12, the quarters longer).
+      ctx.strokeStyle = '#1c1722'; ctx.lineCap = 'round';
+      for (let i = 0; i < 12; i++) {
+        const a = i / 12 * Math.PI * 2, r1 = R - 2.5, r2 = i % 3 === 0 ? R - 5.5 : R - 4;
+        ctx.lineWidth = i % 3 === 0 ? 1.6 : 1;
+        ctx.beginPath();
+        ctx.moveTo(cx + Math.cos(a) * r1, cy + Math.sin(a) * r1);
+        ctx.lineTo(cx + Math.cos(a) * r2, cy + Math.sin(a) * r2);
+        ctx.stroke();
+      }
+      // Hands: 12 o'clock at the top (angle -PI/2).
+      const hand = (ang, len, w) => {
+        ctx.strokeStyle = '#1c1722'; ctx.lineWidth = w;
+        ctx.beginPath();
+        ctx.moveTo(cx, cy);
+        ctx.lineTo(cx + Math.cos(ang) * len, cy + Math.sin(ang) * len);
+        ctx.stroke();
+      };
+      hand(hr / 12 * Math.PI * 2 - Math.PI / 2, R - 6.5, 2.2); // hour
+      hand(min / 60 * Math.PI * 2 - Math.PI / 2, R - 3.5, 1.5); // minute
+      // Center pin.
+      ctx.beginPath(); ctx.arc(cx, cy, 1.8, 0, Math.PI * 2); ctx.fillStyle = '#a8862e'; ctx.fill();
+    }
+
     buildWalk(b, waypoints) {
       // A* between consecutive waypoints where the grid allows it (the film's
       // TownNavigation); a straight segment where it doesn't (inside a cell)
@@ -1573,6 +1731,14 @@
       // Check storage ship manifest session pills or host items or starship hull
       if (this.town && this.town.storageShip) {
         const s = this.town.storageShip;
+        if (s.visItems) {
+          for (const item of s.visItems) {
+            if (wx >= item.x && wx <= item.x + item.w && wy >= item.y && wy <= item.y + item.h) {
+              this.toggleHostVisible(item.host);
+              return;
+            }
+          }
+        }
         if (s.items) {
           for (const item of s.items) {
             if (wx >= item.x && wx <= item.x + item.w && wy >= item.y && wy <= item.y + item.h) {
@@ -1620,6 +1786,14 @@
       // Check storage ship manifest session pills or starship hull
       if (this.town && this.town.storageShip) {
         const s = this.town.storageShip;
+        if (s.visItems) {
+          for (const item of s.visItems) {
+            if (wx >= item.x && wx <= item.x + item.w && wy >= item.y && wy <= item.y + item.h) {
+              this.setHover({ type: 'host-vis', host: item.host }, e);
+              return;
+            }
+          }
+        }
         if (s.items) {
           for (const item of s.items) {
             if (wx >= item.x && wx <= item.x + item.w && wy >= item.y && wy <= item.y + item.h) {
@@ -1675,6 +1849,14 @@
           const st = s ? (s.activity ? 'active' : 'idle') : '—';
           tip.innerHTML = '<b></b><span class="dim"> · ' + hover.host + ' · ' + st + ' · click to attach</span>';
           tip.firstChild.textContent = hover.key.split(':').pop();
+        } else if (hover.type === 'host-vis') {
+          const hid = this.isHostHidden(hover.host);
+          tip.innerHTML = '<b></b><span class="dim"> · ' + (hid ? 'hidden — click to show it on the map' : 'shown on the map — click to hide it') + '</span>';
+          tip.firstChild.textContent = hover.host;
+        } else if (hover.type === 'host-sign') {
+          // (also fixes a stale fall-through: host-sign hovers have no .b)
+          tip.innerHTML = '<b></b><span class="dim"> · click to toggle polling</span>';
+          tip.firstChild.textContent = hover.host;
         } else if (hover.type === 'storage-ship') {
           tip.innerHTML = '<b>📦 Orbital Sessions</b><span class="dim"> · click to zoom & focus</span>';
         } else if (hover.type === 'plus') {
@@ -1701,6 +1883,8 @@
       if (hover.type === 'pod') return 'pod:' + hover.key;
       if (hover.type === 'agent') return 'agent:' + hover.key;
       if (hover.type === 'manifest-session') return 'ms:' + hover.key;
+      if (hover.type === 'host-vis') return 'vis:' + hover.host;
+      if (hover.type === 'host-sign') return 'hs:' + hover.host;
       if (hover.type === 'storage-ship') return 'storage-ship';
       if (hover.type === 'plus') return 'plus:' + hover.host;
       if (hover.type === 'center') return 'center';
@@ -1847,6 +2031,9 @@
           this.drawRepairCrew(ctx, t);
         }
         ctx.drawImage(T.base, worldLeft * S, worldTop * S, sw * S, sh * S, worldLeft - T.M, worldTop - T.M, sw, sh);
+        // The citadel's clock tower runs on live time — its hands are drawn over
+        // the baked static clock each frame (the body itself is baked).
+        this.drawCitadelClock(ctx);
       }
 
       // dynamic desk layer, depth-sorted (pods and the moving agents together)
@@ -2073,7 +2260,7 @@
     // with a glowing radiant light cone shooting down from the console table.
     drawPreview(mx, Y, preview, cacheKey, sessionName, active = false, t = performance.now() / 1000) {
       const { ctx } = this;
-      const W = 108, H = 54, pad = 4.0, fs = 6.6, lh = 7.4;
+      const W = 108, H = 54, pad = 3.0, fs = 5.2, lh = 5.8;
       // Supersample the cached card so the terminal text stays crisp once the
       // town zoom and HiDPI factor (devicePixelRatio × zoom) scale it up. The
       // factor is quantized to ½-steps so smooth zooming re-rasterizes rarely.
@@ -2136,25 +2323,26 @@
         }
 
         // Header bar with session name: ensures every preview card clearly shows its identity
-        octx.font = '700 7px "JetBrains Mono", ui-monospace, Menlo, monospace';
+        octx.font = '700 6px "JetBrains Mono", ui-monospace, Menlo, monospace';
         octx.textBaseline = 'top';
         octx.fillStyle = active ? '#00e5ff' : '#38bdf8';
         octx.fillText('▶ ' + (sessionName || cacheKey.split(':').pop()), pad, pad);
 
         octx.strokeStyle = 'rgba(0, 229, 255, 0.25)';
         octx.beginPath();
-        octx.moveTo(pad, pad + 8.5);
-        octx.lineTo(W - pad, pad + 8.5);
+        octx.moveTo(pad, pad + 7.5);
+        octx.lineTo(W - pad, pad + 7.5);
         octx.stroke();
 
-        // Terminal text lines (last 5 lines below the header)
+        // Terminal text lines (the last 7 lines below the header — a denser
+        // 5.2px face fits ~80% more console context in the same card size)
         octx.font = '600 ' + fs + 'px "JetBrains Mono", ui-monospace, Menlo, monospace';
-        const shown = lines.slice(-5);
+        const shown = lines.slice(-7);
         shown.forEach((l, i) => {
           let txt = l.length > maxChars ? '…' + l.slice(-(maxChars - 1)) : l;
           const isPrompt = /^[$>\u276f#%]/.test(l.trim()) || /\$\s/.test(l);
           octx.fillStyle = isPrompt ? '#4ade80' : '#e0f2fe';
-          octx.fillText(txt, pad, pad + 10.5 + i * lh);
+          octx.fillText(txt, pad, pad + 9 + i * lh);
         });
 
         cached = { raw: preview, s, canvas: off };
@@ -2295,7 +2483,9 @@
       if (!this.town || !this.town.storageShip) return;
       const ship = this.town.storageShip;
       const { x, y, w, h } = ship;
-      const hosts = this.town.layout.buildings.map((b) => b.hostKey);
+      // Every configured host gets a manifest row — including the ones hidden
+      // from the map by the eye toggle (dimmed, but still the way back).
+      const hosts = (this.hosts || []).map((hh) => hh.name);
       const rowH = Math.floor((h - 44) / Math.max(1, hosts.length));
 
       const measureCtx = (this._measureCtx ||= document.createElement('canvas').getContext('2d'));
@@ -2304,11 +2494,24 @@
       const hostRows = [];
       const items = [];
       const hostItems = [];
+      const visItems = [];
 
       hosts.forEach((hKey, idx) => {
         const rowY = 36 + idx * rowH;
-        const hostItem = { host: hKey, x: x + 12, y: y + rowY + 2, w: 126, h: rowH - 6 };
+        // eye + slide switch, left of the status dot
+        const visItem = { host: hKey, x: x + 14, y: y + rowY + Math.round((rowH - 16) / 2), w: 42, h: 16 };
+        visItems.push(visItem);
+        // status dot + host name (click = toggle polling), right of the switch
+        const hostItem = { host: hKey, x: x + 58, y: y + rowY + 2, w: 88, h: rowH - 6 };
         hostItems.push(hostItem);
+
+        // ellipsise the callsign so it never runs into the session pills
+        let label = hKey.toUpperCase();
+        measureCtx.font = '700 13px "JetBrains Mono", monospace';
+        if (measureCtx.measureText(label).width > 68) {
+          while (label.length > 1 && measureCtx.measureText(label + '…').width > 68) label = label.slice(0, -1);
+          label += '…';
+        }
 
         const prefix = hKey + ':';
         const hostSessions = [];
@@ -2318,15 +2521,16 @@
 
         const pills = [];
         let pillX = 148;
+        measureCtx.font = '600 11.5px "JetBrains Mono", monospace'; // pill face
         if (hostSessions.length > 0) {
           for (const s of hostSessions) {
-            const label = s.name;
-            const tw = measureCtx.measureText(label).width;
+            const label2 = s.name;
+            const tw = measureCtx.measureText(label2).width;
             const pw = Math.round(tw + 18), ph = 20;
             const py = rowY + Math.round((rowH - ph) / 2) - 1;
             if (pillX + pw > w - 16) break;
 
-            const pill = { key: s.key, name: label, x: x + pillX, y: y + py, w: pw, h: ph, host: hKey };
+            const pill = { key: s.key, name: label2, x: x + pillX, y: y + py, w: pw, h: ph, host: hKey };
             pills.push(pill);
             items.push(pill);
             pillX += pw + 8;
@@ -2335,9 +2539,11 @@
 
         hostRows.push({
           hostKey: hKey,
+          nameLabel: label,
           rowY: y + rowY,
           rowH,
           hostItem,
+          visItem,
           pills,
           hasSessions: hostSessions.length > 0,
         });
@@ -2346,6 +2552,7 @@
       ship.hostRows = hostRows;
       ship.items = items;
       ship.hostItems = hostItems;
+      ship.visItems = visItems;
       ship.totalSessions = this.sessions.size;
     }
 
@@ -2380,11 +2587,19 @@
         const row = rows[idx];
         const rowY = row.rowY, rowH = row.rowH, hKey = row.hostKey;
         const off = this.hostOff(hKey);
+        const hidden = this.isHostHidden(hKey);
         const isHostHover = this.hover && this.hover.type === 'host-sign' && this.hover.host === hKey;
+        const isVisHover = this.hover && this.hover.type === 'host-vis' && this.hover.host === hKey;
 
         // Row background strip
         ctx.fillStyle = idx % 2 === 0 ? 'rgba(15, 23, 42, 0.65)' : 'rgba(10, 16, 28, 0.65)';
         ctx.fillRect(x + 10, rowY, w - 20, rowH - 2);
+
+        // hosts hidden from the map render dimmed (the eye toggle stays legible)
+        if (hidden) ctx.globalAlpha = 0.55;
+
+        // visibility slide switch + eye, left of the status dot
+        this.drawVisSwitch(row.visItem, hidden, isVisHover);
 
         // Host name hover highlight
         if (isHostHover) {
@@ -2398,12 +2613,12 @@
         // Host status dot & name
         ctx.fillStyle = off ? '#ef4444' : '#10b981';
         ctx.beginPath();
-        ctx.arc(x + 24, rowY + rowH / 2 - 1, 4.5, 0, Math.PI * 2);
+        ctx.arc(x + 64, rowY + rowH / 2 - 1, 4.5, 0, Math.PI * 2);
         ctx.fill();
 
         ctx.font = '700 13px "JetBrains Mono", monospace';
         ctx.fillStyle = off ? '#64748b' : isHostHover ? '#00e5ff' : '#38bdf8';
-        ctx.fillText(hKey.toUpperCase(), x + 36, rowY + rowH / 2 - 1);
+        ctx.fillText(row.nameLabel, x + 76, rowY + rowH / 2 - 1);
 
         if (!row.hasSessions) {
           ctx.font = 'italic 11px "JetBrains Mono", monospace';
@@ -2433,7 +2648,50 @@
             ctx.fillText(p.name, p.x + 13, p.y + p.h / 2);
           }
         }
+        ctx.globalAlpha = 1;
       }
+    }
+
+    // The per-host visibility control in an ORBITAL SESSIONS row: an eye icon
+    // plus a slide switch (knob right = shown on the map, knob left = hidden).
+    // Vector under the camera transform — crisp at any dpr/zoom, ~15 ops/row.
+    drawVisSwitch(v, hidden, hover) {
+      const { ctx } = this;
+      const cy = v.y + v.h / 2;
+
+      // eye icon (almond outline + pupil; slashed through when hidden)
+      const ex = v.x + 9;
+      ctx.strokeStyle = hidden ? '#64748b' : hover ? '#7dd3fc' : '#00e5ff';
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.moveTo(ex - 6, cy);
+      ctx.quadraticCurveTo(ex, cy - 5.5, ex + 6, cy);
+      ctx.quadraticCurveTo(ex, cy + 5.5, ex - 6, cy);
+      ctx.stroke();
+      ctx.fillStyle = hidden ? '#64748b' : '#00e5ff';
+      ctx.beginPath();
+      ctx.arc(ex, cy, 1.8, 0, Math.PI * 2);
+      ctx.fill();
+      if (hidden) {
+        ctx.beginPath();
+        ctx.moveTo(ex - 6.5, cy - 5);
+        ctx.lineTo(ex + 6.5, cy + 5);
+        ctx.stroke();
+      }
+
+      // slide track + knob
+      const tx = v.x + 19, tw = 22, th = 10, ty = cy - th / 2;
+      this.rr(tx, ty, tw, th, th / 2);
+      ctx.fillStyle = hidden ? 'rgba(100, 116, 139, 0.25)' : 'rgba(0, 229, 255, 0.25)';
+      ctx.fill();
+      ctx.strokeStyle = hidden ? 'rgba(100, 116, 139, 0.6)' : hover ? '#7dd3fc' : 'rgba(0, 229, 255, 0.7)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      const kx = hidden ? tx + th / 2 + 0.5 : tx + tw - th / 2 - 0.5;
+      ctx.fillStyle = hidden ? '#94a3b8' : '#00e5ff';
+      ctx.beginPath();
+      ctx.arc(kx, cy, th / 2 - 1.5, 0, Math.PI * 2);
+      ctx.fill();
     }
 
     // rounded-rect path (single radius or [tl, tr, br, bl])
