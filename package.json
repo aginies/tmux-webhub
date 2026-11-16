@@ -9,6 +9,7 @@
   },
   "files": [
     "server.js",
+    "setup.js",
     "public/",
     "pitux",
     "config.example.json",
@@ -42,7 +43,6 @@
   },
   "dependencies": {
     "node-pty": "^1.1.0",
-    "puppeteer": "^25.17.0",
     "ws": "^8.23.0"
   }
 }

@@ -92,11 +92,18 @@ Each host is `{ "name": …, "ssh"?: …, "cmd"?: …, "enabled"?: false }`.
 - Restart with new server settings: stop, edit `config.json` (or the ⚙ editor),
   start again. Server settings are read at startup; the host list (incl. per-host
   `cmd`) is live-reloaded.
-- Keep it alive without a terminal:
+- Keep it alive without a terminal — the easy way is the wizard, which detects
+  your install, creates the config (generated token, cert paths pinned to the
+  config dir) and writes a correct systemd **user** unit pointing at it:
+  ```sh
+  tmux-webhub setup          # --dry-run previews, --yes is non-interactive
+  ```
+  On an existing install it **migrates** the current config (token/hosts/2FA/cert)
+  instead of resetting it. Or a plain background process:
   ```sh
   setsid nohup node server.js >> tmux-webhub.log 2>&1 &
   ```
-  or with a systemd **user** unit (the repo ships `deploy/tmux-webhub.service`):
+  Or a systemd **user** unit by hand (the repo ships `deploy/tmux-webhub.service`):
   ```sh
   mkdir -p ~/.config/systemd/user
   cp deploy/tmux-webhub.service ~/.config/systemd/user/
@@ -106,6 +113,17 @@ Each host is `{ "name": …, "ssh"?: …, "cmd"?: …, "enabled"?: false }`.
   loginctl enable-linger $USER    # start at boot, survive logout
   journalctl --user -u tmux-webhub -f   # logs
   ```
+
+### Uninstall
+
+`tmux-webhub uninstall` removes the systemd user unit (stop + disable + delete),
+offers to disable linger, runs `npm uninstall -g tmux-webhub` (npm installs only)
+and removes the config dir `~/.tmux-webhub` (prompted — it holds the token, the
+TOTP 2FA secret and the TLS cert). `--yes` is non-interactive, `--keep-config`
+keeps the config dir. For a git checkout it prints the `rm -rf <checkout>` for
+you to run. By hand: `systemctl --user disable --now tmux-webhub &&
+rm ~/.config/systemd/user/tmux-webhub.service && systemctl --user daemon-reload`,
+then `npm uninstall -g tmux-webhub` and `rm -rf ~/.tmux-webhub`.
 
 ## Creating sessions
 

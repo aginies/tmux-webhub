@@ -12,6 +12,8 @@ the top-level [README.md](../README.md).
   `public/vendor/` — no build step, no CDN.
 - `pitux` is a thin bash helper that starts/attaches tmux sessions the daemon
   will discover.
+- A REST API (`/api/*`) for programmatic session and host management (create,
+  kill, resize, send keys) — see [API.md](API.md).
 
 ## Attaching: browser ⇄ tmux
 
