@@ -563,45 +563,46 @@
     // Space Background (pure transparent, allowing full-viewport animated cosmic sky & galaxies to shine through without any rectangular boundaries)
     paintTownGround: () => document.createElement('canvas'),
 
-    // Spaceship Cruiser hull polygon path
+    // Millennium Falcon-style hull silhouette: a rounded saucer deck with two
+    // forward mandibles, a starboard cockpit pod and a port radar dish.
     drawSpaceshipHullPath: (ctx, w, h) => {
       const cx = w / 2;
-      const noseW = Math.min(80, w * 0.22);
+      const bowY = 8;                         // saucer deck top rim
+      const mandW = Math.max(11, w * 0.06);   // bow prong width
+      const gap = Math.max(10, w * 0.09);     // half the dock notch width
       ctx.beginPath();
-      // 1. Forward Pointed Bow / Cockpit Nose
-      ctx.moveTo(cx, 2);
-      ctx.lineTo(cx + noseW, 26);
-      ctx.lineTo(w - 20, 68);
-      // 2. Forward Deflector Winglets
-      ctx.lineTo(w - 2, 105);
-      ctx.lineTo(w - 16, 135);
-      // 3. Tapered Mid-Hull Flanks
-      ctx.lineTo(w - 10, h * 0.52);
-      // 4. Swept-Back Stabilizer Wings
-      ctx.lineTo(w, h * 0.72);
-      ctx.lineTo(w - 4, h - 32);
-      // 5. Starboard Engine Nacelle
-      ctx.lineTo(w - 14, h - 2);
-      ctx.lineTo(w - 52, h - 2);
-      ctx.lineTo(w - 60, h - 16);
-      // 6. Center Rear Docking Bay / Thruster Cutout
-      ctx.lineTo(cx + 36, h - 16);
-      ctx.lineTo(cx + 28, h - 2);
-      ctx.lineTo(cx - 28, h - 2);
-      ctx.lineTo(cx - 36, h - 16);
-      // 7. Port Engine Nacelle
-      ctx.lineTo(60, h - 16);
-      ctx.lineTo(52, h - 2);
-      ctx.lineTo(14, h - 2);
-      ctx.lineTo(4, h - 32);
-      // 8. Port Stabilizer Wing
-      ctx.lineTo(0, h * 0.72);
-      ctx.lineTo(10, h * 0.52);
-      // 9. Port Deflector Winglets
-      ctx.lineTo(16, 135);
-      ctx.lineTo(2, 105);
-      ctx.lineTo(20, 68);
-      ctx.lineTo(cx - noseW, 26);
+
+      // Bow: forward mandibles with a docking notch between them
+      ctx.moveTo(cx - gap - mandW, bowY);
+      ctx.lineTo(cx - gap - mandW, 3);
+      ctx.lineTo(cx - gap, bowY);
+      ctx.lineTo(cx + gap, bowY);
+      ctx.lineTo(cx + gap, 3);
+      ctx.lineTo(cx + gap + mandW, bowY);
+
+      // Starboard flank with a cockpit-pod bump
+      ctx.lineTo(w - 18, bowY);
+      ctx.lineTo(w - 8, h * 0.34);
+      ctx.lineTo(w - 3, h * 0.42);
+      ctx.lineTo(w - 3, h * 0.62);
+      ctx.lineTo(w - 8, h * 0.66);
+      ctx.lineTo(w - 13, h - 24);
+
+      // Stern engine nacelles (port & starboard) with a centre dock cutout
+      ctx.lineTo(w - 13, h - 5);
+      ctx.lineTo(cx + 32, h - 5);
+      ctx.lineTo(cx + 22, h - 19);
+      ctx.lineTo(cx - 22, h - 19);
+      ctx.lineTo(cx - 32, h - 5);
+      ctx.lineTo(13, h - 5);
+      ctx.lineTo(13, h - 24);
+
+      // Port flank with a radar-dish bump
+      ctx.lineTo(8, h * 0.66);
+      ctx.lineTo(3, h * 0.62);
+      ctx.lineTo(3, h * 0.42);
+      ctx.lineTo(8, h * 0.34);
+      ctx.lineTo(18, bowY);
       ctx.closePath();
     },
 
@@ -640,17 +641,12 @@
         ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(X, y); ctx.stroke();
       }
 
-      // Forward Cockpit / Observation Bridge at the starship nose
+      // Bow docking bay between the forward mandibles
       const cx = X / 2;
-      ctx.fillStyle = '#111724';
-      ctx.beginPath();
-      ctx.moveTo(cx - 32, 52);
-      ctx.lineTo(cx, 10);
-      ctx.lineTo(cx + 32, 52);
-      ctx.closePath();
-      ctx.fill();
+      ctx.fillStyle = '#0b0f18';
+      ctx.fillRect(cx - 18, 14, 36, 12);
       ctx.fillStyle = '#00e5ff';
-      ctx.fillRect(cx - 20, 24, 40, 4); // Glowing cockpit panoramic viewport
+      ctx.fillRect(cx - 14, 18, 28, 2);
 
       // Top bulkhead neon strip
       ctx.fillStyle = '#2d374a';
@@ -750,6 +746,34 @@
       ctx.lineWidth = 1.5;
       ctx.stroke();
       ctx.restore();
+
+      // ---- Millennium Falcon surface details ----
+      // Radar dish (port flank): mast + round dish
+      ctx.fillStyle = '#94a3b8';
+      ctx.fillRect(7, Y * 0.44, 3, Y * 0.06);
+      ctx.fillStyle = '#334155';
+      ctx.beginPath();
+      ctx.arc(9, Y * 0.40, 8, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#cbd5e1';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      // Cockpit pod (starboard flank): body + glowing panoramic viewport
+      ctx.fillStyle = '#0f172a';
+      ctx.fillRect(X - 15, Y * 0.40, 9, Y * 0.20);
+      ctx.fillStyle = '#00e5ff';
+      ctx.fillRect(X - 12, Y * 0.45, 3, Y * 0.10);
+
+      // Concentric saucer ring lines (faint plate seams)
+      ctx.strokeStyle = 'rgba(0, 229, 255, 0.10)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.ellipse(X / 2, Y * 0.52, X * 0.46, Y * 0.36, 0, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.ellipse(X / 2, Y * 0.52, X * 0.30, Y * 0.22, 0, 0, Math.PI * 2);
+      ctx.stroke();
 
       return canvas;
     },
