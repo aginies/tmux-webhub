@@ -26,6 +26,7 @@
   const DESK_COLORS = Object.keys(TA.TOWN_DESK_COLORS);
   const REDUCED = matchMedia('(prefers-reduced-motion: reduce)').matches;
   const Z_MIN = 0.35, Z_MAX = 4;
+  const GUARD_VISOR_COLORS = ['#00e5ff', '#ef4444', '#f59e0b', '#a78bfa', '#34d399', '#f472b6']; // cycled per poll
 
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
   const hash = (s) => { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return Math.abs(h); };
@@ -62,8 +63,10 @@
       };
       // Imperial Station Security Guard: the obsidian (black) stormtrooper look
       // is drawn by the space-art.js `townCharacter` override when isGuard/isImperial is set.
-      this.guardLook = { isGuard: true, isImperial: true };
-      this.guards = []; // { x, y, minX, maxX, dir, off } — one patrol per office entry
+      this.guardLook = { isGuard: true, isImperial: true, visor: '#00e5ff' };
+      this.guardVisorIdx = 0;
+      this.guards = []; // { x, y, hostKey } — one guard per office entrance
+      this.guardWave = 0; // timestamp (s) guards keep waving hello (set on each poll)
       this.nav = new Map();  // hostKey -> TA.TownNavigation (A* through the building)
       this.previewCache = new Map(); // name -> { raw, canvas } offscreen cached tactical cards
       this.layoutCols = 0; // host buildings per row (0 = vendor auto; 2 in portrait)
@@ -426,6 +429,11 @@
 
     update(hosts, activeKey) {
       this.activeKey = activeKey;
+      // A poll (SSH sync of each host's tmux sessions) just happened → the
+      // guards raise a hand in greeting and cycle their visor colour.
+      this.guardWave = performance.now() / 1000 + 1.4;
+      this.guardLook.visor = GUARD_VISOR_COLORS[this.guardVisorIdx % GUARD_VISOR_COLORS.length];
+      this.guardVisorIdx++;
       const sessions = new Map();
       const sigHosts = [], sigRooms = [];
       for (const h of hosts) {
@@ -464,14 +472,14 @@
       return !h || h.enabled === false || h.state === 'offline' || !!h.error;
     }
 
-    // How many host offices to lay out per row. 0 = leave it to the vendor
-    // (one row for ≤4 hosts, a square-ish grid above that). A portrait
-    // viewport (taller than wide) wraps into two columns so the offices fill
-    // the height instead of a long horizontal strip.
+    // How many host offices per row. One office per ~280px of viewport width,
+    // clamped to 1..5 (and by the number of hosts), so wide windows fit more
+    // per row instead of being capped at 2.
     layoutColumns() {
-      const w = this.cv.clientWidth || 0, h = this.cv.clientHeight || 0;
-      if (!w || !h) return 0;
-      return h > w ? 2 : 0;
+      const n = (this.hosts || []).length;
+      const w = this.cv.clientWidth || 0;
+      if (!w || !n) return 0;
+      return Math.max(1, Math.min(5, n, Math.floor(w / 280)));
     }
 
     // Per-host deploy value (0 = retracted/offline → 1 = deployed/online),
@@ -495,32 +503,19 @@
       }
     }
 
-    // The reception guards patrol left ↔ right in front of each office entrance,
-    // very slowly — and stand still when their host is offline/disabled.
-    updateGuards(t) {
-      if (!this.guards) return;
-      const speed = 6; // px/s — a very slow patrol
-      for (const g of this.guards) {
-        if (this.hostOff(g.hostKey)) continue; // office down → guard stands still
-        const range = g.maxX - g.minX;
-        const half = range / speed; // seconds to walk one way
-        const phase = (t + g.off) % (2 * half);
-        if (phase < half) { g.x = g.minX + phase * speed; g.dir = 'right'; }
-        else { g.x = g.maxX - (phase - half) * speed; g.dir = 'left'; }
-      }
-    }
-
+    // A stationary station-security guard. On each poll it gives a brief
+    // "hello" wave (one arm raised), otherwise it stands at attention.
     drawGuard(g, t) {
       const { ctx } = this;
       const off = this.hostOff(g.hostKey);
-      const wf = off ? 0 : Math.floor(t * 9) % 4; // walk cycle only when active
-      const c = TA.townCharacter(this.guardLook, g.dir, wf, 'stand', false);
+      const waving = !off && t < this.guardWave;
+      const frame = waving ? Math.floor(t * 3) % 2 : 0; // gentle up/down arm wave
+      const c = TA.townCharacter(this.guardLook, 'down', frame, 'stand', false);
       const gs = 1.6; // taller guard (matches the previous seated scale)
       const w = c.width * gs, h = c.height * gs;
-      const bob = off ? 0 : (wf % 2 ? -1 : 0);
       ctx.fillStyle = 'rgba(0,0,0,.22)';
       ctx.fillRect(Math.round(g.x) - 5, Math.round(g.y) - 1, 10, 3);
-      ctx.drawImage(this.char2x(c), Math.round(g.x) - w / 2, Math.round(g.y) - h + 1 + bob, w, h);
+      ctx.drawImage(this.char2x(c), Math.round(g.x) - w / 2, Math.round(g.y) - h + 1, w, h);
     }
 
     /* ---------- building the static scene ---------- */
@@ -597,12 +592,12 @@
         const L = b.lounge;
         g.drawImage(sp.sofa, (L.x + 1) * TT - 1, (L.y + 1) * TT - 8);
         g.drawImage(sp.sofa, (L.x + 1) * TT - 1, (L.y + 3) * TT - 8); // second sofa, one below the other
-        g.drawImage(sp.coffee, (L.x + 7) * TT + 1, (L.y + 1) * TT - 10);
-        g.drawImage(sp.cooler, (L.x + 8) * TT + 2, (L.y + 1) * TT - 12);
-        if (sp.pingpong) g.drawImage(sp.pingpong, (L.x + 11) * TT, (L.y + 1) * TT - 8);
+        g.drawImage(sp.coffee, (L.x + 4) * TT + 1, (L.y + 1) * TT - 10);
+        g.drawImage(sp.cooler, (L.x + 5) * TT + 2, (L.y + 1) * TT - 12);
+        if (sp.pingpong) g.drawImage(sp.pingpong, (L.x + 7) * TT, (L.y + 1) * TT - 8);
         const cx = b.doorX * TT, cy = (b.counter.y + 1) * TT - 8;
         // The imperial guard patrols the office entrance, left ↔ right.
-        this.guards.push({ x: cx - 26, y: cy + 9, minX: cx - 26, maxX: cx + 26, dir: 'left', off: ((b.doorX * 0.731) % 4), hostKey: b.hostKey });
+        this.guards.push({ x: cx, y: cy + 9, hostKey: b.hostKey });
         // "+" new-session button right of the reception counter ("à l'accueil")
         b.plus = { x: cx + 44, y: cy - 3, s: 18 };
         g.drawImage(TA.paintTownFacade(b, theme), b.x * TT, (b.y + b.h) * TT);
@@ -719,6 +714,20 @@
       this._busVisible = isVisible;
     }
 
+    // A random exterior repair spot on an office hull, plus its weld point on
+    // the hull surface (so the laser flare lands on the ship, not in space).
+    repairSpot(b) {
+      const px = b.x * TT, py = b.y * TT;
+      const w = b.w * TT, h = b.h * TT;
+      const off = 14;                        // stand-off distance from the hull
+      const f = 0.25 + Math.random() * 0.5;  // 0.25..0.75 along an edge
+      const side = Math.floor(Math.random() * 4);
+      if (side === 0) return { x: px + f * w, y: py - off, wx: px + f * w, wy: py - 2 };          // top
+      if (side === 1) return { x: px + w + off, y: py + f * h, wx: px + w + 2, wy: py + f * h };  // right
+      if (side === 2) return { x: px + f * w, y: py + h + off, wx: px + f * w, wy: py + h + 2 };  // bottom
+      return { x: px - off, y: py + f * h, wx: px - 2, wy: py + f * h };                         // left
+    }
+
     // EVA Astronaut Repair Crew: arrive in the shuttle, repair all starship offices on the outside, and depart in the shuttle
     updateRepairCrew(t) {
       if (!this.bus || !this.town) return;
@@ -734,6 +743,8 @@
         if (isHalt && (t - crew.lastCycleTime > 10)) {
           crew.state = 'repairing';
           crew.shipIndex = 0;
+          crew.targetShip = -1;   // force fresh random repair spots
+          crew.t1 = null; crew.t2 = null;
           crew.shipStartTime = t;
           crew.weldingStart = 0;
           crew.a1.x = stopX - 14; crew.a1.y = stopY;
@@ -769,11 +780,15 @@
           return;
         }
         const b = buildings[crew.shipIndex];
-        const t1x = b.x * TT - 14, t1y = (b.y + b.h * 0.45) * TT;
-        const t2x = (b.x + b.w) * TT + 14, t2y = (b.y + b.h * 0.55) * TT;
+        // pick fresh random repair spots once per office
+        if (!crew.t1 || crew.targetShip !== crew.shipIndex) {
+          crew.targetShip = crew.shipIndex;
+          crew.t1 = this.repairSpot(b);
+          crew.t2 = this.repairSpot(b);
+        }
 
-        const arr1 = moveAstronaut(crew.a1, t1x, t1y);
-        const arr2 = moveAstronaut(crew.a2, t2x, t2y);
+        const arr1 = moveAstronaut(crew.a1, crew.t1.x, crew.t1.y);
+        const arr2 = moveAstronaut(crew.a2, crew.t2.x, crew.t2.y);
 
         if (arr1 && arr2) {
           if (!crew.weldingStart) crew.weldingStart = t;
@@ -865,11 +880,9 @@
       };
 
       let w1 = null, w2 = null;
-      if (currentShip && crew.weldingStart) {
-        const t1x = currentShip.x * TT - 14, t1y = (currentShip.y + currentShip.h * 0.45) * TT;
-        const t2x = (currentShip.x + currentShip.w) * TT + 14, t2y = (currentShip.y + currentShip.h * 0.55) * TT;
-        if (Math.hypot(crew.a1.x - t1x, crew.a1.y - t1y) < 5) w1 = { x: t1x + 8, y: t1y };
-        if (Math.hypot(crew.a2.x - t2x, crew.a2.y - t2y) < 5) w2 = { x: t2x - 8, y: t2y };
+      if (currentShip && crew.weldingStart && crew.t1 && crew.t2) {
+        if (Math.hypot(crew.a1.x - crew.t1.x, crew.a1.y - crew.t1.y) < 5) w1 = { x: crew.t1.wx, y: crew.t1.wy };
+        if (Math.hypot(crew.a2.x - crew.t2.x, crew.a2.y - crew.t2.y) < 5) w2 = { x: crew.t2.wx, y: crew.t2.wy };
       }
 
       drawWorker(crew.a1, w1);
@@ -922,9 +935,9 @@
     coolerSpots(b) {
       const L = b.lounge;
       return [
-        { x: (L.x + 8) * TT + 2, y: (L.y + 1) * TT + 4, dir: 'up' },
-        { x: (L.x + 8) * TT + 18, y: (L.y + 1) * TT + 4, dir: 'left' },
-        { x: (L.x + 8) * TT - 14, y: (L.y + 1) * TT + 4, dir: 'right' },
+        { x: (L.x + 5) * TT + 2, y: (L.y + 1) * TT + 4, dir: 'up' },
+        { x: (L.x + 5) * TT + 18, y: (L.y + 1) * TT + 4, dir: 'left' },
+        { x: (L.x + 5) * TT - 14, y: (L.y + 1) * TT + 4, dir: 'right' },
       ];
     }
 
@@ -932,8 +945,8 @@
     foodSpots(b) {
       const L = b.lounge;
       return [
-        { x: (L.x + 7) * TT - 6, y: (L.y + 1) * TT + 4, dir: 'right' },
-        { x: (L.x + 7) * TT + 18, y: (L.y + 1) * TT + 4, dir: 'left' },
+        { x: (L.x + 4) * TT - 6, y: (L.y + 1) * TT + 4, dir: 'right' },
+        { x: (L.x + 4) * TT + 18, y: (L.y + 1) * TT + 4, dir: 'left' },
       ];
     }
 
@@ -954,7 +967,7 @@
     // two idle workers square off at a ping-pong table in the lounge
     pingpongSpots(b) {
       const L = b.lounge;
-      const px = (L.x + 11) * TT, py = (L.y + 1) * TT + 4;
+      const px = (L.x + 7) * TT, py = (L.y + 1) * TT + 4;
       return [
         { x: px - 8, y: py, dir: 'right' },
         { x: px + 8, y: py, dir: 'left' },
@@ -1239,8 +1252,9 @@
         // zoom, click empty ground to fit-all.
         const bxs = L.buildings.map((b) => b.x * TT);
         const bx2 = L.buildings.map((b) => (b.x + b.w) * TT);
-        const minX = Math.min(...bxs, c.x * TT);
-        const maxX = Math.max(...bx2, (c.x + c.w) * TT);
+        const shp = this.town.storageShip;
+        const minX = Math.min(...bxs, c.x * TT, shp ? shp.x : Infinity);
+        const maxX = Math.max(...bx2, (c.x + c.w) * TT, shp ? shp.x + shp.w : -Infinity);
         const cx = (minX + maxX) / 2;
         const top = Math.min(c.y * TT, ...L.buildings.map((b) => b.y * TT));
         const bottom = Math.max(...L.buildings.map((b) => (b.y + b.h) * TT), c.y * TT + 500);
@@ -1696,7 +1710,6 @@
       this.updateBus(t);
       this.updateRepairCrew(t);
       this.updateHostLift();
-      this.updateGuards(t);
       this.updateSpaceTraffic(t);
 
       const animate = !REDUCED && !!this.town;
@@ -2641,8 +2654,8 @@
       // Blinking station anti-collision beacons on module corners. Offline
       // hosts flash only the red "grounded" beacon, slower.
       const off = lift <= 0.5;
-      const blinkRed = off ? Math.floor(t) % 2 === 0 : Math.floor(t * 2) % 2 === 0;
-      const blinkCyan = !off && Math.floor(t * 2 + 0.5) % 2 === 0;
+      const blinkRed = off ? Math.floor(t * 0.35) % 2 === 0 : Math.floor(t * 0.6) % 2 === 0;
+      const blinkCyan = !off && Math.floor(t * 0.6 + 0.5) % 2 === 0;
       ctx.globalAlpha = 0.5 + 0.5 * lift;
       if (blinkRed) {
         ctx.fillStyle = '#ef4444';

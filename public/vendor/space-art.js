@@ -563,45 +563,48 @@
     // Space Background (pure transparent, allowing full-viewport animated cosmic sky & galaxies to shine through without any rectangular boundaries)
     paintTownGround: () => document.createElement('canvas'),
 
-    // Spaceship Cruiser hull polygon path
+    // Millennium Falcon-style hull silhouette: saucer deck, long forward
+    // mandibles, a prominent starboard cockpit pod and a port radar dish.
     drawSpaceshipHullPath: (ctx, w, h) => {
       const cx = w / 2;
-      const noseW = Math.min(80, w * 0.22);
+      const bowY = 10;                        // saucer deck top rim
+      const mandW = Math.max(16, w * 0.085);  // bow prong width
+      const gap = Math.max(15, w * 0.12);     // half the loading-jaw width
       ctx.beginPath();
-      // 1. Forward Pointed Bow / Cockpit Nose
-      ctx.moveTo(cx, 2);
-      ctx.lineTo(cx + noseW, 26);
-      ctx.lineTo(w - 20, 68);
-      // 2. Forward Deflector Winglets
-      ctx.lineTo(w - 2, 105);
-      ctx.lineTo(w - 16, 135);
-      // 3. Tapered Mid-Hull Flanks
-      ctx.lineTo(w - 10, h * 0.52);
-      // 4. Swept-Back Stabilizer Wings
-      ctx.lineTo(w, h * 0.72);
-      ctx.lineTo(w - 4, h - 32);
-      // 5. Starboard Engine Nacelle
-      ctx.lineTo(w - 14, h - 2);
-      ctx.lineTo(w - 52, h - 2);
-      ctx.lineTo(w - 60, h - 16);
-      // 6. Center Rear Docking Bay / Thruster Cutout
-      ctx.lineTo(cx + 36, h - 16);
-      ctx.lineTo(cx + 28, h - 2);
-      ctx.lineTo(cx - 28, h - 2);
-      ctx.lineTo(cx - 36, h - 16);
-      // 7. Port Engine Nacelle
-      ctx.lineTo(60, h - 16);
-      ctx.lineTo(52, h - 2);
-      ctx.lineTo(14, h - 2);
-      ctx.lineTo(4, h - 32);
-      // 8. Port Stabilizer Wing
-      ctx.lineTo(0, h * 0.72);
-      ctx.lineTo(10, h * 0.52);
-      // 9. Port Deflector Winglets
-      ctx.lineTo(16, 135);
-      ctx.lineTo(2, 105);
-      ctx.lineTo(20, 68);
-      ctx.lineTo(cx - noseW, 26);
+
+      // Bow: long forward mandibles with a wide loading-jaw notch between them
+      ctx.moveTo(cx - gap - mandW, bowY);
+      ctx.lineTo(cx - gap - mandW, 2);
+      ctx.lineTo(cx - gap, 2);
+      ctx.lineTo(cx - gap, bowY);
+      ctx.lineTo(cx + gap, bowY);
+      ctx.lineTo(cx + gap, 2);
+      ctx.lineTo(cx + gap + mandW, 2);
+      ctx.lineTo(cx + gap + mandW, bowY);
+
+      // Starboard flank with a prominent cylindrical cockpit-pod bump
+      ctx.lineTo(w - 26, bowY);
+      ctx.lineTo(w - 16, h * 0.30);
+      ctx.lineTo(w - 5, h * 0.38);
+      ctx.lineTo(w - 5, h * 0.64);
+      ctx.lineTo(w - 16, h * 0.70);
+      ctx.lineTo(w - 18, h - 24);
+
+      // Stern engine nacelles (port & starboard) with a centre dock cutout
+      ctx.lineTo(w - 18, h - 5);
+      ctx.lineTo(cx + 34, h - 5);
+      ctx.lineTo(cx + 24, h - 19);
+      ctx.lineTo(cx - 24, h - 19);
+      ctx.lineTo(cx - 34, h - 5);
+      ctx.lineTo(18, h - 5);
+      ctx.lineTo(18, h - 24);
+
+      // Port flank with a prominent radar-dish bump
+      ctx.lineTo(16, h * 0.70);
+      ctx.lineTo(5, h * 0.64);
+      ctx.lineTo(5, h * 0.38);
+      ctx.lineTo(16, h * 0.30);
+      ctx.lineTo(26, bowY);
       ctx.closePath();
     },
 
@@ -640,17 +643,12 @@
         ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(X, y); ctx.stroke();
       }
 
-      // Forward Cockpit / Observation Bridge at the starship nose
+      // Bow docking bay between the forward mandibles
       const cx = X / 2;
-      ctx.fillStyle = '#111724';
-      ctx.beginPath();
-      ctx.moveTo(cx - 32, 52);
-      ctx.lineTo(cx, 10);
-      ctx.lineTo(cx + 32, 52);
-      ctx.closePath();
-      ctx.fill();
+      ctx.fillStyle = '#0b0f18';
+      ctx.fillRect(cx - 18, 14, 36, 12);
       ctx.fillStyle = '#00e5ff';
-      ctx.fillRect(cx - 20, 24, 40, 4); // Glowing cockpit panoramic viewport
+      ctx.fillRect(cx - 14, 18, 28, 2);
 
       // Top bulkhead neon strip
       ctx.fillStyle = '#2d374a';
@@ -728,14 +726,14 @@
         ctx.fillRect(lx + lw - 2, ly + lh - 6, 2, 6);
       }
 
-      // Stern thruster plasma engine bells (at bottom of ship)
+      // Stern engine vent strip (Falcon's distinctive rear glow band)
       const engY = Y - 12;
+      ctx.fillStyle = '#0a121e';
+      ctx.fillRect(16, engY - 2, X - 32, 12);
       ctx.fillStyle = '#00e5ff';
-      ctx.fillRect(20, engY, 24, 8);
-      ctx.fillRect(X - 44, engY, 24, 8);
+      for (let x = 20; x < X - 40; x += 22) ctx.fillRect(x, engY, 16, 8);
       ctx.fillStyle = '#ffffff';
-      ctx.fillRect(26, engY + 2, 12, 4);
-      ctx.fillRect(X - 38, engY + 2, 12, 4);
+      for (let x = 24; x < X - 40; x += 22) ctx.fillRect(x, engY + 2, 8, 4);
 
       ctx.restore(); // end clip
 
@@ -750,6 +748,62 @@
       ctx.lineWidth = 1.5;
       ctx.stroke();
       ctx.restore();
+
+      // ---- Millennium Falcon surface details ----
+      // Radar dish (port flank): mast + round dish with concentric rings
+      ctx.fillStyle = '#64748b';
+      ctx.fillRect(10, Y * 0.44, 3, Y * 0.07);
+      ctx.fillStyle = '#334155';
+      ctx.beginPath();
+      ctx.arc(12, Y * 0.38, 11, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#cbd5e1';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      ctx.strokeStyle = 'rgba(0, 229, 255, 0.35)';
+      ctx.beginPath();
+      ctx.arc(12, Y * 0.38, 5, 0, Math.PI * 2);
+      ctx.stroke();
+
+      // Cockpit pod (starboard flank): cylindrical body + panoramic canopy
+      ctx.fillStyle = '#0f172a';
+      ctx.fillRect(X - 20, Y * 0.38, 14, Y * 0.26);
+      ctx.fillStyle = '#00e5ff';
+      ctx.fillRect(X - 16, Y * 0.44, 7, Y * 0.12);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(X - 14, Y * 0.46, 3, Y * 0.06);
+
+      // Dorsal quad-laser turret (upper deck)
+      const dx = X * 0.20, dy = Y * 0.30;
+      ctx.fillStyle = '#334155';
+      ctx.beginPath();
+      ctx.arc(dx, dy, 7, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#64748b';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.fillStyle = '#94a3b8';
+      ctx.fillRect(dx - 1, dy - 9, 2, 5);
+      ctx.fillRect(dx - 7, dy - 4, 3, 2);
+      ctx.fillRect(dx + 4, dy - 4, 3, 2);
+
+      // Concentric saucer ring lines (faint plate seams)
+      ctx.strokeStyle = 'rgba(0, 229, 255, 0.10)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.ellipse(X / 2, Y * 0.52, X * 0.46, Y * 0.36, 0, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.ellipse(X / 2, Y * 0.52, X * 0.32, Y * 0.24, 0, 0, Math.PI * 2);
+      ctx.stroke();
+
+      // Patchwork hull greebles (subtle panel shading)
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.05)';
+      ctx.fillRect(X * 0.10, Y * 0.34, X * 0.12, 3);
+      ctx.fillRect(X * 0.62, Y * 0.62, X * 0.14, 3);
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.16)';
+      ctx.fillRect(X * 0.24, Y * 0.64, X * 0.12, 3);
+      ctx.fillRect(X * 0.55, Y * 0.30, X * 0.10, 3);
 
       return canvas;
     },
@@ -1034,8 +1088,8 @@
         ctx.fillStyle = '#1e293b';
         ctx.fillRect(3.5, 4, 13, 2);
 
-        // Sentry Tactical Visor: Glowing narrow slit HUD optic (cyan / amber)
-        ctx.fillStyle = '#00e5ff';
+        // Sentry Tactical Visor: Glowing narrow slit HUD optic (colour cycles per poll)
+        ctx.fillStyle = (look && look.visor) || '#00e5ff';
         ctx.fillRect(6.5, 5.5, 7, 1.5);
         ctx.fillStyle = '#ffffff';
         ctx.fillRect(8.5, 5.5, 3, 1);
@@ -1061,13 +1115,21 @@
         ctx.fillStyle = '#020617';
         ctx.fillRect(7, 9.5, 6, 1.5);
 
-        // 4. Dark Armored Arms & Black Security Gloves
+        // 4. Dark Armored Arms & Black Security Gloves (right arm raises to wave)
+        const wave = (frame % 2) === 1;
         ctx.fillStyle = '#1e293b';
-        ctx.fillRect(3, 11, 3, 4);
-        ctx.fillRect(14, 11, 3, 4);
-        ctx.fillStyle = '#020617'; // black gloves
-        ctx.fillRect(3, 14, 3, 2);
-        ctx.fillRect(14, 14, 3, 2);
+        ctx.fillRect(3, 11, 3, 4);          // left arm (always at side)
+        ctx.fillRect(14, 11, 3, 4);         // right arm
+        ctx.fillStyle = '#020617';
+        ctx.fillRect(3, 14, 3, 2);          // left glove
+        if (wave) {
+          ctx.fillStyle = '#1e293b';
+          ctx.fillRect(15, 5, 2, 6);        // raised forearm
+          ctx.fillStyle = '#020617';
+          ctx.fillRect(15, 3.5, 2, 2);      // raised glove (hand up)
+        } else {
+          ctx.fillRect(14, 14, 3, 2);       // right glove (at side)
+        }
 
         // 5. Dark Armored Legs & Blast Boots
         ctx.fillStyle = '#1e293b';
@@ -1254,7 +1316,7 @@
       };
       return (look, dir, frame, pose, eyesClosed) => {
         // same key shape as the original cached impl (R0(look)|dir|frame|pose|eyes)
-        const key = `${look && (look.isGuard || look.isImperial || look.empire) ? 'guard' : ''}${look && look.isRepair ? 'rep' : ''}${look && look.skin}${look && look.hair}${look && look.shirt}${look && look.pants}${look && look.style}${look && (look.outfit ?? "")}${look && (look.accessory ?? "")}|${dir}|${frame}|${pose}|${eyesClosed ? 1 : 0}`;
+        const key = `${look && (look.isGuard || look.isImperial || look.empire) ? 'guard' : ''}${look && look.isRepair ? 'rep' : ''}${look && look.skin}${look && look.hair}${look && look.shirt}${look && look.pants}${look && look.style}${look && (look.outfit ?? "")}${look && (look.accessory ?? "")}${look && look.visor ? '~' + look.visor : ''}|${dir}|${frame}|${pose}|${eyesClosed ? 1 : 0}`;
         let c = cache.get(key);
         if (!c) { c = render(look, dir, frame, pose, eyesClosed); cache.set(key, c); }
         return c;
