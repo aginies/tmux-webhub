@@ -657,20 +657,27 @@ function syncGroupHead(g, h, idx) {
 }
 
 // click the host badge → flip "enabled" in config.json (optimistic, rolled back on error)
+const pendingToggles = new Set(); // hosts with a toggle POST in flight
 async function toggleHost(name) {
   const h = hosts.find((x) => x.name === name);
   if (!h) return;
   const wasEnabled = h.enabled !== false;
   h.enabled = !wasEnabled;
+  pendingToggles.add(name);
   renderChips();
   populateHostSelect();
   try {
     const { ok, d, status } = await api('/api/hosts/toggle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ host: name }) });
     if (!ok) throw new Error(d.error || 'HTTP ' + status);
-    h.enabled = d.enabled !== false;
+    // re-apply to whatever the current hosts array is (a poll may have swapped it)
+    const cur = hosts.find((x) => x.name === name);
+    if (cur) cur.enabled = d.enabled !== false; else h.enabled = d.enabled !== false;
   } catch (e) {
-    h.enabled = wasEnabled;
+    const cur = hosts.find((x) => x.name === name);
+    if (cur) cur.enabled = wasEnabled; else h.enabled = wasEnabled;
     setConnBanner(`⚠ could not ${wasEnabled ? 'hide' : 'show'} host “${name}”: ${e.message}`);
+  } finally {
+    pendingToggles.delete(name);
   }
   renderChips();
   populateHostSelect();
@@ -798,7 +805,14 @@ async function refresh() {
     if (Number.isFinite(d.pollMs) && d.pollMs > 0) pollMs = d.pollMs;
     if (typeof d.pi === 'string' && d.pi) defaultCmd = d.pi;
     if (d.net) setNetReadout(d.net); else $('net').textContent = ''; // netDisplay: false
-    hosts = d.hosts || [];
+    // While a host's enable/disable toggle is in flight, a stale in-flight poll
+    // must not snap it back to its old value (the "off → on → off" flicker).
+    const prevHosts = hosts;
+    hosts = (d.hosts || []).map((h) => {
+      if (!pendingToggles.has(h.name)) return h;
+      const local = prevHosts.find((x) => x.name === h.name);
+      return local ? { ...h, enabled: local.enabled } : h;
+    });
     if (townView && view === 'town') townView.update(hosts, active && active.key);
     if (view === 'list') renderChips();
     // keep the +New host select current in both views (the Town "+" button
