@@ -57,8 +57,8 @@
         lastCycleTime: 0,
         lastT: 0,
         weldingStart: 0,
-        a1: { x: 0, y: 0, dir: 'right', look: { tone: 0, hair: 0 } },
-        a2: { x: 0, y: 0, dir: 'left', look: { tone: 1, hair: 1 } },
+        a1: { x: 0, y: 0, dir: 'right', look: { tone: 0, hair: 0, isRepair: true } },
+        a2: { x: 0, y: 0, dir: 'left', look: { tone: 1, hair: 1, isRepair: true } },
       };
       this.nav = new Map();  // hostKey -> TA.TownNavigation (A* through the building)
       this.previewCache = new Map(); // name -> { raw, canvas } offscreen cached tactical cards
@@ -507,10 +507,9 @@
         g.drawImage(sp.coffee, (L.x + 7) * TT + 1, (L.y + 1) * TT - 10);
         g.drawImage(sp.cooler, (L.x + 8) * TT + 2, (L.y + 1) * TT - 12);
         if (sp.pingpong) g.drawImage(sp.pingpong, (L.x + 11) * TT, (L.y + 1) * TT - 8);
-        if (sp.food) g.drawImage(sp.food, (L.x + 16) * TT + 2, (L.y + 1) * TT - 12);
         const cx = b.doorX * TT, cy = (b.counter.y + 1) * TT - 8;
         g.drawImage(sp.chair, cx - 7, cy - 14);
-        g.drawImage(TA.townCharacter({ isImperial: true }, 'down', 0, 'sit', false), cx - 7, cy - 11);
+        g.drawImage(TA.townCharacter({ isGuard: true, isImperial: true }, 'down', 0, 'sit', false), cx - 7, cy - 11);
         g.drawImage(sp.counter, cx - 41, cy);
         // "+" new-session button right of the reception counter ("à l'accueil")
         b.plus = { x: cx + 44, y: cy - 3, s: 18 };
@@ -821,13 +820,12 @@
       ];
     }
 
-    // the galactic food and ration synthesizer spots
+    // eating spots around the existing lounge table (fits inside lounge without extra width)
     foodSpots(b) {
       const L = b.lounge;
       return [
-        { x: (L.x + 16) * TT + 13, y: (L.y + 1) * TT + 4, dir: 'up' },
-        { x: (L.x + 16) * TT - 2, y: (L.y + 1) * TT + 4, dir: 'right' },
-        { x: (L.x + 16) * TT + 28, y: (L.y + 1) * TT + 4, dir: 'left' },
+        { x: (L.x + 7) * TT - 6, y: (L.y + 1) * TT + 4, dir: 'right' },
+        { x: (L.x + 7) * TT + 18, y: (L.y + 1) * TT + 4, dir: 'left' },
       ];
     }
 
@@ -1751,7 +1749,7 @@
 
       // holographic live preview: floating tactical projection after the desktop (lower) with radiant light beam
       const isActive = key === this.activeKey;
-      if (s && s.preview) this.drawPreview(X + slot.chairX, Y, s.preview, key, state === 'working' || isActive, t);
+      if (s && s.preview) this.drawPreview(X + slot.chairX, Y, s.preview, key, name, state === 'working' || isActive, t);
 
       // glow: working (blue), active session (accent, steady) — pre-baked sprites,
       // the pulse modulates globalAlpha directly without save/restore or pipeline flushes
@@ -1770,9 +1768,9 @@
 
     // holographic screen projection: live session lines projected after the desktop (lower)
     // with a glowing radiant light cone shooting down from the console table.
-    drawPreview(mx, Y, preview, cacheKey, active = false, t = performance.now() / 1000) {
+    drawPreview(mx, Y, preview, cacheKey, sessionName, active = false, t = performance.now() / 1000) {
       const { ctx } = this;
-      const W = 104, H = 52, pad = 4.0, fs = 6.8, lh = 7.6;
+      const W = 108, H = 54, pad = 4.0, fs = 6.6, lh = 7.4;
 
       // position: centered in front of the desk, below the desktop
       const cx = mx + 7;
@@ -1801,7 +1799,6 @@
       let cached = this.previewCache.get(cacheKey);
       if (!cached || cached.raw !== preview) {
         const lines = preview.split('\n').map((l) => l.replace(/\s+$/, '')).filter((l) => l.length > 0);
-        const shown = lines.slice(-6);
         const maxChars = Math.floor((W - pad * 2) / (fs * 0.6));
 
         const off = document.createElement('canvas');
@@ -1830,14 +1827,26 @@
           octx.fillRect(1, sl, W - 2, 1);
         }
 
-        // Terminal text lines
-        octx.font = '600 ' + fs + 'px "JetBrains Mono", ui-monospace, Menlo, monospace';
+        // Header bar with session name: ensures every preview card clearly shows its identity
+        octx.font = '700 7px "JetBrains Mono", ui-monospace, Menlo, monospace';
         octx.textBaseline = 'top';
+        octx.fillStyle = active ? '#00e5ff' : '#38bdf8';
+        octx.fillText('▶ ' + (sessionName || cacheKey.split(':').pop()), pad, pad);
+
+        octx.strokeStyle = 'rgba(0, 229, 255, 0.25)';
+        octx.beginPath();
+        octx.moveTo(pad, pad + 8.5);
+        octx.lineTo(W - pad, pad + 8.5);
+        octx.stroke();
+
+        // Terminal text lines (last 5 lines below the header)
+        octx.font = '600 ' + fs + 'px "JetBrains Mono", ui-monospace, Menlo, monospace';
+        const shown = lines.slice(-5);
         shown.forEach((l, i) => {
           let txt = l.length > maxChars ? '…' + l.slice(-(maxChars - 1)) : l;
           const isPrompt = /^[$>\u276f#%]/.test(l.trim()) || /\$\s/.test(l);
           octx.fillStyle = isPrompt ? '#4ade80' : '#e0f2fe';
-          octx.fillText(txt, pad, pad + i * lh);
+          octx.fillText(txt, pad, pad + 10.5 + i * lh);
         });
 
         cached = { raw: preview, canvas: off };

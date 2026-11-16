@@ -253,35 +253,7 @@
     };
     sp.pingpong = createPingPongTable();
 
-    // Galactic Food & Ration Synthesizer
-    const createFoodSynth = () => {
-      const c = document.createElement('canvas');
-      c.width = 22; c.height = 28;
-      const ctx = c.getContext('2d');
-
-      // Vending housing unit
-      ctx.fillStyle = '#1e2638';
-      ctx.fillRect(2, 4, 18, 24);
-      ctx.strokeStyle = '#334155';
-      ctx.lineWidth = 1;
-      ctx.strokeRect(2, 4, 18, 24);
-
-      // Display window with glowing food containers
-      ctx.fillStyle = '#0a0e17';
-      ctx.fillRect(5, 7, 12, 10);
-      ctx.fillStyle = '#10b981'; ctx.fillRect(6, 9, 3, 2); // rations
-      ctx.fillStyle = '#f59e0b'; ctx.fillRect(10, 9, 3, 2); // snack bars
-      ctx.fillStyle = '#ef4444'; ctx.fillRect(14, 9, 2, 2);
-
-      // Dispenser tray
-      ctx.fillStyle = '#0f172a';
-      ctx.fillRect(5, 20, 12, 5);
-      ctx.fillStyle = '#00e5ff';
-      ctx.fillRect(6, 19, 10, 1); // neon indicator strip
-
-      return c;
-    };
-    sp.food = createFoodSynth();
+    // sp.food removed — lounge width does not allow extra vending element; eating is routed to existing table
 
     // Custom Thought Bubbles for Idle Activities (Ping Pong, Eat, Drink, Holochess)
     const makeBubble = (drawContent) => {
@@ -1009,23 +981,29 @@
       const isSit = pose === 'sit';
       const legFrame = frame % 4;
 
-      if (look && (look.isImperial || look.empire)) {
-        // Star Wars Galactic Empire Stormtrooper Receptionist
-        // 1. Black Body Glove Undersuit
-        ctx.fillStyle = '#0f172a';
+      if (look && (look.isGuard || look.isImperial || look.empire)) {
+        // Star Wars Imperial Station Security Guard ("Un Gardien")
+        // 1. Imperial Charcoal / Black Under-tunic
+        ctx.fillStyle = '#090d16';
         ctx.fillRect(5, 7, 10, 11);
 
-        // 2. White Duraplast Chest & Abdomen Armor
-        ctx.fillStyle = '#f8fafc';
+        // 2. Reinforced Dark Slate Security Armor Breastplate
+        ctx.fillStyle = '#1e293b';
         ctx.fillRect(6, 8, 8, 8);
-        ctx.fillStyle = '#e2e8f0';
+        ctx.fillStyle = '#0f172a';
         ctx.fillRect(6, 14, 8, 2);
 
-        // Abdominal detail cutouts & thermal detonator belt
-        ctx.fillStyle = '#1e293b';
-        ctx.fillRect(8, 11, 4, 3);
+        // Security Guard Sentinel Crest / Badge on chest (gold shield with cyan core)
+        ctx.fillStyle = '#f59e0b';
+        ctx.fillRect(7, 9.5, 3, 3);
         ctx.fillStyle = '#00e5ff';
-        ctx.fillRect(9, 12, 2, 1);
+        ctx.fillRect(8, 10.5, 1, 1);
+
+        // Security Code / Rank Cylinders (crimson and silver)
+        ctx.fillStyle = '#ef4444';
+        ctx.fillRect(11.5, 9.5, 1.5, 2);
+        ctx.fillStyle = '#cbd5e1';
+        ctx.fillRect(11.5, 12, 1.5, 1.5);
 
         // Imperial Commander Shoulder Pauldron (Orange pauldron on right shoulder)
         ctx.fillStyle = '#ea580c';
@@ -1033,90 +1011,86 @@
         ctx.fillStyle = '#f97316';
         ctx.fillRect(3.5, 8.5, 3, 3);
 
-        // Left white shoulder bell
-        ctx.fillStyle = '#f8fafc';
+        // Left armored dark shoulder bell
+        ctx.fillStyle = '#334155';
         ctx.fillRect(13, 8, 4, 4);
 
-        // White Utility Belt
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(5, 16, 10, 2);
+        // Armored Utility Belt
         ctx.fillStyle = '#1e293b';
+        ctx.fillRect(5, 16, 10, 2);
+        ctx.fillStyle = '#f59e0b';
         ctx.fillRect(9, 16, 2, 2);
 
-        // 3. Iconic Star Wars Stormtrooper Helmet
-        // White Helmet Dome
-        ctx.fillStyle = '#f8fafc';
+        // 3. Station Security Guard Helmet (Imperial Navy / Death Star Trooper Guard Blast Helmet)
+        // Deep obsidian flared helmet dome
+        ctx.fillStyle = '#0f172a';
         ctx.beginPath();
         ctx.arc(10, 5, 5.5, 0, Math.PI * 2);
         ctx.fill();
-        ctx.strokeStyle = '#cbd5e1';
+        ctx.strokeStyle = '#334155';
         ctx.lineWidth = 1;
         ctx.stroke();
 
-        // Distinctive Black Brow Rubber Band across forehead
-        ctx.fillStyle = '#000000';
-        ctx.fillRect(4.5, 3, 11, 1.5);
+        // Wide Flared Protective Blast Rim across brow and ears
+        ctx.fillStyle = '#1e293b';
+        ctx.fillRect(3.5, 4, 13, 2);
 
-        // Dual Angled Black Eye Lenses (angled menacing gaze)
-        ctx.fillStyle = '#090d16';
-        ctx.fillRect(6, 4.5, 3, 2);
-        ctx.fillRect(11, 4.5, 3, 2);
-        // Lens reflection highlight glints
+        // Sentry Tactical Visor: Glowing narrow slit HUD optic (cyan / amber)
+        ctx.fillStyle = '#00e5ff';
+        ctx.fillRect(6.5, 5.5, 7, 1.5);
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(8.5, 5.5, 3, 1);
+
+        // Cheek protective armor plates
+        ctx.fillStyle = '#1e293b';
+        ctx.fillRect(5, 7, 2, 2.5);
+        ctx.fillRect(13, 7, 2, 2.5);
+
+        // Ear Comms / Acoustic Sensor
         ctx.fillStyle = '#38bdf8';
-        ctx.fillRect(6.5, 4.5, 1, 1);
-        ctx.fillRect(11.5, 4.5, 1, 1);
+        ctx.fillRect(4, 6.5, 1, 2);
+        ctx.fillRect(15, 6.5, 1, 2);
 
-        // Cheek Tube Armor tapering down
-        ctx.fillStyle = '#e2e8f0';
-        ctx.fillRect(5, 6, 2, 2.5);
-        ctx.fillRect(13, 6, 2, 2.5);
-
-        // Blue Tube Stripes / Cooling Vents on Ears
-        ctx.fillStyle = '#0284c7';
-        ctx.fillRect(4.5, 6, 1, 2);
-        ctx.fillRect(14.5, 6, 1, 2);
-
-        // Triangular Black Vocoder / Mouth Grill at Center
-        ctx.fillStyle = '#000000';
-        ctx.beginPath();
-        ctx.moveTo(9, 7);
-        ctx.lineTo(11, 7);
-        ctx.lineTo(10, 9);
-        ctx.closePath();
-        ctx.fill();
-
-        // Dual Cylindrical Chin Aerators / Filtration Pods
+        // Tactical Chin Vocoder & Breath Filtration Pod
+        ctx.fillStyle = '#334155';
+        ctx.fillRect(8, 7.5, 4, 2);
         ctx.fillStyle = '#475569';
-        ctx.fillRect(7, 8, 1.5, 1.5);
-        ctx.fillRect(11.5, 8, 1.5, 1.5);
-        ctx.fillStyle = '#94a3b8';
-        ctx.fillRect(7, 8, 1, 1);
-        ctx.fillRect(11.5, 8, 1, 1);
+        ctx.fillRect(7, 8.5, 1.5, 1.5);
+        ctx.fillRect(11.5, 8.5, 1.5, 1.5);
 
         // Ribbed Black Neck Seal Gasket
-        ctx.fillStyle = '#0f172a';
+        ctx.fillStyle = '#020617';
         ctx.fillRect(7, 9.5, 6, 1.5);
 
-        // 4. White Armor Arms & Black Gloves
-        ctx.fillStyle = '#f8fafc';
+        // 4. Dark Armored Arms & Black Security Gloves
+        ctx.fillStyle = '#1e293b';
         ctx.fillRect(3, 11, 3, 4);
         ctx.fillRect(14, 11, 3, 4);
-        ctx.fillStyle = '#090d16'; // black gloves
+        ctx.fillStyle = '#020617'; // black gloves
         ctx.fillRect(3, 14, 3, 2);
         ctx.fillRect(14, 14, 3, 2);
 
-        // 5. White Armor Legs & Boots
-        ctx.fillStyle = '#f8fafc';
+        // 5. Dark Armored Legs & Blast Boots
+        ctx.fillStyle = '#1e293b';
         ctx.fillRect(5, 18, 10, 3);
-        ctx.fillStyle = '#ffffff';
+        ctx.fillStyle = '#0f172a';
         ctx.fillRect(4, 21, 5, 3);
         ctx.fillRect(11, 21, 5, 3);
-        ctx.fillStyle = '#0f172a'; // black boot soles
+        ctx.fillStyle = '#020617'; // black boot soles
         ctx.fillRect(4, 23, 5, 1);
         ctx.fillRect(11, 23, 5, 1);
 
         return canvas;
       }
+
+      // Suit color theme: light blue combination for EVA repair crew, crisp white for standard crew
+      const isRepair = !!(look && look.isRepair);
+      const suitColor = isRepair ? '#38bdf8' : '#f8fafc';
+      const suitShade = isRepair ? '#0284c7' : '#e2e8f0';
+      const helmetColor = isRepair ? '#7dd3fc' : '#f1f5f9';
+      const helmetTrim = isRepair ? '#0284c7' : '#cbd5e1';
+      const limbColor = isRepair ? '#38bdf8' : '#f8fafc';
+      const kneeColor = isRepair ? '#0284c7' : '#94a3b8';
 
       // 1. Life Support Backpack (PLSS)
       if (dir === 'down' || dir === 'up') {
@@ -1141,9 +1115,9 @@
       }
 
       // 2. Pressurized Suit Torso
-      ctx.fillStyle = '#f8fafc';
+      ctx.fillStyle = suitColor;
       ctx.fillRect(5, 8, 10, 9);
-      ctx.fillStyle = '#e2e8f0'; // Torso shading
+      ctx.fillStyle = suitShade; // Torso shading
       ctx.fillRect(5, 15, 10, 2);
 
       // Chest Control Module (Telemetry & Oxygen telemetry)
@@ -1165,7 +1139,7 @@
       }
 
       // Mission Insignia Stripe on shoulder
-      ctx.fillStyle = (look && look.tone % 2 === 1) ? '#2563eb' : '#ef4444';
+      ctx.fillStyle = isRepair ? '#0284c7' : (look && look.tone % 2 === 1) ? '#2563eb' : '#ef4444';
       if (dir === 'down' || dir === 'up') {
         ctx.fillRect(4, 9, 2, 3);
         ctx.fillRect(14, 9, 2, 3);
@@ -1176,16 +1150,16 @@
       }
 
       // 3. Spherical Pressurized EVA Helmet
-      ctx.fillStyle = '#f1f5f9';
+      ctx.fillStyle = helmetColor;
       ctx.beginPath();
       ctx.arc(10, 5, 5, 0, Math.PI * 2);
       ctx.fill();
-      ctx.strokeStyle = '#cbd5e1';
+      ctx.strokeStyle = helmetTrim;
       ctx.lineWidth = 1;
       ctx.stroke();
 
       // Neck ring clamp
-      ctx.fillStyle = '#64748b';
+      ctx.fillStyle = isRepair ? '#0284c7' : '#64748b';
       ctx.fillRect(7, 7, 6, 1.5);
 
       // Helmet communications antenna / beacon light
@@ -1231,7 +1205,7 @@
       // 6. Pressurized Legs & Magnetic EVA Boots
       if (isSit) {
         // Seated posture: legs bent forward
-        ctx.fillStyle = '#e2e8f0';
+        ctx.fillStyle = suitShade;
         ctx.fillRect(5, 18, 10, 3);
         ctx.fillStyle = '#1e293b'; // boots
         ctx.fillRect(4, 21, 5, 3);
@@ -1242,12 +1216,12 @@
       } else {
         // Standing / walking posture
         const legShift = (legFrame === 1) ? 1 : (legFrame === 3) ? -1 : 0;
-        ctx.fillStyle = '#f8fafc';
+        ctx.fillStyle = limbColor;
         ctx.fillRect(5, 18, 4, 3 + legShift);
         ctx.fillRect(11, 18, 4, 3 - legShift);
 
         // Knee articulators
-        ctx.fillStyle = '#94a3b8';
+        ctx.fillStyle = kneeColor;
         ctx.fillRect(5, 19 + legShift, 4, 1);
         ctx.fillRect(11, 19 - legShift, 4, 1);
 
@@ -1261,7 +1235,7 @@
       }
 
       // 7. Arms & Heavy EVA Gloves
-      ctx.fillStyle = '#f8fafc';
+      ctx.fillStyle = limbColor;
       if (isSit) {
         // Typing arms reaching forward
         ctx.fillRect(3, 10, 3, 5);
@@ -1281,7 +1255,7 @@
       };
       return (look, dir, frame, pose, eyesClosed) => {
         // same key shape as the original cached impl (R0(look)|dir|frame|pose|eyes)
-        const key = `${look && (look.isImperial || look.empire) ? 'imp' : ''}${look && look.skin}${look && look.hair}${look && look.shirt}${look && look.pants}${look && look.style}${look && (look.outfit ?? "")}${look && (look.accessory ?? "")}|${dir}|${frame}|${pose}|${eyesClosed ? 1 : 0}`;
+        const key = `${look && (look.isGuard || look.isImperial || look.empire) ? 'guard' : ''}${look && look.isRepair ? 'rep' : ''}${look && look.skin}${look && look.hair}${look && look.shirt}${look && look.pants}${look && look.style}${look && (look.outfit ?? "")}${look && (look.accessory ?? "")}|${dir}|${frame}|${pose}|${eyesClosed ? 1 : 0}`;
         let c = cache.get(key);
         if (!c) { c = render(look, dir, frame, pose, eyesClosed); cache.set(key, c); }
         return c;
