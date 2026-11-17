@@ -322,7 +322,10 @@ function dropSession(key) {
     if (h.sessions.length !== before) changed = true;
   }
   if (!changed) return;
-  if (townView && view === 'town') townView.update(hosts, active && active.key);
+  // currentConn(): in tab mode `active` is null — passing it would clear the
+  // Town highlight (red desk outline) of the selected tab on every poll
+  const conn = currentConn();
+  if (townView && view === 'town') townView.update(hosts, conn && conn.key);
   if (view === 'list') renderChips();
 }
 
@@ -424,6 +427,10 @@ function openTab(key, opts) {
   needsYou.delete(st.key); // you're looking at it now — it no longer "needs you"
   renderNeedsYouBadge();
   updateLocalBadge(findSession(st.key));
+  // Town view: move the active-desk highlight (red outline) to the new tab now —
+  // don't wait for the next poll to catch up
+  if (view === 'town' && townView) { $('termwin').classList.add('attached'); townView.activeKey = st.key; townView.needsRedraw = true; }
+  if (view === 'list') renderChips(); // move the selection ring to the new tab now
   syncTermButtons();
   return activeTab;
 }
@@ -481,6 +488,7 @@ function switchTab(idx) {
   updateLocalBadge(ss);
   if (view === 'town' && townView) { $('termwin').classList.add('attached'); townView.activeKey = cur.key; townView.needsRedraw = true; }
   renderTabs();
+  if (view === 'list') renderChips(); // move the selection ring to the new tab now
   syncTermButtons();
 }
 function closeTab(idx) {
@@ -595,6 +603,8 @@ function attach(key, opts) {
     renderNeedsYouBadge();
     updateLocalBadge(s);
     if (hidden) setupBootReveal(st1, s); // +New boot flow works in tab mode too
+    // Town view: highlight the newly selected tab's desk immediately
+    if (view === 'town' && townView) { $('termwin').classList.add('attached'); townView.activeKey = st1.key; townView.needsRedraw = true; }
     renderTabs();
     syncTermButtons();
     return;
@@ -694,6 +704,13 @@ function syncTermButtons() {
 function currentConn() {
   if (active) return active;
   return (activeTab >= 0 && activeTab < tabs.length) ? tabs[activeTab] : null;
+}
+// Is this session key the one currently shown in the terminal window? Works in
+// both modes (non-tab `active` and tab selection) — chips/desks use it for the
+// selection highlight, which must follow the SELECTED TAB, not just `active`.
+function isKeyActive(key) {
+  const conn = currentConn();
+  return !!(conn && conn.key === key);
 }
 
 // tmux counts our own web client once its ws is open; subtract it to get the number of
@@ -1194,7 +1211,7 @@ function syncChips(box, h) {
 
 function syncChip(c, s, hostState) {
   const key = keyOf(s.host, s.name);
-  c.classList.toggle('active', !!(active && active.key === key));
+  c.classList.toggle('active', isKeyActive(key));
   c.classList.toggle('needs-you', needsYou.has(key));
   const ind = c.children[0];
   if (s.activity) { if (ind.className !== 'flash') { ind.className = 'flash'; ind.innerHTML = FLASH_SVG; } }
@@ -1236,7 +1253,7 @@ function chipEl(s, hostState) {
   const key = keyOf(s.host, s.name);
   const c = document.createElement('div');
   c.dataset.key = key;
-  c.className = 'chip' + (active && active.key === key ? ' active' : '') + (needsYou.has(key) ? ' needs-you' : '');
+  c.className = 'chip' + (isKeyActive(key) ? ' active' : '') + (needsYou.has(key) ? ' needs-you' : '');
   const others = otherAttached(s);
   // indicator: ⚡ while active, an amber dot when settled-but-awaiting-input ("needs
   // you"), nothing otherwise (host connection state is still on the host label)
@@ -1338,7 +1355,10 @@ async function refresh() {
     });
     updateNeedsYou();      // derive "needs you" from activity transitions (both views)
     renderNeedsYouBadge(); // keep the header badge current
-    if (townView && view === 'town') townView.update(hosts, active && active.key);
+    // currentConn(): the selected tab must keep its Town highlight across polls
+    // (`active` is null in tab mode and would clear it every refresh)
+    const conn = currentConn();
+    if (townView && view === 'town') townView.update(hosts, conn && conn.key);
     if (view === 'list') renderChips();
     // keep the +New host select current in both views (the Town "+" button
     // relies on it being populated even when the list isn't shown)
@@ -1500,7 +1520,7 @@ function setView(v) {
   $('view-toggle').textContent = v === 'town' ? 'List' : 'Space';
   if ($('town-view-toggle')) $('town-view-toggle').textContent = v === 'town' ? 'List' : 'Space';
   if (townView) {
-    if (v === 'town') { townView.update(hosts, active && active.key); townView.start(); }
+    if (v === 'town') { const conn = currentConn(); townView.update(hosts, conn && conn.key); townView.start(); }
     else { townView.stop(); renderChips(); populateHostSelect(); }
   } else if (v === 'list') {
     renderChips();
