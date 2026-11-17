@@ -53,6 +53,7 @@
       this.api = api; // { attach(key) }
       this.tip = document.getElementById('town-tip');
       this.on = false;
+      this.netAnchorEl = null; // Space-view network box (app.js owns the DOM)
       this.dpr = 1;
       this.town = null;
       this.specSig = null;
@@ -413,6 +414,23 @@
       this.on = false;
       if (this.raf) { cancelAnimationFrame(this.raf); this.raf = null; }
       this.setHover(null, null);
+    }
+
+    // Space-view "network traffic" box: app.js passes the panel element and the
+    // frame loop anchors it to the right of the citadel (the Town Hall),
+    // recomputing from the current layout each frame so a town rebuild (host
+    // added/removed) can't leave it at a stale spot. It pans/zooms in lockstep
+    // with the hall and hides while the anchor is off-screen. Pass null to detach.
+    setNetAnchor(el) {
+      this.netAnchorEl = el || null;
+      if (!el) return;
+    }
+    netAnchorPoint() {
+      const c = this.town && this.town.layout && this.town.layout.center;
+      if (!c) return null;
+      // citadel body top-left is (center.x*TT, center.y*TT), width center.w*TT →
+      // a side sign just right of the hall's upper storeys
+      return { x: (c.x + c.w) * TT + 14, y: c.y * TT + 24 };
     }
 
     resize() {
@@ -1929,6 +1947,24 @@
           this.target = null;
         }
         this.needsRedraw = true;
+      }
+
+      // network box: follow the (eased) camera so it tracks the Town Hall. The
+      // panel scales with zoom, clamped so it stays readable far out / in close.
+      if (this.netAnchorEl) {
+        const a = this.netAnchorPoint();
+        if (!a) { this.netAnchorEl.style.visibility = 'hidden'; }
+        else {
+          const w = this.cv.clientWidth, h = this.cv.clientHeight;
+          const sx = (a.x - this.cam.x) * this.cam.z + w / 2;
+          const sy = (a.y - this.cam.y) * this.cam.z + h / 2;
+          const off = sx < -200 || sx > w + 200 || sy < -200 || sy > h + 200;
+          this.netAnchorEl.style.visibility = off ? 'hidden' : 'visible';
+          if (!off) {
+            const s = Math.max(0.75, Math.min(1.4, this.cam.z));
+            this.netAnchorEl.style.transform = `translate(${sx}px, ${sy}px) scale(${s})`;
+          }
+        }
       }
 
       // walks / timers that finished: advance the idle lifecycle

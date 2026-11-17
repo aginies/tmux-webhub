@@ -941,6 +941,55 @@ function setNetReadout(n) {
   const el = $('net');
   el.textContent = `↓ ${fmtBytes(n.inBps)}/s · ↑ ${fmtBytes(n.outBps)}/s`;
   el.title = `server bandwidth (5 s average) — since start: ↓ ${fmtBytes(n.inTotal)} · ↑ ${fmtBytes(n.outTotal)}`;
+  // Space view: the box right of the Town Hall (hidden in List view by CSS;
+  // TownView's frame loop owns its on-screen position/visibility)
+  const box = $('net-box');
+  box.hidden = false;
+  $('nb-in').textContent = `↓ ${fmtBytes(n.inBps)}/s`;
+  $('nb-out').textContent = `↑ ${fmtBytes(n.outBps)}/s`;
+  $('nb-totals').textContent = `since start ↓ ${fmtBytes(n.inTotal)} · ↑ ${fmtBytes(n.outTotal)}`;
+  box.title = 'server bandwidth — rates are a 5 s average; sparkline: last 60 s (1 s samples)';
+  drawNetSpark(n);
+  if (townView) townView.setNetAnchor(box);
+}
+function clearNetReadout() {
+  $('net').textContent = '';
+  $('net-box').hidden = true; // netDisplay: false → no box in Space view
+  if (townView) townView.setNetAnchor(null);
+}
+// 60 s of per-second samples (server keeps the ring, 1 Hz), newest at the right.
+// Canvas is 2x the CSS size (296×52 for 148×26) so the lines stay crisp on HiDPI.
+function drawNetSpark(n) {
+  const cv = $('nb-spark');
+  const ctx = cv.getContext('2d');
+  const W = cv.width, H = cv.height, N = 60;
+  ctx.clearRect(0, 0, W, H);
+  const histIn = Array.isArray(n.histIn) ? n.histIn : [];
+  const histOut = Array.isArray(n.histOut) ? n.histOut : [];
+  let max = 1;
+  for (const v of histIn) if (v > max) max = v;
+  for (const v of histOut) if (v > max) max = v;
+  const line = (hist, color) => {
+    if (!hist.length) return;
+    const off = N - hist.length; // right-align: the line grows from the right edge
+    const pt = (i) => [W - ((N - 1 - (i + off)) * W) / (N - 1), H - 2 - (hist[i] / max) * (H - 6)];
+    if (hist.length === 1) { // a lone moveTo would stroke nothing — draw a dot
+      const [x, y] = pt(0);
+      ctx.fillStyle = color;
+      ctx.fillRect(x - 2, y - 2, 4, 4);
+      return;
+    }
+    ctx.beginPath();
+    for (let i = 0; i < hist.length; i++) {
+      const [x, y] = pt(i);
+      i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+    }
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  };
+  line(histIn, 'rgba(0, 229, 255, 0.8)');   // ↓ cyan, matching the rate labels
+  line(histOut, 'rgba(255, 95, 210, 0.8)'); // ↑ magenta
 }
 async function refresh() {
   refreshTimer = null;
@@ -958,7 +1007,7 @@ async function refresh() {
     netFails = 0;
     if (Number.isFinite(d.pollMs) && d.pollMs > 0) pollMs = d.pollMs;
     if (typeof d.pi === 'string' && d.pi) defaultCmd = d.pi;
-    if (d.net) setNetReadout(d.net); else $('net').textContent = ''; // netDisplay: false
+    if (d.net) setNetReadout(d.net); else clearNetReadout(); // netDisplay: false
     // While a host's enable/disable toggle is in flight, a stale in-flight poll
     // must not snap it back to its old value (the "off → on → off" flicker).
     const prevHosts = hosts;

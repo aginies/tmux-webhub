@@ -194,6 +194,25 @@
      below #main's subtree (the terminal window) — a fullscreen terminal
      covers them. z-index must stay under #main's 2: #main is a stacking
      context, so anything >= 2 would float above the terminal too. */
+  body.view-town #net { display: none; } /* the Space-view box replaces the header pill */
+  #net-box {
+    display: none; position: fixed; left: 0; top: 0; z-index: 2;
+    transform-origin: 0 0; visibility: hidden;
+    width: 164px; padding: 6px 8px 7px;
+    background: rgba(10, 15, 24, 0.94);
+    color: var(--text, #f5f7ff);
+    border: 1px solid rgba(0, 229, 255, 0.35); border-radius: 8px;
+    box-shadow: 0 4px 14px rgba(0,0,0,.35);
+    font-size: 11px; font-variant-numeric: tabular-nums;
+    pointer-events: none; /* never blocks canvas drag/zoom behind it */
+  }
+  body.view-town #net-box:not([hidden]) { display: block; }
+  #net-box .nb-title { font-size: 9px; font-weight: 700; letter-spacing: .12em; color: var(--dim); }
+  #net-box .nb-rates { display: flex; justify-content: space-between; margin: 2px 0 4px; white-space: nowrap; }
+  #net-box #nb-in { color: #00e5ff; }
+  #net-box #nb-out { color: #ff5fd2; }
+  #net-box #nb-spark { display: block; width: 148px; height: 26px; }
+  #net-box .nb-totals { color: var(--dim); font-size: 10px; margin-top: 3px; white-space: nowrap; }
   #town-ctl {
     display: none; position: fixed; left: 12px; bottom: 12px; z-index: 1;
     flex-direction: column; gap: 4px;
@@ -497,6 +516,7 @@
     .group { flex: 0 0 auto; }
     .chips { flex-wrap: nowrap; }
     .net { display: none; } /* bandwidth readout is noise on a phone */
+    #net-box { display: none !important; } /* …and so is the Space-view box */
     #termbar { padding: 5px 8px; }
     .tname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
     /* bottom-sheet modals: when the on-screen keyboard opens it covers the
@@ -591,6 +611,12 @@
      header and the terminal window float above it. -->
 <div id="townwrap"><canvas id="town"></canvas></div>
 <!-- map controls: zoom in / out / fit the whole town (Town view only) -->
+<div id="net-box" hidden>
+  <div class="nb-title">NETWORK</div>
+  <div class="nb-rates"><span id="nb-in">↓ 0 B/s</span><span id="nb-out">↑ 0 B/s</span></div>
+  <canvas id="nb-spark" width="296" height="52"></canvas>
+  <div class="nb-totals" id="nb-totals"></div>
+</div>
 <div id="town-ctl">
   <button id="town-view-toggle" title="Switch between List and Space view">List</button>
   <button id="town-keys" title="Keys: special palette + virtual keyboard">⌨</button>

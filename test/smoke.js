@@ -148,12 +148,17 @@ test('GET /api/sessions: net stats present, totals monotonic', async () => {
   assert.ok(d1.net && typeof d1.net === 'object', 'net object present');
   assert.ok(Number.isFinite(d1.net.inBps) && Number.isFinite(d1.net.outBps), 'rates numeric');
   assert.ok(d1.net.inTotal > 0 && d1.net.outTotal > 0, 'bytes counted');
+  // per-second history for the Space-view sparkline: arrays, ≤ 60 samples, numeric
+  assert.ok(Array.isArray(d1.net.histIn) && Array.isArray(d1.net.histOut), 'histIn/histOut arrays present');
+  assert.ok(d1.net.histIn.length <= 60 && d1.net.histOut.length <= 60, 'history capped at 60 s');
+  for (const v of [...d1.net.histIn, ...d1.net.histOut]) assert.ok(Number.isFinite(v) && v >= 0, 'history samples numeric');
   // let the 1 s ring timer tick (a crash in it would kill the server)
   await new Promise((res) => setTimeout(res, 1100));
   const g2 = await fetch(base + '/api/sessions', { headers: { Cookie: cookie } });
   const d2 = await g2.json();
   assert.ok(d2.net.inTotal >= d1.net.inTotal, 'inTotal non-decreasing');
   assert.ok(d2.net.outTotal >= d1.net.outTotal, 'outTotal non-decreasing');
+  assert.ok(d2.net.histIn.length >= d1.net.histIn.length, 'history grows per second');
 });
 
 test('config: pollMs + netDisplay=false (restart-scoped)', async () => {

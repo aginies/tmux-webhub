@@ -65,6 +65,11 @@ session list; both show the same live data.
 - **Navigate** — click a building to zoom into it, wheel or pinch to zoom, drag
   to pan. The **+ / − / All** controls zoom about the view and fit the whole
   fleet.
+- **Network traffic** — with *Network display* on (⚙, default), a small box
+  floats to the right of the Town Hall: ↓/↑ rates (5 s average), a 60 s
+  sparkline (1 s samples) and totals since server start. It pans/zooms with the
+  hall and hides when it's off-screen or the view is List (the header keeps a
+  plain `↓ …/s · ↑ …/s` readout there).
 - **Floating terminal** — drag the title bar to move it, the corner handle to
   resize, double-click the title bar (or **⛶**) for fullscreen. **⤢ Split**
   attaches a second session side by side in the same window.

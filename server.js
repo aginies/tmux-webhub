@@ -1663,7 +1663,10 @@ if (NET_DISPLAY) {
   }, 1000).unref();
 }
 function netRate() {
-  return { inBps: netStats.sum5In, outBps: netStats.sum5Out, inTotal: netStats.inTotal, outTotal: netStats.outTotal };
+  // histIn/histOut: per-second samples (60 s cap) for the Space-view sparkline;
+  // ≤ 120 small numbers per poll, and only ever sent when netDisplay is on.
+  return { inBps: netStats.sum5In, outBps: netStats.sum5Out, inTotal: netStats.inTotal, outTotal: netStats.outTotal,
+           histIn: netStats.histIn.slice(-60), histOut: netStats.histOut.slice(-60) };
 }
 
 // GET /api/debug — what the server sees right now (authed: it names hosts and their
