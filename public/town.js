@@ -705,13 +705,14 @@
       const shipX = center.x * TT - shipW - 40;
       const shipY = center.y * TT + 10;
       const storageShip = { x: shipX, y: shipY, w: shipW, h: shipH, items: [], hostItems: [] };
-      this.bakeStorageShipHull(storageShip);
+      this.bakeShipHull(storageShip);
 
-      // Network traffic console to the right of the Town Hall — mirrors the
-      // ship's placement (40 px off the hall center, same top) so the two
-      // consoles frame the citadel symmetrically
-      const netW = 340, netH = 150;
-      const netPanel = { x: center.x * TT + 40, y: center.y * TT + 10, w: netW, h: netH };
+      // Network traffic console to the right of the Town Hall — same freighter
+      // hull as the Orbital Sessions ship, mirrored placement: its right flank
+      // clears the hall's outer wall by 40 px (the ship clears it the same way)
+      const netW = 420, netH = 170;
+      const netPanel = { x: (center.x + center.w) * TT + 40, y: center.y * TT + 10, w: netW, h: netH };
+      this.bakeShipHull(netPanel);
 
       this.town = { layout, ground, base, M, S, sp, cells, roofs, Wp, Hp, storageShip, netPanel };
       this.nav.clear(); // navigation grids are bound to the building objects
@@ -1500,8 +1501,9 @@
         const bxs = L.buildings.map((b) => b.x * TT);
         const bx2 = L.buildings.map((b) => (b.x + b.w) * TT);
         const shp = this.town.storageShip;
+        const net = this.town.netPanel;
         const minX = Math.min(...bxs, c.x * TT, shp ? shp.x : Infinity);
-        const maxX = Math.max(...bx2, (c.x + c.w) * TT, shp ? shp.x + shp.w : -Infinity);
+        const maxX = Math.max(...bx2, (c.x + c.w) * TT, shp ? shp.x + shp.w : -Infinity, net ? net.x + net.w : -Infinity);
         const cx = (minX + maxX) / 2;
         const top = Math.min(c.y * TT, ...L.buildings.map((b) => b.y * TT));
         const bottom = Math.max(...L.buildings.map((b) => (b.y + b.h) * TT), c.y * TT + 500);
@@ -2426,7 +2428,7 @@
     }
 
     // Pre-bake static cargo carrier hull for Orbital Sessions (saves ~40 drawing ops per frame)
-    bakeStorageShipHull(ship) {
+    bakeShipHull(ship) {
       const { w, h } = ship;
       const padL = 14, padR = 14;
       const S = this.bakeS || 1; // HiDPI: bake the hull at 2x for crisp edges
@@ -2675,24 +2677,24 @@
       }
     }
 
-    // Network traffic console right of the Town Hall — the Space-view successor
-    // to the old floating DOM box. Drawn as canvas art in the manifest's visual
-    // language (dark pill body, cyan border, JetBrains Mono vector text under
-    // the camera transform), so it pans/zooms in lockstep with the town and
-    // keeps its aspect at every zoom level. Data: app.js's poll via setNetData.
+    // Network traffic console right of the Town Hall — the same freighter hull
+    // and banner layout as the Orbital Sessions ship (Space-view successor to
+    // the old floating DOM box). Drawn as canvas art under the camera
+    // transform, so it keeps the town's aspect at every zoom. Data: app.js's
+    // poll via setNetData.
     drawNetPanel(ctx, t) {
       if (!this.town || !this.town.netPanel || !this.netData) return;
       const { x, y, w, h } = this.town.netPanel;
       const n = this.netData;
 
-      // panel body — the manifest pill styling: dark fill, cyan border
-      ctx.fillStyle = 'rgba(8, 12, 22, 0.88)';
-      ctx.fillRect(x, y, w, h);
-      ctx.strokeStyle = 'rgba(0, 229, 255, 0.45)';
-      ctx.lineWidth = 1;
-      ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+      // 1. Blit pre-baked freighter hull (same bake as the manifest ship)
+      const hull = this.town.netPanel;
+      if (hull.hullCanvas) {
+        ctx.drawImage(hull.hullCanvas, x - (hull.hullOffsetX || 14), y,
+          hull.hullW || hull.hullCanvas.width, hull.hullH || hull.hullCanvas.height);
+      }
 
-      // title banner, like the manifest's
+      // 2. Title banner text — crisp vector font, like the manifest's header
       ctx.font = '700 13px "JetBrains Mono", monospace';
       ctx.fillStyle = '#00e5ff';
       ctx.textAlign = 'left';
@@ -2711,10 +2713,10 @@
       ctx.fillText(inTxt, x + w - 18 - ow - 14, y + 20);
       ctx.textAlign = 'left';
 
-      // sparkline: last 60 s (1 s samples), newest at the right. Terminal
+      // 3. Sparkline: last 60 s (1 s samples), newest at the right. Terminal
       // traffic is bursty — one spike sets the scale — so each series is a
       // filled area: small values stay a faint band, spikes become wedges.
-      const sx = x + 14, sw = w - 28, sy = y + 36, sh = h - 66, floor = sy + sh;
+      const sx = x + 22, sw = w - 44, sy = y + 40, sh = h - 70, floor = sy + sh;
       const histIn = Array.isArray(n.histIn) ? n.histIn : [];
       const histOut = Array.isArray(n.histOut) ? n.histOut : [];
       let max = 1;
