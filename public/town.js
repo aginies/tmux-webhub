@@ -2714,9 +2714,20 @@
       ctx.textAlign = 'left';
 
       // 3. Sparkline: last 60 s (1 s samples), newest at the right. Terminal
-      // traffic is bursty — one spike sets the scale — so each series is a
-      // filled area: small values stay a faint band, spikes become wedges.
+      // traffic is bursty by nature — one spike (e.g. the page load itself) can
+      // be 1000× the idle poll rate, and a LINEAR scale then flattens every
+      // other sample to a fraction of a pixel ("no graph visible"). So the
+      // value axis is log-compressed: zeros stay on the floor, small values
+      // form a readable band, spikes tower. Each series is a filled area +
+      // stroke, drawn on a dark pill inset (the manifest's own pill styling)
+      // so the plot contrasts with the hull plating.
       const sx = x + 22, sw = w - 44, sy = y + 40, sh = h - 70, floor = sy + sh;
+      // plot inset: dark pill with a faint cyan border
+      ctx.fillStyle = 'rgba(8, 12, 22, 0.88)';
+      ctx.fillRect(sx, sy - 4, sw, sh + 8);
+      ctx.strokeStyle = 'rgba(0, 229, 255, 0.3)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(sx + 0.5, sy - 3.5, sw - 1, sh + 7);
       const histIn = Array.isArray(n.histIn) ? n.histIn : [];
       const histOut = Array.isArray(n.histOut) ? n.histOut : [];
       let max = 1;
@@ -2724,9 +2735,10 @@
       for (const v of histOut) if (v > max) max = v;
       const N = 60;
       const xAt = (i, off) => sx + sw - ((N - 1 - (i + off)) * sw) / (N - 1);
-      const yAt = (v) => floor - 3 - (v / max) * (sh - 8);
+      const lmax = Math.log1p(max);
+      const yAt = (v) => v > 0 ? floor - 3 - Math.max(3, (Math.log1p(v) / lmax) * (sh - 10)) : floor;
       ctx.fillStyle = 'rgba(167, 181, 218, 0.28)'; // baseline: plot area stays defined when idle
-      ctx.fillRect(sx, floor, sw, 1);
+      ctx.fillRect(sx + 2, floor, sw - 4, 1);
       const series = (hist, stroke, fill) => {
         if (!hist.length) return;
         const off = N - hist.length; // right-aligned: grows from the right edge
