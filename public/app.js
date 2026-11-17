@@ -482,7 +482,7 @@ function renderTabs() {
       cl.onclick = (e) => { e.stopPropagation(); closeTab(i); };
       el.append(ind, nm, cl);
       el.onclick = () => switchTab(i);
-      bar.insertBefore(el, bar.lastElementChild);
+      bar.appendChild(el);
     }
     el.className = 'tab' + (i === activeTab ? ' active' : '');
     el.querySelector('.tab-name').textContent = tab.name;
@@ -820,17 +820,6 @@ $('t-split').onclick = () => {
   } else {
     openSplit();
   }
-};
-
-// Tab add button: create a new session and open it in a new tab
-$('tab-add').onclick = () => {
-  // If split is active, don't allow tabs (split already provides multi-session)
-  if (splitActive) return;
-  // Open a new session
-  createSession(null, null, (key) => {
-    if (key) openTab(key);
-    renderTabs();
-  });
 };
 
 // Fullscreen toggle (Town view): the floating terminal window fills the area

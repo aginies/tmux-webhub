@@ -329,8 +329,6 @@
   .tab .tab-indicator { width: 6px; height: 6px; border-radius: 50%; flex: 0 0 auto; }
   .tab.active .tab-indicator { background: var(--amber); box-shadow: 0 0 4px var(--amber); }
   .tab:not(.active) .tab-indicator { background: var(--dim); }
-  #tabbar .tab-add { flex: 0 0 auto; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; border-radius: 4px; font-size: 18px; color: var(--dim); cursor: pointer; border: 1px dashed var(--border); background: none; margin-left: auto; }
-  #tabbar .tab-add:hover { background: var(--chip-hover); color: var(--text); border-color: var(--accent); }
   #termwrap { flex: 1 1 auto; min-height: 0; padding: 4px 6px; position: relative; }
   #term { position: absolute; inset: 4px 6px; touch-action: none; }
   /* touch-action:none: all gestures on the terminal are handled in JS —
@@ -605,7 +603,7 @@
       <button id="t-full" title="Fullscreen (the terminal window fills the screen)" style="display:none">⛶</button>
       <button id="t-detach" title="Detach (the session keeps running in tmux)" style="display:none">✕</button>
     </div>
-    <div id="tabbar" style="display:none"><button id="tab-add" class="tab-add" title="Create a new session in this window">+</button></div>
+    <div id="tabbar" style="display:none"></div>
     <div id="termwrap">
       <div id="placeholder">click a session above to attach — sessions are grouped by host (config.json)</div>
       <div id="term"></div>
