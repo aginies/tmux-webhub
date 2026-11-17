@@ -959,37 +959,54 @@ function clearNetReadout() {
 }
 // 60 s of per-second samples (server keeps the ring, 1 Hz), newest at the right.
 // Canvas is 2x the CSS size (296×52 for 148×26) so the lines stay crisp on HiDPI.
+// Terminal traffic is bursty — one big spike sets the scale, everything else
+// hugs the floor — so each series is drawn as a FILLED area (not just a thin
+// line): small values still show as a faint band, spikes as filled wedges.
 function drawNetSpark(n) {
   const cv = $('nb-spark');
   const ctx = cv.getContext('2d');
-  const W = cv.width, H = cv.height, N = 60;
+  const W = cv.width, H = cv.height, N = 60, FLOOR = H - 4; // 4 px floor: a zero line stays visible
   ctx.clearRect(0, 0, W, H);
   const histIn = Array.isArray(n.histIn) ? n.histIn : [];
   const histOut = Array.isArray(n.histOut) ? n.histOut : [];
   let max = 1;
   for (const v of histIn) if (v > max) max = v;
   for (const v of histOut) if (v > max) max = v;
-  const line = (hist, color) => {
+  const xAt = (i, off) => W - ((N - 1 - (i + off)) * W) / (N - 1); // right-align: grows from the right edge
+  const yAt = (v) => FLOOR - (v / max) * (H - 10);
+  // baseline: the plot area stays defined even when idle (all-zero history)
+  ctx.fillStyle = 'rgba(167, 181, 218, 0.28)';
+  ctx.fillRect(0, FLOOR, W, 1);
+  const series = (hist, stroke, fill) => {
     if (!hist.length) return;
-    const off = N - hist.length; // right-align: the line grows from the right edge
-    const pt = (i) => [W - ((N - 1 - (i + off)) * W) / (N - 1), H - 2 - (hist[i] / max) * (H - 6)];
-    if (hist.length === 1) { // a lone moveTo would stroke nothing — draw a dot
-      const [x, y] = pt(0);
-      ctx.fillStyle = color;
-      ctx.fillRect(x - 2, y - 2, 4, 4);
+    const off = N - hist.length;
+    if (hist.length === 1) { // a lone sample: a dot with a sliver down to the floor
+      const x = xAt(0, off), y = yAt(hist[0]);
+      ctx.fillStyle = fill;
+      ctx.fillRect(x - 2, y, 4, FLOOR - y + 1);
+      ctx.fillStyle = stroke;
+      ctx.fillRect(x - 3, y - 1.5, 6, 3);
       return;
     }
+    ctx.beginPath(); // area under the line (filled first, so the stroke sits on top)
+    ctx.moveTo(xAt(0, off), FLOOR);
+    for (let i = 0; i < hist.length; i++) ctx.lineTo(xAt(i, off), yAt(hist[i]));
+    ctx.lineTo(xAt(hist.length - 1, off), FLOOR);
+    ctx.closePath();
+    ctx.fillStyle = fill;
+    ctx.fill();
     ctx.beginPath();
     for (let i = 0; i < hist.length; i++) {
-      const [x, y] = pt(i);
+      const x = xAt(i, off), y = yAt(hist[i]);
       i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
     }
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 2;
+    ctx.strokeStyle = stroke;
+    ctx.lineWidth = 3;
+    ctx.lineJoin = 'round';
     ctx.stroke();
   };
-  line(histIn, 'rgba(0, 229, 255, 0.8)');   // ↓ cyan, matching the rate labels
-  line(histOut, 'rgba(255, 95, 210, 0.8)'); // ↑ magenta
+  series(histIn, 'rgba(0, 229, 255, 0.9)', 'rgba(0, 229, 255, 0.22)');   // ↓ cyan
+  series(histOut, 'rgba(255, 95, 210, 0.9)', 'rgba(255, 95, 210, 0.22)'); // ↑ magenta
 }
 async function refresh() {
   refreshTimer = null;
@@ -1170,6 +1187,11 @@ function setView(v) {
   view = v;
   localStorage.setItem('pc.view', v);
   document.body.classList.toggle('view-town', v === 'town');
+  // a session attached in List view keeps its floating window when Space view
+  // takes over — attach() only adds the class when the town view is already up,
+  // so without this the window would vanish on the switch (the CSS that shows
+  // it is scoped to body.view-town, so the class is inert in List view)
+  if (v === 'town' && active) $('termwin').classList.add('attached');
   $('view-toggle').textContent = v === 'town' ? 'List' : 'Space';
   if ($('town-view-toggle')) $('town-view-toggle').textContent = v === 'town' ? 'List' : 'Space';
   if (townView) {

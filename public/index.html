@@ -196,9 +196,15 @@
      context, so anything >= 2 would float above the terminal too. */
   body.view-town #net { display: none; } /* the Space-view box replaces the header pill */
   #net-box {
-    display: none; position: fixed; left: 0; top: 0; z-index: 2;
+    /* z-index 1: above the canvas (#townwrap, 0) but BELOW #main (2) — #main
+       owns the floating terminal window, which must cover the box, not the
+       other way round. (A z-2 box painted after #main in the DOM would sit
+       over the terminal. */
+    display: none; position: fixed; left: 0; top: 0; z-index: 1;
     transform-origin: 0 0; visibility: hidden;
-    width: 164px; padding: 6px 8px 7px;
+    /* max-content, not a fixed width: the totals row is longer than the
+       148 px canvas and a fixed box let it spill past the border */
+    width: max-content; padding: 6px 8px 7px;
     background: rgba(10, 15, 24, 0.94);
     color: var(--text, #f5f7ff);
     border: 1px solid rgba(0, 229, 255, 0.35); border-radius: 8px;
