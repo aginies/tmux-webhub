@@ -379,6 +379,7 @@ function switchTab(idx) {
   const tab = tabs[idx];
   if (!tab) return;
   // dispose old handler + close old WS before reconnecting (prevents duplicate onData + WS leak)
+  tab.ws.onclose = null; // prevent setupTabClose from firing on intentional close
   try { tab.dataSub.dispose(); } catch {}
   try { tab.ws.close(); } catch {}
   tab.active = true;
@@ -400,6 +401,7 @@ function switchTab(idx) {
 function closeTab(idx) {
   if (idx < 0 || idx >= tabs.length) return;
   const tab = tabs[idx];
+  tab.ws.onclose = null; // prevent setupTabClose from firing on intentional close
   try { tab.dataSub.dispose(); } catch {}
   try { tab.ws.close(); } catch {}
   tabs.splice(idx, 1);
@@ -467,8 +469,8 @@ function attach(key, opts) {
   // so the new session opens as a second tab (user clicks another chip while one is open)
   if (active && active.key !== key) {
     const orig = active; // save before we clear it
-    // convert existing active session into tab 0
-    orig.active = true;
+    // convert existing active session into tab 0 (inactive — tab 1 will be active)
+    orig.active = false;
     orig.tabIdx = 0;
     tabs.push(orig);
     setupTabClose(orig);
