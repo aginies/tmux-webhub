@@ -323,14 +323,25 @@
   .tab:hover { background: var(--chip-hover, rgba(255,255,255,.05)); }
   .tab.active { background: var(--panel); border-color: var(--border); font-weight: 700; }
   .tab.dead { opacity: .55; }
+  /* indicator dot = socket state: green = live WS (tabs keep it open in the
+     background), red = connection lost / rate-limited — click the tab to reconnect */
   .tab.dead .tab-indicator { background: var(--red); }
+  /* toast: transient banner under the header (rate-limit warnings etc.) */
+  #toast {
+    position: fixed; top: 52px; left: 50%; transform: translateX(-50%); z-index: 60;
+    background: var(--panel-2, #1b2232); color: var(--text);
+    border: 1px solid var(--amber); border-radius: 8px;
+    padding: 8px 14px; font-size: 13px; max-width: min(92vw, 520px);
+    box-shadow: 0 8px 30px rgba(0,0,0,.4); display: none;
+  }
+  #toast.show { display: block; }
   .tab .tab-name { overflow: hidden; text-overflow: ellipsis; max-width: 120px; }
   .tab .tab-close { flex: 0 0 auto; width: 16px; height: 16px; display: flex; align-items: center; justify-content: center; border-radius: 3px; font-size: 13px; color: var(--dim); opacity: 0; transition: opacity .1s; }
   .tab:hover .tab-close { opacity: .7; }
   .tab .tab-close:hover { opacity: 1; background: var(--red); color: #fff; }
   .tab .tab-indicator { width: 6px; height: 6px; border-radius: 50%; flex: 0 0 auto; }
-  .tab.active .tab-indicator { background: var(--amber); box-shadow: 0 0 4px var(--amber); }
-  .tab:not(.active) .tab-indicator { background: var(--dim); }
+  .tab .tab-indicator { background: var(--green); }
+  .tab.active .tab-indicator { box-shadow: 0 0 4px var(--green); }
   #termwrap { flex: 1 1 auto; min-height: 0; padding: 4px 6px; position: relative; }
   #term { position: absolute; inset: 4px 6px; touch-action: none; }
   /* touch-action:none: all gestures on the terminal are handled in JS —
@@ -592,6 +603,7 @@
   <button id="edit-config" title="Edit config.json">⚙</button>
 </header>
 <button id="unhide" class="hidden" title="Show session panel">☰ sessions</button>
+<div id="toast" role="status"></div>
 
 <div id="layout">
   <main id="main">

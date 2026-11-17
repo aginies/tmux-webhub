@@ -348,6 +348,17 @@ function resetTerminalWindow() {
   syncTermButtons();
   renderChips();
 }
+// Transient banner under the header — used for recoverable conditions the user
+// should understand (e.g. the server's WS rate limit), auto-hides.
+let toastTimer = null;
+function showToast(msg, ms) {
+  const el = $('toast');
+  if (!el) return;
+  el.textContent = msg;
+  el.classList.add('show');
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.classList.remove('show'); toastTimer = null; }, ms || 8000);
+}
 // Set up ws.onclose for a tab — if the WS dies (server disconnect, session killed),
 // remove the tab and switch to the next available one.
 function setupTabClose(tab) {
@@ -356,6 +367,17 @@ function setupTabClose(tab) {
     if (idx === -1) return; // already removed
     const wasActive = (idx === activeTab);
     const sessionEnded = /session ended/i.test(ev.reason || '');
+    // Rate-limited by the server (too many WS connections this minute): keep the
+    // tab even if it was ACTIVE, mark it dead and explain — clicking it reconnects.
+    // Removing it would silently eat the window (the 4290 arrives right after a
+    // tab open, when it's usually the only/active one).
+    if (ev.code === 4290) {
+      tab.wsDead = true;
+      try { tab.dataSub.dispose(); } catch {}
+      renderTabs();
+      showToast('⚠ Too many terminal connections this minute — click the tab to reconnect in a few seconds.');
+      return;
+    }
     if (!wasActive && !sessionEnded) {
       // A BACKGROUND tab lost its WS (network blip / server restart) — keep the
       // tab and mark the socket dead; switchTab reconnects on activation. Only a
@@ -406,12 +428,15 @@ function openTab(key, opts) {
   return activeTab;
 }
 function switchTab(idx) {
-  if (idx === activeTab) return;
+  const cur0 = tabs[idx];
+  // clicking the ALREADY-active tab only does something when its socket is dead
+  // (rate-limited / blipped) — then it's the reconnect gesture the toast promises
+  if (idx === activeTab && !(cur0 && (cur0.wsDead || !cur0.ws || cur0.ws.readyState >= WebSocket.CLOSING))) return;
   // Deactivate the current tab but KEEP ITS WS OPEN: reconnecting on every switch
   // hammers the server's WS rate limiter (10 conn/min/IP → close 4290 → tab removed
   // → window closes) and re-spawns ssh+tmux-attach per switch. The st.active flag
   // already gates its input/output while inactive.
-  if (activeTab >= 0 && activeTab < tabs.length) tabs[activeTab].active = false;
+  if (activeTab >= 0 && activeTab < tabs.length && activeTab !== idx) tabs[activeTab].active = false;
   activeTab = idx;
   const tab = tabs[idx];
   if (!tab) return;
@@ -428,6 +453,9 @@ function switchTab(idx) {
     st.active = true;
     tabs[idx] = st; // replace in array so the onData closure's st IS tabs[idx]
     setupTabClose(st);
+    // the reconnect gesture succeeded — retire any rate-limit/blip toast
+    if (toastTimer) { clearTimeout(toastTimer); toastTimer = null; }
+    const tEl = $('toast'); if (tEl) tEl.classList.remove('show');
   } else {
     tab.active = true;
     // The WS was never closed, so tmux won't redraw spontaneously: toggle the pty
