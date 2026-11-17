@@ -365,10 +365,15 @@ function openTab(key, opts) {
   const s = opts.session || findSession(key);
   const sessionName = (opts && opts.name) || (s ? s.name : key.split(':').pop());
   const host = (opts && opts.host) || (s ? s.host : 'localhost');
-  // deactivate current tab (active flag handles input/output routing)
+  // close current tab's WS + dispose handler (stop data flowing to shared xterm)
   if (activeTab >= 0 && activeTab < tabs.length) {
-    tabs[activeTab].active = false;
+    const old = tabs[activeTab];
+    old.active = false;
+    old.ws.onclose = null;
+    try { old.dataSub.dispose(); } catch {}
+    try { old.ws.close(); } catch {}
   }
+  term.reset(); // clear old content before new tab's tmux redraw
   const st = connectTerminal(key, host, sessionName, term, () => {
     if (activeTab === tabs.length - 1) { fitTerm(); term.focus(); }
   });
@@ -381,30 +386,31 @@ function openTab(key, opts) {
 }
 function switchTab(idx) {
   if (idx === activeTab) return;
-  // deactivate current tab (active flag handles input/output routing)
+  // close current tab's WS + dispose handler (stop data flowing to shared xterm)
   if (activeTab >= 0 && activeTab < tabs.length) {
-    tabs[activeTab].active = false;
+    const old = tabs[activeTab];
+    old.active = false;
+    old.ws.onclose = null;
+    try { old.dataSub.dispose(); } catch {}
+    try { old.ws.close(); } catch {}
   }
   activeTab = idx;
   const tab = tabs[idx];
   if (!tab) return;
-  // dispose old handler + close old WS before reconnecting (prevents duplicate onData + WS leak)
-  tab.ws.onclose = null; // prevent setupTabClose from firing on intentional close
-  try { tab.dataSub.dispose(); } catch {}
-  try { tab.ws.close(); } catch {}
-  tab.active = true;
+  // clear terminal so only the new tab's content shows
+  term.reset();
   // reconnect this tab on the shared xterm
   const st = connectTerminal(tab.key, tab.host, tab.name, term, () => {
     fitTerm(); term.focus();
   });
-  Object.assign(tab, st);
-  tab.active = true;
-  setupTabClose(tab);
+  st.active = true;
+  tabs[idx] = st; // replace in array so the onData closure's st IS tabs[idx]
+  setupTabClose(st);
   $('placeholder').style.display = 'none';
   $('t-detach').style.display = '';
-  $('t-name').textContent = tab.name;
-  $('t-cwd').textContent = findSession(tab.key) ? findSession(tab.key).cwd : '';
-  if (view === 'town' && townView) { $('termwin').classList.add('attached'); townView.activeKey = tab.key; townView.needsRedraw = true; }
+  $('t-name').textContent = st.name;
+  $('t-cwd').textContent = findSession(st.key) ? findSession(st.key).cwd : '';
+  if (view === 'town' && townView) { $('termwin').classList.add('attached'); townView.activeKey = st.key; townView.needsRedraw = true; }
   renderTabs();
   syncTermButtons();
 }
@@ -491,10 +497,14 @@ function attach(key, opts) {
     const orig = active; // save before we clear it
     // convert existing active session into tab 0 (inactive — tab 1 will be active)
     orig.active = false;
+    orig.ws.onclose = null;
+    try { orig.dataSub.dispose(); } catch {}
+    try { orig.ws.close(); } catch {}
     orig.tabIdx = 0;
     tabs.push(orig);
     setupTabClose(orig);
     active = null;
+    term.reset(); // clear old content before new tab's tmux redraw
     // now create tab 1 directly (don't use openTab — it would deactivate tab 0)
     const s = findSession(key);
     const sessionName = (opts && opts.name) || (s ? s.name : key.split(':').pop());
