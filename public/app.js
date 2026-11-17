@@ -102,7 +102,9 @@ term.open($('term'));
 
 let resizeSendTimer = null;
 function fitTerm() {
-  if (!active) return;
+  // currentConn(): the resize must reach the ACTIVE TAB's ws in tab mode
+  // (`active` is null there) — otherwise window/drag resizes never reach tmux
+  if (!currentConn()) return;
   try {
     fit.fit(); // immediate: the xterm layout must follow the container right away
     // throttle the ws.send: a resize drag fires per pixel and each send is a tmux
@@ -110,8 +112,9 @@ function fitTerm() {
     if (resizeSendTimer) return;
     resizeSendTimer = setTimeout(() => {
       resizeSendTimer = null;
-      if (active) {
-        try { active.ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows })); } catch {}
+      const conn = currentConn(); // re-resolve: the tab may have switched during the throttle
+      if (conn && conn.ws.readyState === WebSocket.OPEN) {
+        try { conn.ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows })); } catch {}
       }
     }, 100);
   } catch {}
