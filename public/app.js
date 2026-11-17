@@ -327,6 +327,27 @@ function dropSession(key) {
 function findTab(key) {
   return tabs.findIndex((t) => t.key === key);
 }
+// Set up ws.onclose for a tab — if the WS dies (server disconnect, session killed),
+// remove the tab and switch to the next available one.
+function setupTabClose(tab) {
+  tab.ws.onclose = (ev) => {
+    const idx = findTab(tab.key);
+    if (idx === -1) return; // already removed
+    const wasActive = (idx === activeTab);
+    try { tab.dataSub.dispose(); } catch {}
+    tabs.splice(idx, 1);
+    if (wasActive) {
+      activeTab = tabs.length > 0 ? Math.min(idx, tabs.length - 1) : -1;
+      if (activeTab >= 0) switchTab(activeTab);
+      else { detach(); }
+    } else if (activeTab > idx) {
+      activeTab--;
+    }
+    renderTabs();
+    const why = ev.reason ? ev.reason : 'connection closed';
+    term.write('\x1b[90m[' + why + ' — ' + tab.key + ']\x1b[0m\r\n');
+  };
+}
 function openTab(key, opts) {
   opts = opts || {};
   const idx = findTab(key);
@@ -344,6 +365,7 @@ function openTab(key, opts) {
   st.tabIdx = tabs.length;
   st.active = true;
   tabs.push(st);
+  setupTabClose(st);
   activeTab = tabs.length - 1;
   return activeTab;
 }
@@ -356,13 +378,17 @@ function switchTab(idx) {
   activeTab = idx;
   const tab = tabs[idx];
   if (!tab) return;
+  // dispose old handler + close old WS before reconnecting (prevents duplicate onData + WS leak)
+  try { tab.dataSub.dispose(); } catch {}
+  try { tab.ws.close(); } catch {}
   tab.active = true;
-  // reconnect this tab (WS may have closed while inactive)
+  // reconnect this tab on the shared xterm
   const st = connectTerminal(tab.key, tab.host, tab.name, term, () => {
     fitTerm(); term.focus();
   });
   Object.assign(tab, st);
   tab.active = true;
+  setupTabClose(tab);
   $('placeholder').style.display = 'none';
   $('t-detach').style.display = '';
   $('t-name').textContent = tab.name;
@@ -445,6 +471,7 @@ function attach(key, opts) {
     orig.active = true;
     orig.tabIdx = 0;
     tabs.push(orig);
+    setupTabClose(orig);
     active = null;
     // now create tab 1 directly (don't use openTab — it would deactivate tab 0)
     const s = findSession(key);
@@ -456,6 +483,7 @@ function attach(key, opts) {
     st1.tabIdx = 1;
     st1.active = true;
     tabs.push(st1);
+    setupTabClose(st1);
     activeTab = 1;
     renderTabs();
     return;
