@@ -1736,9 +1736,13 @@ function keyToArgv(k) {
 }
 const wss = new WebSocket.Server({ server, path: '/ws', maxPayload: 4 * 1024 * 1024 });
 
-// Rate limiting for WebSocket connections per IP
+// Rate limiting for WebSocket connections per IP. Sized for the browser tab UI:
+// each terminal tab holds ONE live WS (switching tabs no longer reconnects), and
+// page reloads / re-attaches still churn connections — 10/min was hit by normal
+// use and rejected sockets close the tab on the client. 30/min stays a real
+// DoS bound while leaving room for a multi-tab session plus reloads.
 const wsConnectionsByIp = new Map();
-const WS_MAX_CONNECTIONS_PER_IP = 10;
+const WS_MAX_CONNECTIONS_PER_IP = 30;
 const WS_RATE_WINDOW_MS = 60000; // 1 minute
 
 function cleanupWsRateMap() {

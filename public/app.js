@@ -355,6 +355,16 @@ function setupTabClose(tab) {
     const idx = findTab(tab.key);
     if (idx === -1) return; // already removed
     const wasActive = (idx === activeTab);
+    const sessionEnded = /session ended/i.test(ev.reason || '');
+    if (!wasActive && !sessionEnded) {
+      // A BACKGROUND tab lost its WS (network blip / server restart) — keep the
+      // tab and mark the socket dead; switchTab reconnects on activation. Only a
+      // real 'session ended' or the death of the ACTIVE tab removes the tab.
+      tab.wsDead = true;
+      try { tab.dataSub.dispose(); } catch {}
+      renderTabs();
+      return;
+    }
     try { tab.dataSub.dispose(); } catch {}
     tabs.splice(idx, 1);
     if (wasActive) {
@@ -377,14 +387,9 @@ function openTab(key, opts) {
   const s = opts.session || findSession(key);
   const sessionName = (opts && opts.name) || (s ? s.name : key.split(':').pop());
   const host = (opts && opts.host) || (s ? s.host : 'localhost');
-  // close current tab's WS + dispose handler (stop data flowing to shared xterm)
-  if (activeTab >= 0 && activeTab < tabs.length) {
-    const old = tabs[activeTab];
-    old.active = false;
-    old.ws.onclose = null;
-    try { old.dataSub.dispose(); } catch {}
-    try { old.ws.close(); } catch {}
-  }
+  // Deactivate the current tab but KEEP ITS WS OPEN (st.active gates its I/O) —
+  // see switchTab for why we don't close/reconnect per switch (server WS rate limit)
+  if (activeTab >= 0 && activeTab < tabs.length) tabs[activeTab].active = false;
   term.reset(); // clear old content before new tab's tmux redraw
   const st = connectTerminal(key, host, sessionName, term, () => {
     if (activeTab === tabs.length - 1) { fitTerm(); term.focus(); }
@@ -402,35 +407,51 @@ function openTab(key, opts) {
 }
 function switchTab(idx) {
   if (idx === activeTab) return;
-  // close current tab's WS + dispose handler (stop data flowing to shared xterm)
-  if (activeTab >= 0 && activeTab < tabs.length) {
-    const old = tabs[activeTab];
-    old.active = false;
-    old.ws.onclose = null;
-    try { old.dataSub.dispose(); } catch {}
-    try { old.ws.close(); } catch {}
-  }
+  // Deactivate the current tab but KEEP ITS WS OPEN: reconnecting on every switch
+  // hammers the server's WS rate limiter (10 conn/min/IP → close 4290 → tab removed
+  // → window closes) and re-spawns ssh+tmux-attach per switch. The st.active flag
+  // already gates its input/output while inactive.
+  if (activeTab >= 0 && activeTab < tabs.length) tabs[activeTab].active = false;
   activeTab = idx;
   const tab = tabs[idx];
   if (!tab) return;
   // clear terminal so only the new tab's content shows
   term.reset();
-  // reconnect this tab on the shared xterm
-  const st = connectTerminal(tab.key, tab.host, tab.name, term, () => {
-    fitTerm(); term.focus();
-  });
-  st.active = true;
-  tabs[idx] = st; // replace in array so the onData closure's st IS tabs[idx]
-  setupTabClose(st);
+  const wsDead = !tab.ws || tab.wsDead || tab.ws.readyState >= WebSocket.CLOSING;
+  if (wsDead) {
+    // WS died while the tab was inactive (network blip / server restart):
+    // fresh attach — tmux full-redraws the screen on attach
+    try { tab.dataSub.dispose(); } catch {}
+    const st = connectTerminal(tab.key, tab.host, tab.name, term, () => {
+      fitTerm(); term.focus();
+    });
+    st.active = true;
+    tabs[idx] = st; // replace in array so the onData closure's st IS tabs[idx]
+    setupTabClose(st);
+  } else {
+    tab.active = true;
+    // The WS was never closed, so tmux won't redraw spontaneously: toggle the pty
+    // size by one row (two SIGWINCHes) to force a full repaint of the screen.
+    // At rows<=2 the row toggle would be a no-op (min size is 2) — toggle cols then.
+    if (tab.ws.readyState === WebSocket.OPEN) {
+      try {
+        const rr = (c, r) => tab.ws.send(JSON.stringify({ type: 'resize', cols: c, rows: r }));
+        if (term.rows > 2) { rr(term.cols, term.rows - 1); rr(term.cols, term.rows); }
+        else { rr(Math.max(2, term.cols - 1), term.rows); rr(term.cols, term.rows); }
+      } catch {}
+    }
+    term.focus();
+  }
+  const cur = tabs[idx];
   $('placeholder').style.display = 'none';
   $('t-detach').style.display = '';
-  $('t-name').textContent = st.name;
-  const ss = findSession(st.key);
+  $('t-name').textContent = cur.name;
+  const ss = findSession(cur.key);
   $('t-cwd').textContent = ss ? ss.cwd : '';
-  needsYou.delete(st.key); // you're looking at it now — it no longer "needs you"
+  needsYou.delete(cur.key); // you're looking at it now — it no longer "needs you"
   renderNeedsYouBadge();
   updateLocalBadge(ss);
-  if (view === 'town' && townView) { $('termwin').classList.add('attached'); townView.activeKey = st.key; townView.needsRedraw = true; }
+  if (view === 'town' && townView) { $('termwin').classList.add('attached'); townView.activeKey = cur.key; townView.needsRedraw = true; }
   renderTabs();
   syncTermButtons();
 }
@@ -484,9 +505,9 @@ function renderTabs() {
       el.onclick = () => switchTab(i);
       bar.appendChild(el);
     }
-    el.className = 'tab' + (i === activeTab ? ' active' : '');
+    el.className = 'tab' + (i === activeTab ? ' active' : '') + (tab.wsDead ? ' dead' : '');
     el.querySelector('.tab-name').textContent = tab.name;
-    el.title = tab.key;
+    el.title = tab.wsDead ? tab.key + ' — connection lost, click to reconnect' : tab.key;
   }
   // remove old tabs
   for (const [i, el] of existing) {
@@ -520,17 +541,14 @@ function attach(key, opts) {
   // so the new session opens as a second tab (user clicks another chip while one is open)
   if (active && active.key !== key) {
     const orig = active; // save before we clear it
-    // convert existing active session into tab 0 (inactive — tab 1 will be active).
-    // Its WS is closed here; switchTab reconnects it (and installs a fresh
-    // setupTabClose handler) when the user clicks the tab. Do NOT call
-    // setupTabClose on the closing socket: the async close event would fire the
-    // new handler and remove the tab immediately.
+    // Convert the existing active session into tab 0 (inactive — tab 1 will be
+    // active). Its WS stays OPEN, gated by active=false; setupTabClose replaces
+    // attach()'s onclose (which guards on active === st, now null, so it could
+    // never fire correctly anyway). switchTab repaints it when clicked.
     orig.active = false;
-    orig.ws.onclose = null;
-    try { orig.dataSub.dispose(); } catch {}
-    try { orig.ws.close(); } catch {}
     orig.tabIdx = 0;
     tabs.push(orig);
+    setupTabClose(orig);
     active = null;
     term.reset(); // clear old content before new tab's tmux redraw
     // now create tab 1 directly (don't use openTab — it would deactivate tab 0)
@@ -651,10 +669,14 @@ function currentConn() {
 }
 
 // tmux counts our own web client once its ws is open; subtract it to get the number of
-// OTHER clients attached (shared by the chip tooltip and the "also attached" badge)
+// OTHER clients attached (shared by the chip tooltip and the "also attached" badge).
+// Tab mode keeps background tabs' sockets OPEN, so check every live tab connection
+// (tabs dedupe by key, so at most one of them matches), not just the active one.
 function otherAttached(s) {
-  const conn = currentConn();
-  const selfAttached = conn && conn.key === keyOf(s.host, s.name) && conn.ws && conn.ws.readyState === WebSocket.OPEN;
+  const k = keyOf(s.host, s.name);
+  const live = (c) => c && c.key === k && c.ws && !c.wsDead && c.ws.readyState === WebSocket.OPEN;
+  let selfAttached = live(active);
+  if (!selfAttached) { for (const t of tabs) { if (live(t)) { selfAttached = true; break; } } }
   return s.attached - (selfAttached ? 1 : 0);
 }
 
