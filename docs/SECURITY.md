@@ -22,6 +22,11 @@ token out of stranger hands, and assume a local-network attacker.**
   pass `?token=…` on the WS URL, or — **preferred** — an `Authorization: Bearer
   <token>` header, because query strings land in proxy/access logs and the
   `Referer` header and leak the token.
+- Both raw-token paths — the cookie **and** the `Bearer` header — stop working as
+  soon as a TOTP secret is enrolled. They are gated identically, so 2FA can't be
+  sidestepped by switching from a cookie to a header. With 2FA enrolled,
+  non-browser clients authenticate with `POST /login` (`{"token": …, "code":
+  "123456"}`) and use the returned session cookie.
 - Wrong tokens are rate-limited (5 / 15 min per source IP — the daemon's view of
   the connection, so behind a proxy or an `ssh -L` tunnel that is the
   proxy/tunnel's address, not each end user). Comparison is constant-time.
@@ -30,7 +35,8 @@ token out of stranger hands, and assume a local-network attacker.**
 - `?token=` on the WS URL is retained **only** for the pitux/mobile companion, which
   can't set an `Authorization` header. Its residual risk is the token appearing in
   proxy/access/`Referer` logs; enrolling 2FA closes it (the raw token is rejected at
-  the WS once a TOTP secret is set). Use the Bearer header for any client that can
+  the WS **and** on every `/api/` route once a TOTP secret is set, however it is
+  presented). Use the Bearer header for any client that can
   set headers.
 
 ## Two-factor (TOTP)
@@ -39,7 +45,8 @@ token out of stranger hands, and assume a local-network attacker.**
   secret on first login — scan the QR code with any authenticator app (or type
   the base32 secret), confirm with a 6-digit code, and the secret is saved to
   `config.json`. From then on every login needs **token + code**, and the raw
-  token no longer grants access anywhere (login cookie, `?token=`, WS) — it's
+  token no longer grants access anywhere (login cookie, `Authorization: Bearer`,
+  `?token=`, WS) — it's
   replaced by a random session cookie (30 days, in-memory, so a restart logs
   everyone out). Wrong codes share the token rate limit.
 - Disable from ⚙ → *two-factor* with a 6-digit code (the phone must be in hand),

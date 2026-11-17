@@ -827,10 +827,16 @@ function authed(req) {
   if (sessionOf(req)) return true; // 2FA session cookie
   // raw-token cookie: valid while 2FA is off, or while no TOTP secret is enrolled.
   // A lingering secret with 2FA set to "off" must NOT block login (the mode wins).
-  if ((TWOFA === null || totpSecret() === null) && validToken(cookieOf(req))) return true;
-  // Authorization: Bearer header (non-browser clients)
+  const rawOk = TWOFA === null || totpSecret() === null;
+  if (rawOk && validToken(cookieOf(req))) return true;
+  // Authorization: Bearer header (non-browser clients). Gated EXACTLY like the raw
+  // cookie above: once a TOTP secret is enrolled the bare token must not grant
+  // access anywhere — an ungated Bearer path was a 2FA bypass (token leaked via
+  // ?token= in proxy logs, a shoulder-surfed curl, a copied config.json → full API
+  // + terminal without the code). With 2FA enrolled, non-browser clients log in
+  // (POST /login, token + code) and use the session cookie.
   const auth = req.headers.authorization || '';
-  if (auth.startsWith('Bearer ') && validToken(auth.slice(7))) return true;
+  if (rawOk && auth.startsWith('Bearer ') && validToken(auth.slice(7))) return true;
   return false;
 }
 // brute-force guard: 5 failed logins / 15 min per source IP
@@ -1797,7 +1803,9 @@ wss.on('connection', (ws, req) => {
   if (tooManyLogins(ip)) { log.warn('ws', 'rejected: too many attempts', { ip }); ws.close(4401, 'too many attempts, try again in 15 min'); return; }
   // auth: cookie (same-origin browsers) or ?token= (non-browser clients). With a TOTP
   // secret enrolled the raw token is rejected here too — only the session cookie
-  // (token + code at login) gets through. Prefer the `Authorization: Bearer` header
+  // (token + code at login) gets through, whichever way the raw token is presented
+  // (?token=, a raw-token cookie, or Authorization: Bearer — authed() gates all
+  // three identically; see the comment there). Prefer the `Authorization: Bearer` header
   // over ?token= for non-browser clients: query strings land in proxy / access logs
   // and the Referer header, leaking the token. ?token= is retained only for the
   // pitux/mobile companion (which can't set a custom header); its residual risk

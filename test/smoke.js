@@ -100,6 +100,18 @@ test('GET /api/sessions with cookie → 200 + hosts array', async () => {
   assert.equal(d.polling, false); // no hosts configured → first poll resolves instantly
 });
 
+test('GET /api/sessions with Authorization: Bearer → 200 (2FA off)', async () => {
+  const r = await fetch(base + '/api/sessions', { headers: { Authorization: 'Bearer ' + token } });
+  assert.equal(r.status, 200);
+  const d = await r.json();
+  assert.ok(Array.isArray(d.hosts));
+});
+
+test('GET /api/sessions with a wrong Bearer token → 401', async () => {
+  const r = await fetch(base + '/api/sessions', { headers: { Authorization: 'Bearer nope' } });
+  assert.equal(r.status, 401);
+});
+
 test('GET /api/net-interfaces without cookie → 401', async () => {
   const r = await fetch(base + '/api/net-interfaces');
   assert.equal(r.status, 401);
@@ -691,6 +703,15 @@ test('2FA: required forces enrollment, then token+code is mandatory', async () =
     // 6. raw token no longer accepted anywhere once enrolled
     r = await fetch(b2 + '/api/sessions', { headers: { Cookie: 'pc_token=' + encodeURIComponent(tok) } });
     assert.equal(r.status, 401, 'raw-token cookie rejected once enrolled');
+    // Bearer is the raw token too: it MUST be gated the same way, otherwise it is a
+    // 2FA bypass (a token leaked from ?token= logs or a copied config.json would grant
+    // the whole API + a terminal with no code)
+    r = await fetch(b2 + '/api/sessions', { headers: { Authorization: 'Bearer ' + tok } });
+    assert.equal(r.status, 401, 'Bearer token rejected once 2FA is enrolled');
+    r = await fetch(b2 + '/api/config', { headers: { Authorization: 'Bearer ' + tok } });
+    assert.equal(r.status, 401, 'Bearer token rejected on the config route too');
+    r = await fetch(b2 + '/api/debug', { headers: { Authorization: 'Bearer ' + tok } });
+    assert.equal(r.status, 401, 'Bearer token rejected on /api/debug too');
     r = await post('/login', { token: tok });
     // token is valid but no code yet → server asks for the 6-digit code (advances, no session)
     assert.equal(r.status, 200, 'token-only login once enrolled');
@@ -698,6 +719,12 @@ test('2FA: required forces enrollment, then token+code is mandatory', async () =
     assert.ok(!r.headers.get('set-cookie'), 'no session cookie until the code is verified');
     await new Promise((resolve, reject) => {
       const ws = new WebSocket(b2.replace('http', 'ws') + '/ws?host=x&session=y&token=' + tok);
+      ws.on('close', (code) => (code === 4401 ? resolve() : reject(new Error('close code ' + code))));
+      ws.on('error', reject);
+    });
+    // the WS upgrade reads the same authed(): a Bearer header there must be rejected too
+    await new Promise((resolve, reject) => {
+      const ws = new WebSocket(b2.replace('http', 'ws') + '/ws?host=x&session=y', { headers: { Authorization: 'Bearer ' + tok } });
       ws.on('close', (code) => (code === 4401 ? resolve() : reject(new Error('close code ' + code))));
       ws.on('error', reject);
     });
@@ -737,6 +764,9 @@ test('2FA: required forces enrollment, then token+code is mandatory', async () =
     assert.equal(JSON.parse(fs.readFileSync(cfg, 'utf8')).totp, undefined, 'secret removed');
     r = await post('/login', { token: tok });
     assert.equal(r.status, 200, 'token-only login works again after disable');
+    // 2FA off again → the raw token (Bearer) is usable by non-browser clients
+    r = await fetch(b2 + '/api/sessions', { headers: { Authorization: 'Bearer ' + tok } });
+    assert.equal(r.status, 200, 'Bearer works again once 2FA is disabled');
   } finally {
     ch.kill('SIGTERM');
     fs.rmSync(dir, { recursive: true, force: true });

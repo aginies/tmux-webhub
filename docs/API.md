@@ -12,6 +12,19 @@ curl -H "Authorization: Bearer your-token" https://localhost:8787/api/sessions
 
 The token is configured in `config.json` (`token` field) or via the `PC_TOKEN` environment variable.
 
+**With 2FA enrolled** (`"twoFA": "required"`/`"optional"` + a TOTP secret), the
+bare token is no longer accepted — not as a cookie, not as `?token=`, and not as
+a `Bearer` header. Log in with token + code and reuse the session cookie:
+
+```bash
+curl -k -c cj.txt -X POST https://localhost:8787/login \
+  -H 'Content-Type: application/json' \
+  -d '{"token":"your-token","code":"123456"}'
+curl -k -b cj.txt https://localhost:8787/api/sessions
+```
+
+The session cookie lives 30 days in server memory (a restart invalidates it).
+
 ## Base URL
 
 ```
