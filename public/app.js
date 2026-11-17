@@ -213,7 +213,7 @@ function connectTerminal(key, host, name, term, onOpen) {
     ws.send(JSON.stringify({ type: 'input', data: chunks.join(''), chunks }));
   };
   st.dataSub = term.onData((d) => {
-    if (!st.active) return; // only the active tab sends input
+    if (st.active === false) return; // only the active tab sends input (undefined = non-tab path, allowed)
     buf.push(d);
     if (buf.length >= INPUT_MAX) buf.shift(); // drop oldest
     if (flushTimer == null) flushTimer = setTimeout(flush, INPUT_FLUSH_MS);
@@ -225,7 +225,7 @@ function connectTerminal(key, host, name, term, onOpen) {
   ws.onmessage = (ev) => {
     // server→client text frames ARE the terminal output (no control messages from server)
     // only write if this tab is active (other tabs' WS stay open but don't pollute the display)
-    if (st.active && typeof ev.data === 'string') term.write(ev.data);
+    if (st.active !== false && typeof ev.data === 'string') term.write(ev.data);
   };
   return st;
 }
