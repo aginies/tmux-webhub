@@ -58,6 +58,8 @@ Each host is `{ "name": …, "ssh"?: …, "cmd"?: …, "enabled"?: false }`.
 - `name` — required, must match `/^[A-Za-z0-9][A-Za-z0-9._-]*$/` (a tmux target
   name; the same rule is mirrored in the web UI and in `pitux`).
 - `ssh` — if present, commands run over SSH; absent → commands run **locally**.
+  An optional port may be appended (`user@host:2222`) and is passed to ssh as
+  `-p 2222`.
   Remote connections use **the identity of the user running the daemon** — their
   SSH keys or an SSH agent — with **key auth only** (`BatchMode=yes`, no password
   prompts). Make sure `~/.ssh/known_hosts` has the host key (BatchMode refuses

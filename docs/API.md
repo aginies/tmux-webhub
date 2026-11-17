@@ -146,7 +146,8 @@ Content-Type: application/json
 ```
 
 - `name` (required): Host name
-- `ssh` (optional): SSH target (omit for local host)
+- `ssh` (optional): SSH target (omit for local host). An optional port may be
+  appended — `user@host:2222` — and is passed to ssh as `-p 2222`.
 - `cmd` (optional): Default command for new sessions
 
 Response: `{"ok": true, "host": "newhost"}`

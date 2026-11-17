@@ -909,6 +909,16 @@ function chipEl(s, hostState) {
 
 // ---------- api polling ----------
 let netFails = 0;
+// first-load status: the page is blank until the first /api/sessions answers, and
+// that first answer can take a while (cold SSH handshakes, dead hosts' ConnectTimeout).
+// Say what's happening instead of showing an empty station with no explanation.
+let firstLoad = true;
+let firstLoadTimer = null;
+function firstLoadStatus(text) {
+  if (text) { setConnBanner(text); return; }
+  firstLoad = false;
+  if (firstLoadTimer) { clearTimeout(firstLoadTimer); firstLoadTimer = null; }
+}
 // poll cadence comes from the server (single source of truth); DEFAULT_POLL_MS is
 // only the fallback for the first poll, before a response has supplied the real value
 const DEFAULT_POLL_MS = 5000;
@@ -936,6 +946,12 @@ async function refresh() {
   refreshTimer = null;
   if (refreshing) return; // one already in flight; it reschedules on completion
   refreshing = true;
+  if (firstLoad) {
+    setConnBanner('Loading sessions…');
+    if (!firstLoadTimer) firstLoadTimer = setTimeout(() => {
+      if (firstLoad) setConnBanner('Still loading — contacting hosts (the first poll can take a few seconds)…');
+    }, 3000);
+  }
   try {
     const r = await fetch('/api/sessions');
     const d = await r.json();
@@ -956,7 +972,14 @@ async function refresh() {
     // keep the +New host select current in both views (the Town "+" button
     // relies on it being populated even when the list isn't shown)
     populateHostSelect();
-    setConnBanner(d.configError ? `⚠ config.json unreadable (${d.configError}) — showing last good host list` : null);
+    if (d.polling) {
+      // the server's first (capped) poll is still running: keep the status banner —
+      // the data is a placeholder (possibly empty), the next poll brings the real list
+      setConnBanner('Still loading — contacting hosts (the first poll can take a few seconds)…');
+    } else {
+      firstLoadStatus(null);
+      setConnBanner(d.configError ? `⚠ config.json unreadable (${d.configError}) — showing last good host list` : null);
+    }
     if (active) {
       const s = findSession(active.key);
       if (s) updateLocalBadge(s);
@@ -964,12 +987,18 @@ async function refresh() {
     }
   } catch {
     netFails++;
-    // one failed poll is normal (a server restart, a Wi-Fi blip) — stay silent so a
-    // quick blip doesn't flash a scary banner over perfectly good data; two in a row
-    // means the server is actually gone
-    setConnBanner(netFails >= 2
-      ? `⚠ server unreachable (${netFails} failed polls) — showing stale data`
-      : null);
+    if (firstLoad) {
+      // no data at all yet — a failed first poll is not a "quick blip", say so now
+      firstLoadStatus(null);
+      setConnBanner('⚠ server unreachable — retrying…');
+    } else {
+      // one failed poll is normal (a server restart, a Wi-Fi blip) — stay silent so a
+      // quick blip doesn't flash a scary banner over perfectly good data; two in a row
+      // means the server is actually gone
+      setConnBanner(netFails >= 2
+        ? `⚠ server unreachable (${netFails} failed polls) — showing stale data`
+        : null);
+    }
   } finally {
     refreshing = false;
   }
@@ -1242,7 +1271,7 @@ function renderHostRow(host, idx) {
     '</div></div>' +
     '<div class="cfg-host-row">' +
     '<input class="cfg-h-name" type="text" placeholder="name">' +
-    '<input class="cfg-h-ssh" type="text" placeholder="ssh (user@host)">' +
+    '<input class="cfg-h-ssh" type="text" placeholder="ssh (user@host[:port])">' +
     '<input class="cfg-h-cmd" type="text" placeholder="cmd (default: pi)">' +
     '<label class="cfg-h-enchk"><span>on</span><input class="cfg-h-enabled" type="checkbox"></label>' +
     '</div>';

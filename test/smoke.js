@@ -97,6 +97,7 @@ test('GET /api/sessions with cookie → 200 + hosts array', async () => {
   assert.equal(r.status, 200);
   const d = await r.json();
   assert.ok(Array.isArray(d.hosts));
+  assert.equal(d.polling, false); // no hosts configured → first poll resolves instantly
 });
 
 test('GET /api/net-interfaces without cookie → 401', async () => {
@@ -110,6 +111,23 @@ test('GET /api/net-interfaces with cookie → 200 + addresses array', async () =
   const d = await r.json();
   assert.ok(Array.isArray(d.addresses), 'addresses is an array');
   assert.ok(d.addresses.length >= 1, 'proposes at least one address');
+});
+
+test('GET /api/debug without cookie → 401', async () => {
+  const r = await fetch(base + '/api/debug');
+  assert.equal(r.status, 401);
+});
+
+test('GET /api/debug with cookie → 200 + version/logLevel/hosts', async () => {
+  const r = await fetch(base + '/api/debug', { headers: { Cookie: cookie } });
+  assert.equal(r.status, 200);
+  const d = await r.json();
+  assert.equal(d.version, require(path.join(ROOT, 'package.json')).version);
+  assert.equal(d.logLevel, 'info'); // no logLevel in the test config → default
+  assert.equal(d.logFile, null);   // no logFile in the test config → off
+  assert.ok(Number.isFinite(d.uptimeS) && d.uptimeS >= 0);
+  assert.ok(Number.isInteger(d.wsClients));
+  assert.ok(Array.isArray(d.hosts));
 });
 
 test('GET /api/sessions: net stats present, totals monotonic', async () => {
@@ -434,6 +452,20 @@ test('POST/PUT/DELETE /api/hosts: add, update, remove a host', async () => {
   // invalid ssh string → 400 (rejected before it is ever saved)
   r = await fetch(base + '/api/hosts', { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie }, body: JSON.stringify({ name: 'pc-badssh-' + Date.now(), ssh: 'user@host; rm -rf /' }) });
   assert.equal(r.status, 400);
+
+  // ssh with a port → accepted; out-of-range ports → 400 (sshSplit would otherwise
+  // fall back to treating "host:70000" as a hostname and fail later as a DNS error)
+  const portHost = 'pc-port-' + Date.now();
+  r = await fetch(base + '/api/hosts', { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie }, body: JSON.stringify({ name: portHost, ssh: 'user@host:2222' }) });
+  assert.equal(r.status, 200, JSON.stringify(await r.clone().json()));
+  cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+  assert.equal(cfg.hosts.find((h) => h.name === portHost).ssh, 'user@host:2222', 'port kept verbatim in config.json');
+  for (const bad of ['user@host:70000', 'user@host:0', 'user@host:abc']) {
+    r = await fetch(base + '/api/hosts', { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie }, body: JSON.stringify({ name: 'pc-badport-' + Math.random().toString(36).slice(2), ssh: bad }) });
+    assert.equal(r.status, 400, `ssh "${bad}" rejected`);
+  }
+  r = await fetch(base + '/api/hosts/' + portHost, { method: 'DELETE', headers: { Cookie: cookie } });
+  assert.equal(r.status, 200);
 
   // update: change the cmd
   r = await fetch(base + '/api/hosts/' + name, { method: 'PUT', headers: { 'Content-Type': 'application/json', Cookie: cookie }, body: JSON.stringify({ cmd: 'htop' }) });

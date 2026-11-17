@@ -222,6 +222,51 @@ Everything works on a phone, no hardware keyboard needed:
   journalctl --user -u tmux-webhub -f   # logs
   ```
 
+## Debugging
+
+The server logs to stderr (the systemd journal picks it up). Default level is
+`info` — logins, host add/remove/toggle, offline/online transitions, attach
+failures and crashes. `debug` adds every ssh/local command (with duration and
+exit status), per-host poll results, and an HTTP/WS access line.
+
+```sh
+journalctl --user -u tmux-webhub -f                # follow the log
+PC_LOG_LEVEL=debug systemctl --user restart tmux-webhub   # verbose, via unit
+PC_LOG_LEVEL=debug node server.js                  # verbose, foreground
+node server.js --debug                             # same, as a flag
+```
+
+Log level precedence: `PC_LOG_LEVEL` env > `"logLevel"` in `config.json`
+(`debug`/`info`/`warn`/`error`) > `--debug` flag > `info`. A restart is needed
+for a level change (the config editor's restart note applies).
+
+What to look for when something misbehaves:
+
+- **host shows offline** — `[poll] host offline` / `[ssh] cmd failed` carry the
+  actual ssh/tmux error (auth failure, timeout, "no server running").
+- **attach fails** — `[ws] attach failed: no such tmux session` includes the
+  stderr the client never sees (e.g. `Permission denied`, a dead ControlMaster).
+- **phone / pitux can't connect** — every rejected WebSocket close is logged
+  (`unauthorized`, `cross-origin`, `rate limited`, `unknown host`) with the IP.
+- **500s / crashes** — `[http] unhandled error` and `[process] uncaught
+  exception` log the full stack.
+
+Secrets are never logged: token / TOTP / cookie values are masked, and the WS
+`?token=` query string is deliberately kept out of the log lines.
+
+**From the browser / phone** — `GET /api/debug` (authed) shows what the server
+sees right now: version, uptime, log level, WS client count, and per-host
+`state` / `lastPollAt` / `lastError` / session count — no shell on the box
+needed to see why a host is offline or a poll is stale:
+
+```sh
+curl -k -b 'pc_token=…' https://host:8787/api/debug | jq
+```
+
+**File log** — set `"logFile"` in `config.json` (e.g. `"logFile":
+"tmux-webhub.log"`, relative to the install dir) to also append JSON lines to a
+file, size-rotated 5 MB × 3. Off by default; the journal is the primary sink.
+
 ## Uninstall
 
 ```sh
@@ -255,7 +300,7 @@ atomic and JSON-validated, so a broken file can never be saved.
 ![Config editor](images/settings.png)
 
 - **Hosts** — "+ Add host" appends a row; each row has `name`, `ssh`
-  (`user@host`, empty = local), `cmd`, and an on/off switch; ↑/↓ reorder, ✕
+  (`user@host[:port]`, empty = local), `cmd`, and an on/off switch; ↑/↓ reorder, ✕
   removes. The host list is **live-reloaded** — a new host starts being polled
   immediately, no restart.
 - **Bind address** — the `host` field offers `0.0.0.0` plus every real address
@@ -270,8 +315,8 @@ atomic and JSON-validated, so a broken file can never be saved.
 - **Log out** — ends this browser's session (with 2FA: deleted server-side).
 
 The host list and per-host `cmd` apply immediately; server settings (`port`,
-`token`, `tls`, `cert`, `key`, `pollMs`, `netDisplay`, `twoFA`) need a
-restart.
+`token`, `tls`, `cert`, `key`, `pollMs`, `netDisplay`, `twoFA`, `logLevel`,
+`logFile`) need a restart.
 
 ## Environment variables
 
@@ -283,6 +328,7 @@ Override the config file for deployment-time settings:
 | `PC_HOST` | bind address |
 | `PC_TOKEN` | access token (empty = auth disabled, dev mode) |
 | `PC_TLS` | only the literal value `false` disables TLS (anything else = https) |
+| `PC_LOG_LEVEL` | log level: `debug`, `info` (default), `warn`, `error` |
 | `PI_CMD` | command started in new sessions (default `pi`) |
 | `PC_CONFIG_FILE` | config file path (default `./config.json`) |
 
