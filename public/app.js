@@ -254,10 +254,12 @@ function hasMainContent() {
 // re-poll lags the POST), so if the session isn't found we refresh once to get the
 // real name/cwd for the termbar instead of showing the raw key.
 async function doReveal(st, s) {
-  if (active !== st) return;
+  // st is the current connection if it's the non-tab attach OR the active tab
+  const isCurrent = () => active === st || (activeTab >= 0 && tabs[activeTab] === st);
+  if (!isCurrent()) return;
   let ss = s || findSession(st.key);
   if (!ss) { await refresh(); ss = findSession(st.key); }
-  if (active !== st) return; // detached during the refresh
+  if (!isCurrent()) return; // detached/switched during the refresh
   if (view === 'town' && townView) { $('termwin').classList.add('attached'); townView.activeKey = st.key; townView.needsRedraw = true; }
   $('placeholder').style.display = 'none';
   $('t-detach').style.display = '';
@@ -327,6 +329,22 @@ function dropSession(key) {
 function findTab(key) {
   return tabs.findIndex((t) => t.key === key);
 }
+// Reset the terminal window to the "no session" state. Shared by closeTab and
+// setupTabClose when the last tab goes away — detach() can't be used there since
+// `active` is null in tab mode. Mirrors detach()'s teardown (incl. the modals).
+function resetTerminalWindow() {
+  term.reset();
+  if (view === 'town' && townView) { $('termwin').classList.remove('attached'); townView.activeKey = null; townView.needsRedraw = true; }
+  $('placeholder').style.display = 'flex';
+  $('t-detach').style.display = 'none';
+  $('keys-bg').classList.remove('open');
+  $('rn-bg').classList.remove('open');
+  $('t-name').textContent = 'no session selected';
+  $('t-cwd').textContent = '';
+  $('t-local').style.display = 'none';
+  syncTermButtons();
+  renderChips();
+}
 // Set up ws.onclose for a tab — if the WS dies (server disconnect, session killed),
 // remove the tab and switch to the next available one.
 function setupTabClose(tab) {
@@ -337,19 +355,10 @@ function setupTabClose(tab) {
     try { tab.dataSub.dispose(); } catch {}
     tabs.splice(idx, 1);
     if (wasActive) {
-      activeTab = tabs.length > 0 ? Math.min(idx, tabs.length - 1) : -1;
-      if (activeTab >= 0) switchTab(activeTab);
-      else {
-        // last tab closed — reset terminal
-        term.reset();
-        if (view === 'town' && townView) { $('termwin').classList.remove('attached'); townView.activeKey = null; townView.needsRedraw = true; }
-        $('placeholder').style.display = 'flex';
-        $('t-detach').style.display = 'none';
-        $('t-name').textContent = 'no session selected';
-        $('t-cwd').textContent = '';
-        $('t-local').style.display = 'none';
-        syncTermButtons();
-      }
+      const next = tabs.length > 0 ? Math.min(idx, tabs.length - 1) : -1;
+      activeTab = -1; // sentinel: switchTab must NOT early-return — the replacement tab needs reconnecting
+      if (next >= 0) switchTab(next);
+      else resetTerminalWindow(); // last tab gone
     } else if (activeTab > idx) {
       activeTab--;
     }
@@ -382,6 +391,10 @@ function openTab(key, opts) {
   tabs.push(st);
   setupTabClose(st);
   activeTab = tabs.length - 1;
+  needsYou.delete(st.key); // you're looking at it now — it no longer "needs you"
+  renderNeedsYouBadge();
+  updateLocalBadge(findSession(st.key));
+  syncTermButtons();
   return activeTab;
 }
 function switchTab(idx) {
@@ -409,7 +422,11 @@ function switchTab(idx) {
   $('placeholder').style.display = 'none';
   $('t-detach').style.display = '';
   $('t-name').textContent = st.name;
-  $('t-cwd').textContent = findSession(st.key) ? findSession(st.key).cwd : '';
+  const ss = findSession(st.key);
+  $('t-cwd').textContent = ss ? ss.cwd : '';
+  needsYou.delete(st.key); // you're looking at it now — it no longer "needs you"
+  renderNeedsYouBadge();
+  updateLocalBadge(ss);
   if (view === 'town' && townView) { $('termwin').classList.add('attached'); townView.activeKey = st.key; townView.needsRedraw = true; }
   renderTabs();
   syncTermButtons();
@@ -423,19 +440,10 @@ function closeTab(idx) {
   tabs.splice(idx, 1);
   // adjust activeTab
   if (activeTab === idx) {
-    activeTab = tabs.length > 0 ? Math.min(idx, tabs.length - 1) : -1;
-    if (activeTab >= 0) switchTab(activeTab);
-    else {
-      // last tab closed — reset terminal (detach() won't work since active is null in tab path)
-      term.reset();
-      if (view === 'town' && townView) { $('termwin').classList.remove('attached'); townView.activeKey = null; townView.needsRedraw = true; }
-      $('placeholder').style.display = 'flex';
-      $('t-detach').style.display = 'none';
-      $('t-name').textContent = 'no session selected';
-      $('t-cwd').textContent = '';
-      $('t-local').style.display = 'none';
-      syncTermButtons();
-    }
+    const next = tabs.length > 0 ? Math.min(idx, tabs.length - 1) : -1;
+    activeTab = -1; // sentinel: switchTab must NOT early-return — the replacement tab needs reconnecting
+    if (next >= 0) switchTab(next);
+    else resetTerminalWindow(); // last tab closed (detach() won't work — `active` is null in tab mode)
   } else if (activeTab > idx) {
     activeTab--;
   }
@@ -485,9 +493,23 @@ function renderTabs() {
 
 function attach(key, opts) {
   const hidden = !!(opts && opts.hidden); // +New: attach but keep the window covered until the command has output
+  // Split view owns session clicks: replace the split pane's session instead of
+  // touching tabs/the main attach (split and tabs are mutually exclusive modes).
+  if (splitTerm) {
+    if (splitActive) {
+      splitActive.ws.onclose = null;
+      try { splitActive.dataSub.dispose(); } catch {}
+      try { splitActive.ws.close(); } catch {}
+      splitActive = null;
+    }
+    attachSplit(key);
+    return;
+  }
   // If tabs are open, use tab system instead of detaching/attaching
   if (tabs.length > 0) {
-    openTab(key, opts);
+    const ti = openTab(key, opts);
+    // +New boot flow: keep the modal on "starting…" until the command has visible output
+    if (hidden && tabs[ti]) setupBootReveal(tabs[ti], findSession(key));
     renderTabs();
     return;
   }
@@ -495,14 +517,17 @@ function attach(key, opts) {
   // so the new session opens as a second tab (user clicks another chip while one is open)
   if (active && active.key !== key) {
     const orig = active; // save before we clear it
-    // convert existing active session into tab 0 (inactive — tab 1 will be active)
+    // convert existing active session into tab 0 (inactive — tab 1 will be active).
+    // Its WS is closed here; switchTab reconnects it (and installs a fresh
+    // setupTabClose handler) when the user clicks the tab. Do NOT call
+    // setupTabClose on the closing socket: the async close event would fire the
+    // new handler and remove the tab immediately.
     orig.active = false;
     orig.ws.onclose = null;
     try { orig.dataSub.dispose(); } catch {}
     try { orig.ws.close(); } catch {}
     orig.tabIdx = 0;
     tabs.push(orig);
-    setupTabClose(orig);
     active = null;
     term.reset(); // clear old content before new tab's tmux redraw
     // now create tab 1 directly (don't use openTab — it would deactivate tab 0)
@@ -517,7 +542,12 @@ function attach(key, opts) {
     tabs.push(st1);
     setupTabClose(st1);
     activeTab = 1;
+    needsYou.delete(st1.key); // you're looking at it now — it no longer "needs you"
+    renderNeedsYouBadge();
+    updateLocalBadge(s);
+    if (hidden) setupBootReveal(st1, s); // +New boot flow works in tab mode too
     renderTabs();
+    syncTermButtons();
     return;
   }
   detach();
@@ -569,18 +599,10 @@ function attach(key, opts) {
   if (hidden) setupBootReveal(st, s);
 }
 
-function detach(opts) {
-  opts = opts || {};
+function detach() {
   // If tabs are open, close the active tab instead of full detach
   if (tabs.length > 0) { closeTab(activeTab >= 0 ? activeTab : 0); return; }
   if (!active) return;
-  if (opts.preserveSession) {
-    // Don't clear active — the caller will convert it to a tab
-    if (bootReveal) { clearTimeout(bootReveal.timer); bootReveal = null; }
-    try { active.dataSub.dispose(); } catch {}
-    try { active.ws.close(); } catch {}
-    return;
-  }
   if (bootReveal) { clearTimeout(bootReveal.timer); bootReveal = null; } // a hidden +New attach is being torn down
   try { active.dataSub.dispose(); } catch {}
   try { active.ws.close(); } catch {}
@@ -604,20 +626,32 @@ function detach(opts) {
 // full-area). Called from attach/detach/setView so the buttons track the view.
 function syncTermButtons() {
   const inTown = view === 'town' && !!townView;
+  const conn = currentConn();
+  // split view stays exclusive to the non-tab attach: tabs are themselves a
+  // multi-session mode, and split moves the shared xterm into a pane
   $('t-split').style.display = inTown ? 'none' : (active ? '' : 'none');
-  $('t-full').style.display = inTown && active ? '' : 'none';
+  $('t-full').style.display = inTown && conn ? '' : 'none';
   // The phone shortcuts only work against a live attach — dim them instead of
   // letting taps silently do nothing (the classic "sometimes it doesn't work").
-  const ready = !!(active && active.ws && active.ws.readyState === WebSocket.OPEN);
+  const ready = !!(conn && conn.ws && conn.ws.readyState === WebSocket.OPEN);
   for (const id of ['btn-esc', 'btn-pgup', 'btn-pgdn', 'btn-keys']) $(id).disabled = !ready;
   // drives the floating shortcut bar of the Town view on touch devices (CSS)
-  document.body.classList.toggle('attached', !!active);
+  document.body.classList.toggle('attached', !!conn);
+}
+
+// The connection currently driving the terminal window: the non-tab `active`
+// session, or the active tab. Shared by syncTermButtons/otherAttached so the
+// termbar buttons and the "other clients" badge track tab mode too.
+function currentConn() {
+  if (active) return active;
+  return (activeTab >= 0 && activeTab < tabs.length) ? tabs[activeTab] : null;
 }
 
 // tmux counts our own web client once its ws is open; subtract it to get the number of
 // OTHER clients attached (shared by the chip tooltip and the "also attached" badge)
 function otherAttached(s) {
-  const selfAttached = active && active.key === keyOf(s.host, s.name) && active.ws.readyState === WebSocket.OPEN;
+  const conn = currentConn();
+  const selfAttached = conn && conn.key === keyOf(s.host, s.name) && conn.ws && conn.ws.readyState === WebSocket.OPEN;
   return s.attached - (selfAttached ? 1 : 0);
 }
 
@@ -629,8 +663,16 @@ function updateLocalBadge(s) {
 }
 
 // ---------- split view ----------
+// Split and tabs are mutually exclusive multi-session modes:
+// - openSplit() closes any open tabs first (defensive — the ⤢ button is hidden
+//   in tab mode since syncTermButtons only shows it for a non-tab `active`)
+// - while a split is open, session clicks always feed the split pane (attach()
+//   routes to attachSplit, replacing the pane's session once it's filled)
 function openSplit() {
   if (splitActive || splitTerm) return; // already split
+  // close any open tabs — their WS would otherwise keep writing to the shared
+  // xterm once it moves into pane 1
+  while (tabs.length > 0) closeTab(tabs.length - 1);
   // hide tab bar — split already provides multi-session
   const tabbar = $('tabbar');
   if (tabbar) tabbar.style.display = 'none';
