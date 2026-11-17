@@ -941,72 +941,13 @@ function setNetReadout(n) {
   const el = $('net');
   el.textContent = `↓ ${fmtBytes(n.inBps)}/s · ↑ ${fmtBytes(n.outBps)}/s`;
   el.title = `server bandwidth (5 s average) — since start: ↓ ${fmtBytes(n.inTotal)} · ↑ ${fmtBytes(n.outTotal)}`;
-  // Space view: the box right of the Town Hall (hidden in List view by CSS;
-  // TownView's frame loop owns its on-screen position/visibility)
-  const box = $('net-box');
-  box.hidden = false;
-  $('nb-in').textContent = `↓ ${fmtBytes(n.inBps)}/s`;
-  $('nb-out').textContent = `↑ ${fmtBytes(n.outBps)}/s`;
-  $('nb-totals').textContent = `since start ↓ ${fmtBytes(n.inTotal)} · ↑ ${fmtBytes(n.outTotal)}`;
-  box.title = 'server bandwidth — rates are a 5 s average; sparkline: last 60 s (1 s samples)';
-  drawNetSpark(n);
-  if (townView) townView.setNetAnchor(box);
+  // Space view: TownView draws the console right of the Town Hall as canvas
+  // art (same language as the Orbital Sessions manifest) — feed it the payload
+  if (townView) townView.setNetData(n);
 }
 function clearNetReadout() {
   $('net').textContent = '';
-  $('net-box').hidden = true; // netDisplay: false → no box in Space view
-  if (townView) townView.setNetAnchor(null);
-}
-// 60 s of per-second samples (server keeps the ring, 1 Hz), newest at the right.
-// Canvas is 2x the CSS size (296×52 for 148×26) so the lines stay crisp on HiDPI.
-// Terminal traffic is bursty — one big spike sets the scale, everything else
-// hugs the floor — so each series is drawn as a FILLED area (not just a thin
-// line): small values still show as a faint band, spikes as filled wedges.
-function drawNetSpark(n) {
-  const cv = $('nb-spark');
-  const ctx = cv.getContext('2d');
-  const W = cv.width, H = cv.height, N = 60, FLOOR = H - 4; // 4 px floor: a zero line stays visible
-  ctx.clearRect(0, 0, W, H);
-  const histIn = Array.isArray(n.histIn) ? n.histIn : [];
-  const histOut = Array.isArray(n.histOut) ? n.histOut : [];
-  let max = 1;
-  for (const v of histIn) if (v > max) max = v;
-  for (const v of histOut) if (v > max) max = v;
-  const xAt = (i, off) => W - ((N - 1 - (i + off)) * W) / (N - 1); // right-align: grows from the right edge
-  const yAt = (v) => FLOOR - (v / max) * (H - 10);
-  // baseline: the plot area stays defined even when idle (all-zero history)
-  ctx.fillStyle = 'rgba(167, 181, 218, 0.28)';
-  ctx.fillRect(0, FLOOR, W, 1);
-  const series = (hist, stroke, fill) => {
-    if (!hist.length) return;
-    const off = N - hist.length;
-    if (hist.length === 1) { // a lone sample: a dot with a sliver down to the floor
-      const x = xAt(0, off), y = yAt(hist[0]);
-      ctx.fillStyle = fill;
-      ctx.fillRect(x - 2, y, 4, FLOOR - y + 1);
-      ctx.fillStyle = stroke;
-      ctx.fillRect(x - 3, y - 1.5, 6, 3);
-      return;
-    }
-    ctx.beginPath(); // area under the line (filled first, so the stroke sits on top)
-    ctx.moveTo(xAt(0, off), FLOOR);
-    for (let i = 0; i < hist.length; i++) ctx.lineTo(xAt(i, off), yAt(hist[i]));
-    ctx.lineTo(xAt(hist.length - 1, off), FLOOR);
-    ctx.closePath();
-    ctx.fillStyle = fill;
-    ctx.fill();
-    ctx.beginPath();
-    for (let i = 0; i < hist.length; i++) {
-      const x = xAt(i, off), y = yAt(hist[i]);
-      i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
-    }
-    ctx.strokeStyle = stroke;
-    ctx.lineWidth = 3;
-    ctx.lineJoin = 'round';
-    ctx.stroke();
-  };
-  series(histIn, 'rgba(0, 229, 255, 0.9)', 'rgba(0, 229, 255, 0.22)');   // ↓ cyan
-  series(histOut, 'rgba(255, 95, 210, 0.9)', 'rgba(255, 95, 210, 0.22)'); // ↑ magenta
+  if (townView) townView.setNetData(null); // netDisplay: false → no console in Space view
 }
 async function refresh() {
   refreshTimer = null;

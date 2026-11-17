@@ -36,6 +36,9 @@
 
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
   const hash = (s) => { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return Math.abs(h); };
+  // byte formatting for the network console (the header readout has its own copy in app.js)
+  const fmtB = (b) => b >= 1048576 ? (b / 1048576).toFixed(1) + ' MB' : b >= 1024 ? (b / 1024).toFixed(1) + ' KB' : Math.round(b) + ' B';
+  const fmtBps = (b) => fmtB(b) + '/s';
 
   // buildTownSprites() is pure and layout-independent (a fixed set of pixel art), so
   // bake it once instead of re-rasterizing every sprite on each town rebuild — a
@@ -53,7 +56,7 @@
       this.api = api; // { attach(key) }
       this.tip = document.getElementById('town-tip');
       this.on = false;
-      this.netAnchorEl = null; // Space-view network box (app.js owns the DOM)
+      this.netData = null; // Space-view network panel data (app.js feeds it from the poll)
       this.dpr = 1;
       this.town = null;
       this.specSig = null;
@@ -416,21 +419,14 @@
       this.setHover(null, null);
     }
 
-    // Space-view "network traffic" box: app.js passes the panel element and the
-    // frame loop anchors it to the right of the citadel (the Town Hall),
-    // recomputing from the current layout each frame so a town rebuild (host
-    // added/removed) can't leave it at a stale spot. It pans/zooms in lockstep
-    // with the hall and hides while the anchor is off-screen. Pass null to detach.
-    setNetAnchor(el) {
-      this.netAnchorEl = el || null;
-      if (!el) return;
-    }
-    netAnchorPoint() {
-      const c = this.town && this.town.layout && this.town.layout.center;
-      if (!c) return null;
-      // citadel body top-left is (center.x*TT, center.y*TT), width center.w*TT →
-      // a side sign just right of the hall's upper storeys
-      return { x: (c.x + c.w) * TT + 14, y: c.y * TT + 24 };
+    // Space-view "network traffic" console: app.js passes the poll's net payload
+    // (rates, totals, per-second history) and the render loop draws the panel
+    // as canvas art right of the Town Hall — the same visual language as the
+    // Orbital Sessions manifest, so it keeps the town's aspect at any zoom.
+    // Pass null to hide it (netDisplay: false).
+    setNetData(n) {
+      this.netData = n || null;
+      this.needsRedraw = true;
     }
 
     resize() {
@@ -711,7 +707,13 @@
       const storageShip = { x: shipX, y: shipY, w: shipW, h: shipH, items: [], hostItems: [] };
       this.bakeStorageShipHull(storageShip);
 
-      this.town = { layout, ground, base, M, S, sp, cells, roofs, Wp, Hp, storageShip };
+      // Network traffic console to the right of the Town Hall — mirrors the
+      // ship's placement (40 px off the hall center, same top) so the two
+      // consoles frame the citadel symmetrically
+      const netW = 340, netH = 150;
+      const netPanel = { x: center.x * TT + 40, y: center.y * TT + 10, w: netW, h: netH };
+
+      this.town = { layout, ground, base, M, S, sp, cells, roofs, Wp, Hp, storageShip, netPanel };
       this.nav.clear(); // navigation grids are bound to the building objects
       this.reanchorNaps();
       this.setupBus();
@@ -1949,24 +1951,6 @@
         this.needsRedraw = true;
       }
 
-      // network box: follow the (eased) camera so it tracks the Town Hall. The
-      // panel scales with zoom, clamped so it stays readable far out / in close.
-      if (this.netAnchorEl) {
-        const a = this.netAnchorPoint();
-        if (!a) { this.netAnchorEl.style.visibility = 'hidden'; }
-        else {
-          const w = this.cv.clientWidth, h = this.cv.clientHeight;
-          const sx = (a.x - this.cam.x) * this.cam.z + w / 2;
-          const sy = (a.y - this.cam.y) * this.cam.z + h / 2;
-          const off = sx < -200 || sx > w + 200 || sy < -200 || sy > h + 200;
-          this.netAnchorEl.style.visibility = off ? 'hidden' : 'visible';
-          if (!off) {
-            const s = Math.max(0.75, Math.min(1.4, this.cam.z));
-            this.netAnchorEl.style.transform = `translate(${sx}px, ${sy}px) scale(${s})`;
-          }
-        }
-      }
-
       // walks / timers that finished: advance the idle lifecycle
       // (to-front -> checking -> to-activity -> activity; to-desk -> seated).
       // Session agents stay at 'activity' until active again.
@@ -2153,6 +2137,9 @@
 
       // Orbital Storage Starship with live host/session manifest
       this.drawStorageShip(ctx, t);
+
+      // Network traffic console right of the Town Hall (same language as the manifest)
+      this.drawNetPanel(ctx, t);
 
       // hover / active highlights — the clickable "square" follows the target:
       // the projected screen for attach, the seated astronaut for rename.
@@ -2686,6 +2673,93 @@
         }
         ctx.globalAlpha = 1;
       }
+    }
+
+    // Network traffic console right of the Town Hall — the Space-view successor
+    // to the old floating DOM box. Drawn as canvas art in the manifest's visual
+    // language (dark pill body, cyan border, JetBrains Mono vector text under
+    // the camera transform), so it pans/zooms in lockstep with the town and
+    // keeps its aspect at every zoom level. Data: app.js's poll via setNetData.
+    drawNetPanel(ctx, t) {
+      if (!this.town || !this.town.netPanel || !this.netData) return;
+      const { x, y, w, h } = this.town.netPanel;
+      const n = this.netData;
+
+      // panel body — the manifest pill styling: dark fill, cyan border
+      ctx.fillStyle = 'rgba(8, 12, 22, 0.88)';
+      ctx.fillRect(x, y, w, h);
+      ctx.strokeStyle = 'rgba(0, 229, 255, 0.45)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+
+      // title banner, like the manifest's
+      ctx.font = '700 13px "JetBrains Mono", monospace';
+      ctx.fillStyle = '#00e5ff';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('📡 NETWORK // TRAFFIC', x + 18, y + 20);
+
+      // current rates (5 s average), right of the title — cyan in / magenta out
+      ctx.font = '700 12px "JetBrains Mono", monospace';
+      const outTxt = '↑ ' + fmtBps(n.outBps);
+      const inTxt = '↓ ' + fmtBps(n.inBps);
+      const ow = ctx.measureText(outTxt).width;
+      ctx.textAlign = 'right';
+      ctx.fillStyle = '#ff5fd2';
+      ctx.fillText(outTxt, x + w - 18, y + 20);
+      ctx.fillStyle = '#00e5ff';
+      ctx.fillText(inTxt, x + w - 18 - ow - 14, y + 20);
+      ctx.textAlign = 'left';
+
+      // sparkline: last 60 s (1 s samples), newest at the right. Terminal
+      // traffic is bursty — one spike sets the scale — so each series is a
+      // filled area: small values stay a faint band, spikes become wedges.
+      const sx = x + 14, sw = w - 28, sy = y + 36, sh = h - 66, floor = sy + sh;
+      const histIn = Array.isArray(n.histIn) ? n.histIn : [];
+      const histOut = Array.isArray(n.histOut) ? n.histOut : [];
+      let max = 1;
+      for (const v of histIn) if (v > max) max = v;
+      for (const v of histOut) if (v > max) max = v;
+      const N = 60;
+      const xAt = (i, off) => sx + sw - ((N - 1 - (i + off)) * sw) / (N - 1);
+      const yAt = (v) => floor - 3 - (v / max) * (sh - 8);
+      ctx.fillStyle = 'rgba(167, 181, 218, 0.28)'; // baseline: plot area stays defined when idle
+      ctx.fillRect(sx, floor, sw, 1);
+      const series = (hist, stroke, fill) => {
+        if (!hist.length) return;
+        const off = N - hist.length; // right-aligned: grows from the right edge
+        if (hist.length === 1) { // a lone sample: a dot with a sliver to the floor
+          const px2 = xAt(0, off), py2 = yAt(hist[0]);
+          ctx.fillStyle = fill;
+          ctx.fillRect(px2 - 2, py2, 4, floor - py2 + 1);
+          ctx.fillStyle = stroke;
+          ctx.fillRect(px2 - 3, py2 - 1.5, 6, 3);
+          return;
+        }
+        ctx.beginPath();
+        ctx.moveTo(xAt(0, off), floor);
+        for (let i = 0; i < hist.length; i++) ctx.lineTo(xAt(i, off), yAt(hist[i]));
+        ctx.lineTo(xAt(hist.length - 1, off), floor);
+        ctx.closePath();
+        ctx.fillStyle = fill;
+        ctx.fill();
+        ctx.beginPath();
+        for (let i = 0; i < hist.length; i++) {
+          const px2 = xAt(i, off), py2 = yAt(hist[i]);
+          i ? ctx.lineTo(px2, py2) : ctx.moveTo(px2, py2);
+        }
+        ctx.strokeStyle = stroke;
+        ctx.lineWidth = 2;
+        ctx.lineJoin = 'round';
+        ctx.stroke();
+      };
+      series(histIn, 'rgba(0, 229, 255, 0.9)', 'rgba(0, 229, 255, 0.22)');   // ↓ cyan
+      series(histOut, 'rgba(255, 95, 210, 0.9)', 'rgba(255, 95, 210, 0.22)'); // ↑ magenta
+
+      // totals since server start
+      ctx.font = '600 11px "JetBrains Mono", monospace';
+      ctx.fillStyle = '#64748b';
+      ctx.fillText('since start ↓ ' + fmtB(n.inTotal) + ' · ↑ ' + fmtB(n.outTotal), x + 18, y + h - 14);
     }
 
     // The per-host visibility control in an ORBITAL SESSIONS row: an eye icon
