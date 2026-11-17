@@ -1273,19 +1273,20 @@
       gg.restore();
     }
 
-    // The citadel's clock tower runs on live time: a fresh face + hands drawn
-    // over the vendor's static clock each frame (the body is baked, but the
-    // hands move). Hour + minute only — calm, and fine under reduced motion.
+    // The citadel's clock runs on live time: a fresh face + hands drawn over
+    // the galaxy core each frame (the body is baked, but the hands move).
+    // The face is centred on the galaxy so it reads as the galaxy's heart.
+    // Hour + minute only — calm, and fine under reduced motion.
     drawCitadelClock(ctx) {
       const c = this.town.layout.center;
       const cx = (c.x + c.w / 2) * TT; // clock centre x (world)
-      const cy = c.y * TT + 82;        // clock centre y (world) — vendor bakes it at body-y 82
-      const R = 18;                    // rim radius — a bigger face, still clear of the tower's cornice (y 58–62) and inside the 56px tower
+      const cy = c.y * TT + 100;       // clock centre y (world) — centred on the galaxy core (body-y ~100), so the face sits inside the glow
+      const R = 18;                    // rim radius — a bigger face, still clear of the tower's cornice and inside the 56px tower
       const now = new Date();
       const min = now.getMinutes() + now.getSeconds() / 60;
       const hr = (now.getHours() % 12) + min / 60;
 
-      // Face + rim (opaque, covers the vendor's static clock and a bit of the tower).
+      // Face + rim (opaque, covers the galaxy core and a bit of the glow).
       ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.fillStyle = '#a8862e'; ctx.fill();
       ctx.beginPath(); ctx.arc(cx, cy, R - 3.5, 0, Math.PI * 2); ctx.fillStyle = '#fbf6e8'; ctx.fill();
       // Ticks (12, the quarters longer).
@@ -2053,8 +2054,8 @@
           this.drawRepairCrew(ctx, t);
         }
         ctx.drawImage(T.base, worldLeft * S, worldTop * S, sw * S, sh * S, worldLeft - T.M, worldTop - T.M, sw, sh);
-        // The citadel's clock tower runs on live time — its hands are drawn over
-        // the baked static clock each frame (the body itself is baked).
+        // The citadel's clock runs on live time — its face + hands are drawn
+        // over the baked galaxy core each frame (the body itself is baked).
         this.drawCitadelClock(ctx);
       }
 
