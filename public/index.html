@@ -315,6 +315,22 @@
   #t-detach { margin-left: auto; padding: 2px 9px; font-size: 12px; flex: 0 0 auto; }
   /* panel hidden: keep the session name clear of the fixed "☰ sessions" button */
   body.panel-hidden #termbar { padding-left: 116px; }
+  /* tab bar: sessions within the terminal window */
+  #tabbar { display: flex; flex-direction: row; align-items: center; gap: 3px; padding: 3px 6px; background: var(--panel-2, var(--panel, #101521)); border-bottom: 1px solid var(--border); flex: 0 0 auto; overflow-x: auto; scrollbar-width: thin; }
+  #tabbar::-webkit-scrollbar { height: 4px; }
+  #tabbar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+  .tab { display: flex; align-items: center; gap: 4px; padding: 3px 10px; border-radius: 6px 6px 0 0; font-size: 12px; font-family: var(--font-mono); cursor: pointer; white-space: nowrap; border: 1px solid transparent; border-bottom: none; transition: background .1s; }
+  .tab:hover { background: var(--chip-hover, rgba(255,255,255,.05)); }
+  .tab.active { background: var(--panel); border-color: var(--border); font-weight: 700; }
+  .tab .tab-name { overflow: hidden; text-overflow: ellipsis; max-width: 120px; }
+  .tab .tab-close { flex: 0 0 auto; width: 16px; height: 16px; display: flex; align-items: center; justify-content: center; border-radius: 3px; font-size: 13px; color: var(--dim); opacity: 0; transition: opacity .1s; }
+  .tab:hover .tab-close { opacity: .7; }
+  .tab .tab-close:hover { opacity: 1; background: var(--red); color: #fff; }
+  .tab .tab-indicator { width: 6px; height: 6px; border-radius: 50%; flex: 0 0 auto; }
+  .tab.active .tab-indicator { background: var(--amber); box-shadow: 0 0 4px var(--amber); }
+  .tab:not(.active) .tab-indicator { background: var(--dim); }
+  #tabbar .tab-add { flex: 0 0 auto; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; border-radius: 4px; font-size: 18px; color: var(--dim); cursor: pointer; border: 1px dashed var(--border); background: none; margin-left: auto; }
+  #tabbar .tab-add:hover { background: var(--chip-hover); color: var(--text); border-color: var(--accent); }
   #termwrap { flex: 1 1 auto; min-height: 0; padding: 4px 6px; position: relative; }
   #term { position: absolute; inset: 4px 6px; touch-action: none; }
   /* touch-action:none: all gestures on the terminal are handled in JS —
@@ -589,6 +605,7 @@
       <button id="t-full" title="Fullscreen (the terminal window fills the screen)" style="display:none">⛶</button>
       <button id="t-detach" title="Detach (the session keeps running in tmux)" style="display:none">✕</button>
     </div>
+    <div id="tabbar" style="display:none"><button id="tab-add" class="tab-add" title="Create a new session in this window">+</button></div>
     <div id="termwrap">
       <div id="placeholder">click a session above to attach — sessions are grouped by host (config.json)</div>
       <div id="term"></div>

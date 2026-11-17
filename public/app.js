@@ -11,6 +11,10 @@ let splitFit = null;    // fit addon for split terminal
 // once the command produces VISIBLE output — otherwise the window flashes empty
 // while a slow command (e.g. pi-bolt) is still booting. {st, s, timer} or null.
 let bootReveal = null;
+// Tab sessions within the terminal window: shared xterm, one WS per tab.
+// { key, host, name, ws, dataSub } — active tab is at tabs[activeTab]
+let tabs = [];        // array of tab objects
+let activeTab = -1;   // index into tabs, -1 = no tabs open
 // host → sessions lookup, rebuilt once per renderChips so displayName is O(1)/chip instead
 // of an O(#hosts) hosts.find per chip (render is O(sessions × hosts) otherwise).
 let hostSessionsLookup = null;
@@ -315,8 +319,120 @@ function dropSession(key) {
   if (view === 'list') renderChips();
 }
 
+// ---------- tab sessions within the terminal window ----------
+// Shared xterm instance, one WebSocket per tab. Switching a tab closes the old WS
+// and opens a new one on the same terminal.
+function findTab(key) {
+  return tabs.findIndex((t) => t.key === key);
+}
+function openTab(key, opts) {
+  const idx = findTab(key);
+  if (idx !== -1) { switchTab(idx); return idx; }
+  const s = findSession(key);
+  const sessionName = (opts && opts.name) || (s ? s.name : key.split(':').pop());
+  const host = (opts && opts.host) || (s ? s.host : 'localhost');
+  const st = connectTerminal(key, host, sessionName, term, () => {
+    if (activeTab === tabs.length - 1) { fitTerm(); term.focus(); }
+  });
+  st.tabIdx = tabs.length;
+  tabs.push(st);
+  activeTab = tabs.length - 1;
+  return activeTab;
+}
+function switchTab(idx) {
+  if (idx === activeTab) return;
+  // close current tab's connection
+  if (activeTab >= 0 && activeTab < tabs.length) {
+    const old = tabs[activeTab];
+    try { old.dataSub.dispose(); } catch {}
+    try { old.ws.close(); } catch {}
+    old.active = false;
+  }
+  activeTab = idx;
+  const tab = tabs[idx];
+  if (!tab) return;
+  tab.active = true;
+  // open new connection on shared xterm
+  const st = connectTerminal(tab.key, tab.host, tab.name, term, () => {
+    fitTerm(); term.focus();
+  });
+  // replace the tab object (connectTerminal returns a fresh st)
+  Object.assign(tab, st);
+  tab.active = true;
+  $('placeholder').style.display = 'none';
+  $('t-detach').style.display = '';
+  $('t-name').textContent = tab.name;
+  $('t-cwd').textContent = findSession(tab.key) ? findSession(tab.key).cwd : '';
+  if (view === 'town' && townView) { $('termwin').classList.add('attached'); townView.activeKey = tab.key; townView.needsRedraw = true; }
+  renderTabs();
+  syncTermButtons();
+}
+function closeTab(idx) {
+  if (idx < 0 || idx >= tabs.length) return;
+  const tab = tabs[idx];
+  try { tab.dataSub.dispose(); } catch {}
+  try { tab.ws.close(); } catch {}
+  tabs.splice(idx, 1);
+  // adjust activeTab
+  if (activeTab === idx) {
+    activeTab = tabs.length > 0 ? Math.min(idx, tabs.length - 1) : -1;
+    if (activeTab >= 0) switchTab(activeTab);
+    else { detach(); }
+  } else if (activeTab > idx) {
+    activeTab--;
+  }
+  renderTabs();
+}
+function renderTabs() {
+  const bar = $('tabbar');
+  if (!bar) return;
+  if (tabs.length === 0) { bar.style.display = 'none'; return; }
+  bar.style.display = 'flex';
+  // reconcile in place (like renderChips)
+  const existing = new Map();
+  for (const child of bar.children) {
+    if (child.dataset.tabIdx !== undefined) existing.set(parseInt(child.dataset.tabIdx), child);
+  }
+  const needed = new Set(tabs.map((_, i) => i));
+  // update/add tabs
+  for (let i = 0; i < tabs.length; i++) {
+    const tab = tabs[i];
+    let el = existing.get(i);
+    if (!el) {
+      el = document.createElement('div');
+      el.className = 'tab';
+      el.dataset.tabIdx = i;
+      const ind = document.createElement('span');
+      ind.className = 'tab-indicator';
+      const nm = document.createElement('span');
+      nm.className = 'tab-name';
+      nm.textContent = tab.name;
+      const cl = document.createElement('span');
+      cl.className = 'tab-close';
+      cl.textContent = '×';
+      cl.onclick = (e) => { e.stopPropagation(); closeTab(i); };
+      el.append(ind, nm, cl);
+      el.onclick = () => switchTab(i);
+      bar.insertBefore(el, bar.lastElementChild);
+    }
+    el.className = 'tab' + (i === activeTab ? ' active' : '');
+    el.querySelector('.tab-name').textContent = tab.name;
+    el.title = tab.key;
+  }
+  // remove old tabs
+  for (const [i, el] of existing) {
+    if (!needed.has(i)) el.remove();
+  }
+}
+
 function attach(key, opts) {
   const hidden = !!(opts && opts.hidden); // +New: attach but keep the window covered until the command has output
+  // If tabs are open, use tab system instead of detaching/attaching
+  if (tabs.length > 0) {
+    openTab(key, opts);
+    renderTabs();
+    return;
+  }
   detach();
   const s = findSession(key);
   try { fit.fit(); } catch {} // sync xterm to the container so we can pass the real size
@@ -367,6 +483,8 @@ function attach(key, opts) {
 }
 
 function detach() {
+  // If tabs are open, close the active tab instead of full detach
+  if (tabs.length > 0) { closeTab(activeTab >= 0 ? activeTab : 0); return; }
   if (!active) return;
   if (bootReveal) { clearTimeout(bootReveal.timer); bootReveal = null; } // a hidden +New attach is being torn down
   try { active.dataSub.dispose(); } catch {}
@@ -418,6 +536,9 @@ function updateLocalBadge(s) {
 // ---------- split view ----------
 function openSplit() {
   if (splitActive || splitTerm) return; // already split
+  // hide tab bar — split already provides multi-session
+  const tabbar = $('tabbar');
+  if (tabbar) tabbar.style.display = 'none';
   const wrap = $('termwrap');
   wrap.classList.add('split');
 
@@ -489,6 +610,9 @@ function closeSplitView() {
   const wrap = $('termwrap');
   wrap.classList.remove('split');
   wrap.style.gridTemplateColumns = '';
+  // show tab bar again (tabs are available when split is closed)
+  const tabbar = $('tabbar');
+  if (tabbar && tabs.length > 0) tabbar.style.display = 'flex';
 
   // move the main terminal back out of its pane
   const pane1 = wrap.querySelector('.split-pane[data-pane="1"]');
@@ -556,6 +680,17 @@ $('t-split').onclick = () => {
   } else {
     openSplit();
   }
+};
+
+// Tab add button: create a new session and open it in a new tab
+$('tab-add').onclick = () => {
+  // If split is active, don't allow tabs (split already provides multi-session)
+  if (splitActive) return;
+  // Open a new session
+  createSession(null, null, (key) => {
+    if (key) openTab(key);
+    renderTabs();
+  });
 };
 
 // Fullscreen toggle (Town view): the floating terminal window fills the area
