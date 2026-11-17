@@ -339,7 +339,17 @@ function setupTabClose(tab) {
     if (wasActive) {
       activeTab = tabs.length > 0 ? Math.min(idx, tabs.length - 1) : -1;
       if (activeTab >= 0) switchTab(activeTab);
-      else { detach(); }
+      else {
+        // last tab closed — reset terminal
+        term.reset();
+        if (view === 'town' && townView) { $('termwin').classList.remove('attached'); townView.activeKey = null; townView.needsRedraw = true; }
+        $('placeholder').style.display = 'flex';
+        $('t-detach').style.display = 'none';
+        $('t-name').textContent = 'no session selected';
+        $('t-cwd').textContent = '';
+        $('t-local').style.display = 'none';
+        syncTermButtons();
+      }
     } else if (activeTab > idx) {
       activeTab--;
     }
@@ -409,7 +419,17 @@ function closeTab(idx) {
   if (activeTab === idx) {
     activeTab = tabs.length > 0 ? Math.min(idx, tabs.length - 1) : -1;
     if (activeTab >= 0) switchTab(activeTab);
-    else { detach(); }
+    else {
+      // last tab closed — reset terminal (detach() won't work since active is null in tab path)
+      term.reset();
+      if (view === 'town' && townView) { $('termwin').classList.remove('attached'); townView.activeKey = null; townView.needsRedraw = true; }
+      $('placeholder').style.display = 'flex';
+      $('t-detach').style.display = 'none';
+      $('t-name').textContent = 'no session selected';
+      $('t-cwd').textContent = '';
+      $('t-local').style.display = 'none';
+      syncTermButtons();
+    }
   } else if (activeTab > idx) {
     activeTab--;
   }
