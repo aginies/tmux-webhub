@@ -738,7 +738,6 @@
       this.bus = {
         route, stop,
         roadY: stop.wait.y - 18, // on the street (above the sidewalk stop)
-        cycleMs: 22000, // between arrivals
         haltMs: 3500,   // how long it halts at the stop
         speed: 300,     // px / s
         riders: [],     // worker names aboard (shown in the passenger window)
@@ -759,7 +758,10 @@
       const driveIn = (stopX - roadLeft) / b.speed * 1000;
       const driveOut = (roadRight - stopX) / b.speed * 1000;
       const enterMs = 0, arriveMs = driveIn, departMs = arriveMs + b.haltMs, exitMs = departMs + driveOut;
-      const cycleMs = exitMs + 4000; // a gap between runs
+      // A long quiet gap between runs: the bus is a passing visitor, not traffic.
+      // ~15 s idle after it clears, so a full arrival-to-arrival cycle is ~22 s
+      // (was a 4 s gap → ~11 s, which made it feel like constant traffic).
+      const cycleMs = exitMs + 15000;
       const phase = (t * 1000) % cycleMs;
       if (phase < enterMs || phase >= exitMs) return null;
       const eo = (u) => u < .5 ? 2 * u * u : 1 - Math.pow(-2 * u + 2, 2) / 2;
