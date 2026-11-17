@@ -6,9 +6,21 @@ let active = null;     // {key, host, name, ws, dataSub}
 let splitActive = null; // {key, host, name, ws, dataSub} — split pane session
 let splitTerm = null;   // second xterm instance for split view
 let splitFit = null;    // fit addon for split terminal
+// Pending "+New" boot reveal: after creating a session we attach it HIDDEN (the
+// terminal window stays covered by the placeholder + the modal) and only reveal it
+// once the command produces VISIBLE output — otherwise the window flashes empty
+// while a slow command (e.g. pi-bolt) is still booting. {st, s, timer} or null.
+let bootReveal = null;
 // host → sessions lookup, rebuilt once per renderChips so displayName is O(1)/chip instead
 // of an O(#hosts) hosts.find per chip (render is O(sessions × hosts) otherwise).
 let hostSessionsLookup = null;
+// Last rendered +New host <select> (names/reachability/enabled), so populateHostSelect()
+// can skip a DOM rebuild when nothing changed. Declared here — NOT next to its function —
+// because setView(view) runs while this file is still being evaluated and calls
+// populateHostSelect(): a `let` further down would be in its temporal dead zone and throw
+// "Cannot access 'lastHostsSnap' before initialization", aborting the rest of app.js (every
+// handler below it — ⎋ Pg↑ Pg↓ ⌨, the ✕ detach, the keys palette, refresh() — never binds).
+let lastHostsSnap = '';
 
 const $ = (id) => document.getElementById(id);
 const keyOf = (host, name) => host + ':' + name; // neither may contain ':' (server-enforced)
@@ -202,15 +214,110 @@ function connectTerminal(key, host, name, term, onOpen) {
   return st;
 }
 
-function attach(key) {
+// True if the terminal's parsed buffer has non-whitespace text in any row ABOVE the
+// last one. On attach, tmux first redraws the current screen: for a freshly created
+// session the main area is BLANK, but the bottom row (tmux's status bar — session /
+// window name) is drawn immediately and DOES contain visible text. So "any visible
+// text" would fire too early; we specifically wait for the command's output to land
+// in the rows above the status bar, which is what makes the window non-empty.
+function hasMainContent() {
+  const buf = term.buffer.active;
+  const total = buf.length;
+  const start = Math.max(0, total - term.rows); // first visible row (skips scrollback)
+  const end = total - 1; // exclude the last visible row (the status bar)
+  for (let r = start; r < end; r++) {
+    const line = buf.getLine(r);
+    if (line && line.translateToString(true).trim()) return true;
+  }
+  return false;
+}
+
+// Reveal a hidden (+New boot) terminal: mirror attach()'s non-hidden reveal path.
+// Guards on `active === st` so a detach in the meantime is a no-op. Async: right
+// after a create the in-memory host list is still stale (the server's background
+// re-poll lags the POST), so if the session isn't found we refresh once to get the
+// real name/cwd for the termbar instead of showing the raw key.
+async function doReveal(st, s) {
+  if (active !== st) return;
+  let ss = s || findSession(st.key);
+  if (!ss) { await refresh(); ss = findSession(st.key); }
+  if (active !== st) return; // detached during the refresh
+  if (view === 'town' && townView) { $('termwin').classList.add('attached'); townView.activeKey = st.key; townView.needsRedraw = true; }
+  $('placeholder').style.display = 'none';
+  $('t-detach').style.display = '';
+  $('t-name').textContent = ss ? `${displayName(ss)}  [${ss.host}:${ss.name}]` : st.key;
+  $('t-cwd').textContent = ss ? ss.cwd : '';
+  if (ss) updateLocalBadge(ss); // ss can still be undefined (session already gone) — don't crash
+  $('modal-bg').classList.remove('open'); // the +New modal was kept open showing "starting…"
+  fitTerm(); term.focus();
+  syncTermButtons();
+  renderChips();
+}
+
+// Called when the booting session emits visible output (or the safety timer fires).
+function revealTerminal() {
+  if (!bootReveal) return;
+  const { st, s } = bootReveal;
+  clearTimeout(bootReveal.timer);
+  bootReveal = null;
+  doReveal(st, s); // async; safe to fire-and-forget
+}
+
+// Attach was done hidden: watch the buffer and reveal once the command's output has
+// landed in the rows above the status bar; a safety timer reveals anyway so a
+// silent/very slow command can't keep the modal open forever.
+function setupBootReveal(st, s) {
+  const orig = st.ws.onmessage;
+  st.ws.onmessage = (ev) => {
+    if (orig) orig(ev); // writes the frame to term (updates the parsed buffer)
+    if (bootReveal && bootReveal.st === st && hasMainContent()) revealTerminal();
+  };
+  bootReveal = { st, s, timer: setTimeout(revealTerminal, 8000) };
+}
+
+// Close the +New modal. If a create is in flight (bootReveal pending) the session
+// already exists — reveal the (hidden) terminal instead of just closing, so the
+// user is never left staring at "starting…" with no window.
+function closeNewModal() {
+  if (bootReveal) { revealTerminal(); return; }
+  $('modal-bg').classList.remove('open');
+}
+
+// Drop a session from the in-memory host list and repaint right away. Called the
+// moment we learn a session has ended (its WS closed with 'session ended') so its
+// town desk + chip vanish immediately instead of lingering until the next poll — a
+// dead desk must not stay clickable (clicking it would just fail with 'no such
+// tmux session'). The next poll reconciles (the server's list already lacks it), so
+// this optimistic drop is safe. No-op if the session isn't in the list.
+function dropSession(key) {
+  const idx = key.indexOf(':');
+  if (idx < 0) return;
+  const host = key.slice(0, idx), name = key.slice(idx + 1);
+  let changed = false;
+  for (const h of hosts) {
+    if (h.name !== host || !Array.isArray(h.sessions)) continue;
+    const before = h.sessions.length;
+    h.sessions = h.sessions.filter((s) => s.name !== name);
+    if (h.sessions.length !== before) changed = true;
+  }
+  if (!changed) return;
+  if (townView && view === 'town') townView.update(hosts, active && active.key);
+  if (view === 'list') renderChips();
+}
+
+function attach(key, opts) {
+  const hidden = !!(opts && opts.hidden); // +New: attach but keep the window covered until the command has output
   detach();
   const s = findSession(key);
   try { fit.fit(); } catch {} // sync xterm to the container so we can pass the real size
-  // If the session is not found in the list (stale list), extract the session name
-  // from the key (format: host:session_name) instead of using the full key.
-  const sessionName = s ? s.name : key.split(':').pop();
-  const host = s ? s.host : 'localhost';
+  // If the session is not found in the list (stale list — the server's background
+  // re-poll hasn't landed yet right after a create), fall back to the explicit
+  // host/name from opts, then to parsing the key. Using 'localhost' here would make
+  // the WS attach to the wrong host ("unknown host").
+  const sessionName = (opts && opts.name) || (s ? s.name : key.split(':').pop());
+  const host = (opts && opts.host) || (s ? s.host : 'localhost');
   const st = connectTerminal(key, host, sessionName, term, () => {
+    if (hidden) return; // +New boot: the window is revealed (and focused) later, not now
     fitTerm(); term.focus();
     // re-assert a few times: on slow/remote hosts the WS can open before the
     // container is painted, and the first focus() is then dropped by the browser
@@ -219,28 +326,37 @@ function attach(key) {
   active = st;
   // the shortcut bar (⎋ Pg↑ Pg↓ ⌨) lights up the moment the ws is really open
   st.ws.addEventListener('open', () => { if (active === st) syncTermButtons(); });
-  if (view === 'town' && townView) { $('termwin').classList.add('attached'); townView.activeKey = key; townView.needsRedraw = true; }
-  $('placeholder').style.display = 'none';
-  $('t-detach').style.display = '';
+  if (!hidden) {
+    if (view === 'town' && townView) { $('termwin').classList.add('attached'); townView.activeKey = key; townView.needsRedraw = true; }
+    $('placeholder').style.display = 'none';
+    $('t-detach').style.display = '';
+    // no term.reset() here: detach() above already cleared the screen when a session
+    // was active, and a fresh tmux attach full-redraws it when we come from a
+    // closed/detached state — a second reset was redundant
+    $('t-name').textContent = s ? `${displayName(s)}  [${s.host}:${s.name}]` : key;
+    $('t-cwd').textContent = s ? s.cwd : '';
+    updateLocalBadge(s);
+  }
   syncTermButtons();
-  // no term.reset() here: detach() above already cleared the screen when a session
-  // was active, and a fresh tmux attach full-redraws it when we come from a
-  // closed/detached state — a second reset was redundant
-  $('t-name').textContent = s ? `${displayName(s)}  [${s.host}:${s.name}]` : key;
-  $('t-cwd').textContent = s ? s.cwd : '';
-  updateLocalBadge(s);
   renderChips();
 
   st.ws.onclose = (ev) => {
     if (active !== st) return;
+    const wasBooting = !!(bootReveal && bootReveal.st === st);
+    const sessionEnded = /session ended/i.test(ev.reason || '');
     const why = ev.reason ? ev.reason : 'detached — session still runs in tmux';
-    detach(); // resets the terminal — the reason is written over the CLEAN screen
+    detach(); // resets the terminal — the reason is written over the CLEAN screen (also cancels bootReveal)
+    if (wasBooting) $('modal-bg').classList.remove('open'); // don't leave the user on "starting…"
+    if (sessionEnded) dropSession(key); // the tmux session is gone — kill its desk/chip now, not on the next poll
     term.write('\x1b[90m[' + why + ' — ' + key + ']\x1b[0m\r\n');
   };
+
+  if (hidden) setupBootReveal(st, s);
 }
 
 function detach() {
   if (!active) return;
+  if (bootReveal) { clearTimeout(bootReveal.timer); bootReveal = null; } // a hidden +New attach is being torn down
   try { active.dataSub.dispose(); } catch {}
   try { active.ws.close(); } catch {}
   active = null;
@@ -580,10 +696,24 @@ function displayName(s) {
 
 // host connection state → short label for the chip tooltip
 const stateLabel = (hs) => hs === 'slow' ? 'connected (slow)' : hs === 'offline' ? 'host offline' : 'connected';
-// chip tooltip: host · state · tmux name · cwd (+ other clients, + active)
+// "running 2h 14m" from the session's created epoch (host clock). '' when unknown
+// (created 0 — a tmux without #{session_created}) or when the host clock is behind.
+function runningFor(s) {
+  if (!s.created) return '';
+  let sec = Math.floor(Date.now() / 1000) - s.created;
+  if (sec < 0) sec = 0;
+  if (sec < 60) return 'running ' + sec + 's';
+  const m = Math.floor(sec / 60);
+  if (m < 60) return 'running ' + m + 'm';
+  const h = Math.floor(m / 60);
+  if (h < 24) return 'running ' + h + 'h ' + (m % 60) + 'm';
+  return 'running ' + Math.floor(h / 24) + 'd ' + (h % 24) + 'h';
+}
+// chip tooltip: host · state · tmux name · cwd (+ other clients, + active, + uptime)
 const chipTitle = (s, hostState, others) =>
   `${s.host}: ${stateLabel(hostState)} · tmux: ${s.name} · ${s.cwd}` +
-  (others > 0 ? ` · ${others} other client(s) attached` : '') + (s.activity ? ' · active' : '');
+  (others > 0 ? ` · ${others} other client(s) attached` : '') + (s.activity ? ' · active' : '') +
+  (runningFor(s) ? ' · ' + runningFor(s) : '');
 
 // rename a session (tmux rename-session). If it's the one we're attached to, the WS
 // keeps working (tmux clients follow the session, not its name) — just re-point the
@@ -1029,7 +1159,6 @@ $('ns-host').addEventListener('change', scheduleDirs);
 
 // ---------- new session modal ----------
 const modal = $('modal-bg');
-let lastHostsSnap = '';
 function populateHostSelect() {
   // skip the DOM rebuild when the host list (names + reachability + enabled) is unchanged
   const snap = hosts.map((h) => h.name + (h.error ? '!' : '') + (h.enabled === false ? 'x' : '')).join(',');
@@ -1055,10 +1184,10 @@ function hostDefaultCmd(name) {
   const c = h && typeof h.cmd === 'string' && h.cmd.trim() ? h.cmd.trim() : defaultCmd;
   return c;
 }
-$('new-session').onclick = () => { $('ns-err').textContent = ''; $('ns-name').value = ''; $('ns-cwd').value = ''; $('ns-cmd').value = ''; $('ns-cmd').placeholder = hostDefaultCmd($('ns-host').value); hideDirs(); modal.classList.add('open'); $('ns-name').focus(); };
+$('new-session').onclick = () => { $('ns-err').textContent = ''; $('ns-name').value = ''; $('ns-cwd').value = ''; $('ns-cmd').value = ''; $('ns-cmd').placeholder = hostDefaultCmd($('ns-host').value); $('ns-ok').disabled = false; hideDirs(); modal.classList.add('open'); $('ns-name').focus(); };
 $('ns-host').addEventListener('change', () => { $('ns-cmd').placeholder = hostDefaultCmd($('ns-host').value); });
-$('ns-cancel').onclick = () => modal.classList.remove('open');
-modal.addEventListener('click', (e) => { if (e.target === modal) modal.classList.remove('open'); });
+$('ns-cancel').onclick = () => closeNewModal();
+modal.addEventListener('click', (e) => { if (e.target === modal) closeNewModal(); });
 $('ns-ok').onclick = async () => {
   const host = $('ns-host').value;
   const name = $('ns-name').value.trim();
@@ -1067,13 +1196,29 @@ $('ns-ok').onclick = async () => {
   if (!host) { $('ns-err').textContent = 'no reachable host'; return; }
   // mirrors NAME_RE in server.js (and valid_name in pitux) — keep in sync
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) { $('ns-err').textContent = 'name: start with letter/digit, then letters, digits, . _ -'; return; }
+  const ok = $('ns-ok');
+  ok.disabled = true; // guard against double-submit while the POST is in flight
   $('ns-err').textContent = 'creating…';
-  const r = await fetch('/api/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ host, name, cwd, cmd }) });
-  const d = await r.json();
-  if (!r.ok) { $('ns-err').textContent = d.error || 'failed'; return; }
-  modal.classList.remove('open');
+  let r, d;
+  try {
+    r = await fetch('/api/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ host, name, cwd, cmd }) });
+    d = await r.json();
+  } catch (e) {
+    ok.disabled = false;
+    $('ns-err').textContent = 'network error';
+    return;
+  }
+  if (!r.ok) { ok.disabled = false; $('ns-err').textContent = d.error || 'failed'; return; }
+  // Keep the modal open ("starting…") and attach HIDDEN: the terminal window is
+  // revealed only once the command produces visible output (or after a timeout),
+  // so the user never sees an empty window while a slow command (pi-bolt) boots.
+  $('ns-err').textContent = 'starting…';
   await refresh();
-  setTimeout(() => attach(keyOf(host, name)), 400); // let tmux + pi boot a moment
+  // pass host+name explicitly: the list refresh above may still be stale (the
+  // server's background re-poll lags the POST), so attach must not rely on findSession
+  attach(keyOf(host, name), { hidden: true, host, name });
+  // ok stays disabled — the modal is closed on reveal (or the user cancels, which
+  // reveals). It's re-enabled the next time the +New modal is opened.
 };
 
 // ---------- config editor (friendly form) ----------
@@ -1311,8 +1456,10 @@ $('tf-disable').onclick = async () => {
 // ---------- keyboard ----------
 window.addEventListener('keydown', (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'b') { e.preventDefault(); setPanelHidden(!header.classList.contains('hidden')); }
-  // Esc detaches only when the terminal is NOT focused (Esc is a normal key inside TUIs)
-  if (e.key === 'Escape' && active && !term.isActive) detach();
+  // Esc detaches only when the terminal is NOT focused (Esc is a normal key inside TUIs).
+  // Not during a +New boot-reveal: the hidden attach is still waiting for output, and
+  // Esc must not tear it down (the modal's Cancel reveals it instead).
+  if (e.key === 'Escape' && active && !term.isActive && !bootReveal) detach();
 });
 
 // ---------- keyboard focus (both views) ----------

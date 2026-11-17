@@ -276,11 +276,11 @@ function runOn(host, args, timeoutMs = CMD_TIMEOUT_MS, maxBuffer = BUF_4MB, sshO
 // no-server / offline detection below is unchanged. (The \t below are REAL tabs.)
 const LIST_SH = `now=$(date +%s)
 _prevWList=$1
-out=$(tmux list-sessions -F '#{session_name}\t#{session_attached}\t#{pane_current_path}\t#{window_activity}\t#{pane_current_command}')
+out=$(tmux list-sessions -F '#{session_name}\t#{session_attached}\t#{pane_current_path}\t#{window_activity}\t#{pane_current_command}\t#{session_created}')
 st=$?
 [ "$st" -eq 0 ] || printf '%s\\n' "$out" >&2
 if [ -n "$out" ]; then
-  printf '%s\\n' "$out" | while IFS='\t' read -r n a c w cmd; do
+  printf '%s\\n' "$out" | while IFS='\t' read -r n a c w cmd created; do
     pe=''
     # tiny live preview: the pane's last 9 lines, base64 (one token, no tabs).
     # $_prevWList carries the previous poll's window_activity per session ("name:w" tokens):
@@ -321,7 +321,7 @@ if [ -n "$out" ]; then
         fi
         ;;
     esac
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\\n' "$n" "$a" "$c" "$w" "$cmd" "$pe" "$cap"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\\n' "$n" "$a" "$c" "$w" "$cmd" "$pe" "$cap" "$created"
   done
 fi
 echo "__NOW__$now"
@@ -412,7 +412,7 @@ async function listHostSessions(host) {
   const seenCache = new Set();
   const seenCaps = new Set();
   const sessions = rows.map((line) => {
-    const [name, attached, pth, act, cmd, piLast, cap] = line.split('\t');
+    const [name, attached, pth, act, cmd, piLast, cap, created] = line.split('\t');
     const actSec = parseInt(act, 10) || 0;
     const ageMs = remoteNow ? (remoteNow - actSec) * 1000 : -1; // -1 = unknown clock → not active
     // window fallback: the window produced output within the last ACTIVE_WINDOW_MS
@@ -450,6 +450,7 @@ async function listHostSessions(host) {
       cwd: pth || '',
       activity: piActive(cmd, piEntry, winActive),
       preview,
+      created: parseInt(created, 10) || 0,
     };
   });
   // prune this host's cached panes that no longer exist (scoped to the host's map)

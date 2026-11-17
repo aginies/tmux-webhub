@@ -1259,19 +1259,19 @@
       const c = this.town.layout.center;
       const cx = (c.x + c.w / 2) * TT; // clock centre x (world)
       const cy = c.y * TT + 82;        // clock centre y (world) — vendor bakes it at body-y 82
-      const R = 13;                    // rim radius (a hair over the vendor's 12, to fully cover it)
+      const R = 18;                    // rim radius — a bigger face, still clear of the tower's cornice (y 58–62) and inside the 56px tower
       const now = new Date();
       const min = now.getMinutes() + now.getSeconds() / 60;
       const hr = (now.getHours() % 12) + min / 60;
 
-      // Face + rim (opaque, covers the vendor's static clock exactly).
+      // Face + rim (opaque, covers the vendor's static clock and a bit of the tower).
       ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.fillStyle = '#a8862e'; ctx.fill();
-      ctx.beginPath(); ctx.arc(cx, cy, R - 2.5, 0, Math.PI * 2); ctx.fillStyle = '#fbf6e8'; ctx.fill();
+      ctx.beginPath(); ctx.arc(cx, cy, R - 3.5, 0, Math.PI * 2); ctx.fillStyle = '#fbf6e8'; ctx.fill();
       // Ticks (12, the quarters longer).
       ctx.strokeStyle = '#1c1722'; ctx.lineCap = 'round';
       for (let i = 0; i < 12; i++) {
-        const a = i / 12 * Math.PI * 2, r1 = R - 2.5, r2 = i % 3 === 0 ? R - 5.5 : R - 4;
-        ctx.lineWidth = i % 3 === 0 ? 1.6 : 1;
+        const a = i / 12 * Math.PI * 2, r1 = R - 3.5, r2 = i % 3 === 0 ? R - 7.5 : R - 5.5;
+        ctx.lineWidth = i % 3 === 0 ? 2 : 1.2;
         ctx.beginPath();
         ctx.moveTo(cx + Math.cos(a) * r1, cy + Math.sin(a) * r1);
         ctx.lineTo(cx + Math.cos(a) * r2, cy + Math.sin(a) * r2);
@@ -1285,10 +1285,10 @@
         ctx.lineTo(cx + Math.cos(ang) * len, cy + Math.sin(ang) * len);
         ctx.stroke();
       };
-      hand(hr / 12 * Math.PI * 2 - Math.PI / 2, R - 6.5, 2.2); // hour
-      hand(min / 60 * Math.PI * 2 - Math.PI / 2, R - 3.5, 1.5); // minute
+      hand(hr / 12 * Math.PI * 2 - Math.PI / 2, R - 9, 2.8); // hour
+      hand(min / 60 * Math.PI * 2 - Math.PI / 2, R - 5, 2);   // minute
       // Center pin.
-      ctx.beginPath(); ctx.arc(cx, cy, 1.8, 0, Math.PI * 2); ctx.fillStyle = '#a8862e'; ctx.fill();
+      ctx.beginPath(); ctx.arc(cx, cy, 2.4, 0, Math.PI * 2); ctx.fillStyle = '#a8862e'; ctx.fill();
     }
 
     buildWalk(b, waypoints) {
