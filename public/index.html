@@ -75,6 +75,10 @@
   }
   input:focus, select:focus { border-color: var(--accent); }
   header button { padding: 3px 9px; font-size: 12.5px; }
+  /* "needs you" badge: count of sessions that settled after working (awaiting input). Click filters the list. */
+  #needs-you { color: var(--amber); border-color: rgba(240,196,83,.5); background: rgba(240,196,83,.10); }
+  #needs-you.off { display: none; }
+  #needs-you.on { background: var(--amber); color: #1a1a1a; font-weight: 700; }
   /* split view: vertical only, 50/50 */
   #termwrap.split { display: grid; grid-template-columns: 1fr 1fr; gap: 2px; height: 100%; }
   #termwrap.split .split-pane { border: 1px solid var(--border); border-radius: 4px; overflow: hidden; display: flex; flex-direction: column; height: 100%; }
@@ -162,6 +166,12 @@
   .chip.split-select { border-color: var(--amber); animation: pc-pulse 1.5s ease-in-out infinite; }
   .chip .flash { flex: 0 0 auto; display: inline-flex; animation: pc-pulse 1.2s ease-in-out infinite; }
   .chip .ind-empty { width: 11px; flex: 0 0 auto; } /* reserves the indicator slot so chips don't shift */
+  /* "needs you": settled after working → awaiting input. Amber dot reads as "attention"
+     without colliding with the ⚡ active flash; border yields to the selection ring. */
+  .chip .need { width: 11px; height: 11px; border-radius: 50%; background: var(--amber); box-shadow: 0 0 6px var(--amber); flex: 0 0 auto; animation: pc-pulse 1.6s ease-in-out infinite; }
+  .chip.needs-you:not(.active) { border-color: var(--amber); background: rgba(240,196,83,.08); }
+  /* filter mode (badge click): only needs-you chips stay visible; empty host groups hide in JS */
+  #hosts.filtering .chip:not(.needs-you) { display: none; }
   @keyframes pc-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
   .chip .cname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   /* per-chip action (✎ rename): hover-revealed on desktop, always (subtle) on touch */
@@ -552,6 +562,7 @@
 <header id="header">
   <button id="toggle-panel" title="Hide session panel">☰</button>
   <div id="hosts"></div>
+  <button id="needs-you" class="off" title="Sessions awaiting your input">🔔</button>
   <div class="spacer"></div>
   <span id="net" class="net" title="server bandwidth (5 s average)"></span>
   <button id="new-session" class="primary">+New</button>

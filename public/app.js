@@ -22,6 +22,16 @@ let hostSessionsLookup = null;
 // handler below it — ⎋ Pg↑ Pg↓ ⌨, the ✕ detach, the keys palette, refresh() — never binds).
 let lastHostsSnap = '';
 
+// "Needs you": a session that was working (activity true) and has since settled
+// (activity false) is awaiting your input. Derived client-side from the activity
+// boolean's transitions — no new server field, the activity contract is untouched.
+// A key is flagged the moment we observe active→settled and cleared when the agent
+// resumes (settled→active) or you attach to it. Latched (not transient) so the badge
+// survives the next poll; entries are pruned when the session disappears.
+const needsYou = new Set();      // keys (host:name) awaiting input
+const prevActivity = new Map();  // key → last observed activity boolean
+let filterNeedsYou = false;      // list filtered to needs-you chips only
+
 const $ = (id) => document.getElementById(id);
 const keyOf = (host, name) => host + ':' + name; // neither may contain ':' (server-enforced)
 const allSessions = () => hosts.flatMap((h) => h.sessions.map((s) => ({ ...s, host: h.name })));
@@ -337,6 +347,8 @@ function attach(key, opts) {
     $('t-cwd').textContent = s ? s.cwd : '';
     updateLocalBadge(s);
   }
+  needsYou.delete(key); // you're looking at it now — it no longer "needs you"
+  renderNeedsYouBadge();
   syncTermButtons();
   renderChips();
 
@@ -764,6 +776,34 @@ $('rn-name').addEventListener('keydown', (e) => { if (e.key === 'Enter') doRenam
 // mid-rebuild. Existing chips are updated by key (host+name); only added/removed
 // sessions and hosts create or remove DOM nodes.
 const FLASH_SVG = '<svg viewBox="0 0 24 24" width="11" height="11" aria-hidden="true"><path d="M11 21h-1l1-7H7.5c-.86 0-.91-.28-.71-.61l.07-.12C8.48 10.94 10.42 7.54 13 3h1l-1 7h3.5c.49 0 .56.33.47.51l-.07.15C12.96 17.55 11 21 11 21z" fill="var(--amber)"/></svg>';
+// Derive the "needs you" set from activity transitions (runs every poll, before the
+// view renders, so List and Space both see a fresh set). We only flag a transition we
+// actually observed (active → settled); a session already idle on first load is
+// "parked", not "awaiting you", so it stays unflagged until it works and settles again.
+function updateNeedsYou() {
+  const seen = new Set();
+  for (const h of hosts) for (const s of h.sessions) {
+    const key = keyOf(h.name, s.name);
+    seen.add(key);
+    if (prevActivity.get(key) === true && !s.activity) needsYou.add(key);
+    if (s.activity) needsYou.delete(key); // resumed → no longer waiting on you
+    prevActivity.set(key, !!s.activity);
+  }
+  for (const k of needsYou) if (!seen.has(k)) needsYou.delete(k);
+  for (const k of prevActivity.keys()) if (!seen.has(k)) prevActivity.delete(k);
+  if (!needsYou.size && filterNeedsYou) filterNeedsYou = false; // nothing left to filter to
+}
+// Header badge: count of awaiting-input sessions; click toggles the list filter.
+function renderNeedsYouBadge() {
+  const el = $('needs-you');
+  const n = needsYou.size;
+  el.textContent = n ? `🔔 ${n}` : '🔔';
+  el.classList.toggle('off', n === 0);
+  el.classList.toggle('on', filterNeedsYou);
+  el.title = n
+    ? `${n} session${n > 1 ? 's' : ''} finished and are awaiting your input — click to ${filterNeedsYou ? 'show all' : 'filter the list'}`
+    : 'No session is awaiting your input';
+}
 function renderChips() {
   const box = $('hosts');
   hostSessionsLookup = new Map(hosts.map((h) => [h.name, h.sessions]));
@@ -778,6 +818,9 @@ function renderChips() {
     syncChips(g.querySelector('.chips'), h);
   });
   for (const [name, g] of groups) if (!seen.has(name)) g.remove();
+  // "needs you" filter: hide non-needs-you chips (CSS) and their now-empty host groups
+  box.classList.toggle('filtering', filterNeedsYou);
+  for (const g of box.children) g.style.display = filterNeedsYou && !g.querySelector('.chip.needs-you') ? 'none' : '';
 }
 
 function syncGroupHead(g, h, idx) {
@@ -836,10 +879,13 @@ function syncChips(box, h) {
 }
 
 function syncChip(c, s, hostState) {
-  c.classList.toggle('active', !!(active && active.key === keyOf(s.host, s.name)));
+  const key = keyOf(s.host, s.name);
+  c.classList.toggle('active', !!(active && active.key === key));
+  c.classList.toggle('needs-you', needsYou.has(key));
   const ind = c.children[0];
-  if (s.activity && ind.className !== 'flash') { ind.className = 'flash'; ind.innerHTML = FLASH_SVG; }
-  else if (!s.activity && ind.className !== 'ind-empty') { ind.className = 'ind-empty'; ind.innerHTML = ''; }
+  if (s.activity) { if (ind.className !== 'flash') { ind.className = 'flash'; ind.innerHTML = FLASH_SVG; } }
+  else if (needsYou.has(key)) { if (ind.className !== 'need') { ind.className = 'need'; ind.innerHTML = ''; } }
+  else { if (ind.className !== 'ind-empty') { ind.className = 'ind-empty'; ind.innerHTML = ''; } }
   const nm = c.children[1];
   const nmText = displayName(s);
   if (nm.textContent !== nmText) nm.textContent = nmText; // skip the DOM write when unchanged
@@ -876,14 +922,16 @@ function chipEl(s, hostState) {
   const key = keyOf(s.host, s.name);
   const c = document.createElement('div');
   c.dataset.key = key;
-  c.className = 'chip' + (active && active.key === key ? ' active' : '');
+  c.className = 'chip' + (active && active.key === key ? ' active' : '') + (needsYou.has(key) ? ' needs-you' : '');
   const others = otherAttached(s);
-  // indicator: ⚡ only while the session is active; idle sessions show nothing
-  // (host connection state is still visible on the host label)
+  // indicator: ⚡ while active, an amber dot when settled-but-awaiting-input ("needs
+  // you"), nothing otherwise (host connection state is still on the host label)
   const ind = document.createElement('span');
   if (s.activity) {
     ind.className = 'flash';
     ind.innerHTML = FLASH_SVG;
+  } else if (needsYou.has(key)) {
+    ind.className = 'need';
   } else {
     ind.className = 'ind-empty';
   }
@@ -974,6 +1022,8 @@ async function refresh() {
       const local = prevHosts.find((x) => x.name === h.name);
       return local ? { ...h, enabled: local.enabled } : h;
     });
+    updateNeedsYou();      // derive "needs you" from activity transitions (both views)
+    renderNeedsYouBadge(); // keep the header badge current
     if (townView && view === 'town') townView.update(hosts, active && active.key);
     if (view === 'list') renderChips();
     // keep the +New host select current in both views (the Town "+" button
@@ -1148,6 +1198,15 @@ function setView(v) {
   setTimeout(fitTerm, 50);
 }
 $('view-toggle').onclick = () => setView(view === 'town' ? 'list' : 'town');
+// "needs you" badge: in List view it toggles the filter; from Space view it turns the
+// filter on and brings you to the list (the filter is a list-view display mode).
+$('needs-you').onclick = () => {
+  if (!needsYou.size) return;
+  if (view === 'town') { filterNeedsYou = true; setView('list'); }
+  else filterNeedsYou = !filterNeedsYou;
+  renderChips();
+  renderNeedsYouBadge();
+};
 setView(view);
 
 // ---------- cwd completion: subdirectories on the chosen host (local or ssh) ----------
