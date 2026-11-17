@@ -213,6 +213,7 @@ function connectTerminal(key, host, name, term, onOpen) {
     ws.send(JSON.stringify({ type: 'input', data: chunks.join(''), chunks }));
   };
   st.dataSub = term.onData((d) => {
+    if (!st.active) return; // only the active tab sends input
     buf.push(d);
     if (buf.length >= INPUT_MAX) buf.shift(); // drop oldest
     if (flushTimer == null) flushTimer = setTimeout(flush, INPUT_FLUSH_MS);
@@ -223,7 +224,8 @@ function connectTerminal(key, host, name, term, onOpen) {
   };
   ws.onmessage = (ev) => {
     // server→client text frames ARE the terminal output (no control messages from server)
-    if (typeof ev.data === 'string') term.write(ev.data);
+    // only write if this tab is active (other tabs' WS stay open but don't pollute the display)
+    if (st.active && typeof ev.data === 'string') term.write(ev.data);
   };
   return st;
 }
@@ -326,37 +328,39 @@ function findTab(key) {
   return tabs.findIndex((t) => t.key === key);
 }
 function openTab(key, opts) {
+  opts = opts || {};
   const idx = findTab(key);
   if (idx !== -1) { switchTab(idx); return idx; }
-  const s = findSession(key);
+  const s = opts.session || findSession(key);
   const sessionName = (opts && opts.name) || (s ? s.name : key.split(':').pop());
   const host = (opts && opts.host) || (s ? s.host : 'localhost');
+  // deactivate current tab (active flag handles input/output routing)
+  if (activeTab >= 0 && activeTab < tabs.length) {
+    tabs[activeTab].active = false;
+  }
   const st = connectTerminal(key, host, sessionName, term, () => {
     if (activeTab === tabs.length - 1) { fitTerm(); term.focus(); }
   });
   st.tabIdx = tabs.length;
+  st.active = true;
   tabs.push(st);
   activeTab = tabs.length - 1;
   return activeTab;
 }
 function switchTab(idx) {
   if (idx === activeTab) return;
-  // close current tab's connection
+  // deactivate current tab (active flag handles input/output routing)
   if (activeTab >= 0 && activeTab < tabs.length) {
-    const old = tabs[activeTab];
-    try { old.dataSub.dispose(); } catch {}
-    try { old.ws.close(); } catch {}
-    old.active = false;
+    tabs[activeTab].active = false;
   }
   activeTab = idx;
   const tab = tabs[idx];
   if (!tab) return;
   tab.active = true;
-  // open new connection on shared xterm
+  // reconnect this tab (WS may have closed while inactive)
   const st = connectTerminal(tab.key, tab.host, tab.name, term, () => {
     fitTerm(); term.focus();
   });
-  // replace the tab object (connectTerminal returns a fresh st)
   Object.assign(tab, st);
   tab.active = true;
   $('placeholder').style.display = 'none';
@@ -433,6 +437,29 @@ function attach(key, opts) {
     renderTabs();
     return;
   }
+  // No tabs yet — if there's an active session not in tabs, convert it to the first tab
+  // so the new session opens as a second tab (user clicks another chip while one is open)
+  if (active && active.key !== key) {
+    const orig = active; // save before we clear it
+    // convert existing active session into tab 0
+    orig.active = true;
+    orig.tabIdx = 0;
+    tabs.push(orig);
+    active = null;
+    // now create tab 1 directly (don't use openTab — it would deactivate tab 0)
+    const s = findSession(key);
+    const sessionName = (opts && opts.name) || (s ? s.name : key.split(':').pop());
+    const host = (opts && opts.host) || (s ? s.host : 'localhost');
+    const st1 = connectTerminal(key, host, sessionName, term, () => {
+      if (activeTab === 1) { fitTerm(); term.focus(); }
+    });
+    st1.tabIdx = 1;
+    st1.active = true;
+    tabs.push(st1);
+    activeTab = 1;
+    renderTabs();
+    return;
+  }
   detach();
   const s = findSession(key);
   try { fit.fit(); } catch {} // sync xterm to the container so we can pass the real size
@@ -482,10 +509,18 @@ function attach(key, opts) {
   if (hidden) setupBootReveal(st, s);
 }
 
-function detach() {
+function detach(opts) {
+  opts = opts || {};
   // If tabs are open, close the active tab instead of full detach
   if (tabs.length > 0) { closeTab(activeTab >= 0 ? activeTab : 0); return; }
   if (!active) return;
+  if (opts.preserveSession) {
+    // Don't clear active — the caller will convert it to a tab
+    if (bootReveal) { clearTimeout(bootReveal.timer); bootReveal = null; }
+    try { active.dataSub.dispose(); } catch {}
+    try { active.ws.close(); } catch {}
+    return;
+  }
   if (bootReveal) { clearTimeout(bootReveal.timer); bootReveal = null; } // a hidden +New attach is being torn down
   try { active.dataSub.dispose(); } catch {}
   try { active.ws.close(); } catch {}
