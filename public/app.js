@@ -15,6 +15,11 @@ let bootReveal = null;
 // { key, host, name, ws, dataSub } — active tab is at tabs[activeTab]
 let tabs = [];        // array of tab objects
 let activeTab = -1;   // index into tabs, -1 = no tabs open
+// Whether the terminal window opens new sessions as TABS (one shared xterm, one WS
+// each) or as a LEGACY single-session swap (detach + attach). Browser-only pref,
+// persisted like the theme. Default ON (current behavior). Toggling OFF while tabs
+// are open collapses them to the selected tab (see setTabsEnabled).
+let tabsEnabled = localStorage.getItem('pc.tabs') !== '0';
 // host → sessions lookup, rebuilt once per renderChips so displayName is O(1)/chip instead
 // of an O(#hosts) hosts.find per chip (render is O(sessions × hosts) otherwise).
 let hostSessionsLookup = null;
@@ -565,8 +570,8 @@ function attach(key, opts) {
     attachSplit(key);
     return;
   }
-  // If tabs are open, use tab system instead of detaching/attaching
-  if (tabs.length > 0) {
+  // If tabs are open (and tab mode is on), use tab system instead of detaching/attaching
+  if (tabsEnabled && tabs.length > 0) {
     const ti = openTab(key, opts);
     // +New boot flow: keep the modal on "starting…" until the command has visible output
     if (hidden && tabs[ti]) setupBootReveal(tabs[ti], findSession(key));
@@ -575,7 +580,7 @@ function attach(key, opts) {
   }
   // No tabs yet — if there's an active session not in tabs, convert it to the first tab
   // so the new session opens as a second tab (user clicks another chip while one is open)
-  if (active && active.key !== key) {
+  if (tabsEnabled && active && active.key !== key) {
     const orig = active; // save before we clear it
     // Convert the existing active session into tab 0 (inactive — tab 1 will be
     // active). Its WS stays OPEN, gated by active=false; setupTabClose replaces
@@ -644,7 +649,16 @@ function attach(key, opts) {
   syncTermButtons();
   renderChips();
 
-  st.ws.onclose = (ev) => {
+  st.ws.onclose = legacyWsClose(st, key);
+
+  if (hidden) setupBootReveal(st, s);
+}
+
+// ws.onclose for a LEGACY (non-tab) attach: one session at a time, so the socket
+// dying means the window detaches. Shared by attach() and setTabsEnabled(false)
+// (which promotes a tab back to a plain attach and needs the same handler).
+function legacyWsClose(st, key) {
+  return (ev) => {
     if (active !== st) return;
     const wasBooting = !!(bootReveal && bootReveal.st === st);
     const sessionEnded = /session ended/i.test(ev.reason || '');
@@ -654,8 +668,6 @@ function attach(key, opts) {
     if (sessionEnded) dropSession(key); // the tmux session is gone — kill its desk/chip now, not on the next poll
     term.write('\x1b[90m[' + why + ' — ' + key + ']\x1b[0m\r\n');
   };
-
-  if (hidden) setupBootReveal(st, s);
 }
 
 function detach() {
@@ -676,6 +688,70 @@ function detach() {
   $('t-name').textContent = 'no session selected';
   $('t-cwd').textContent = '';
   $('t-local').style.display = 'none';
+  renderChips();
+}
+
+// ---------- tab-mode toggle (Settings → "Session tabs") ----------
+// Flip the pref, persist it, and — when turning OFF while tabs are open —
+// collapse the tab bar to the selected tab as a plain (legacy) attach so the
+// user never loses the session they're looking at. Turning ON is a no-op on
+// state: the next chip click takes the tab path (converting `active` to tab 0).
+function setTabsEnabled(on) {
+  tabsEnabled = !!on;
+  localStorage.setItem('pc.tabs', tabsEnabled ? '1' : '0');
+  const el = $('cfg-tabs');
+  if (el) el.checked = tabsEnabled;
+  if (!tabsEnabled) collapseTabsToActive();
+}
+// Close every tab except the selected one and promote that one to the plain
+// `active` attach. Reuses legacyWsClose so its socket-death handling matches a
+// normal attach. If the kept tab's socket is dead (rate-limited / blipped), it's
+// reconnected fresh — a dead socket can't be promoted.
+function collapseTabsToActive() {
+  if (tabs.length === 0) return;
+  const keepIdx = (activeTab >= 0 && activeTab < tabs.length) ? activeTab : 0;
+  // close the non-kept tabs (guard their onclose so setupTabClose can't react)
+  for (let i = tabs.length - 1; i >= 0; i--) {
+    if (i === keepIdx) continue;
+    const t = tabs[i];
+    t.ws.onclose = null;
+    try { t.dataSub.dispose(); } catch {}
+    try { t.ws.close(); } catch {}
+  }
+  const st = tabs[keepIdx];
+  tabs = [];
+  activeTab = -1;
+  const bar = $('tabbar');
+  if (bar) bar.style.display = 'none';
+  // retire any rate-limit / blip toast — the tab UI it referred to is gone
+  if (toastTimer) { clearTimeout(toastTimer); toastTimer = null; }
+  const tEl = $('toast'); if (tEl) tEl.classList.remove('show');
+  // promote the kept tab to a plain attach
+  st.active = true;
+  if (!st.ws || st.wsDead || st.ws.readyState >= WebSocket.CLOSING) {
+    // dead socket: reconnect fresh (tmux full-redraws on attach)
+    try { st.dataSub.dispose(); } catch {}
+    try { st.ws.close(); } catch {}
+    term.reset();
+    const fresh = connectTerminal(st.key, st.host, st.name, term, () => { fitTerm(); term.focus(); });
+    fresh.active = true;
+    fresh.ws.onclose = legacyWsClose(fresh, fresh.key);
+    active = fresh;
+  } else {
+    st.ws.onclose = legacyWsClose(st, st.key);
+    active = st;
+  }
+  // repaint the termbar header + badges (mirrors the tail of attach())
+  const s = findSession(st.key);
+  $('placeholder').style.display = 'none';
+  $('t-detach').style.display = '';
+  $('t-name').textContent = s ? `${displayName(s)}  [${s.host}:${s.name}]` : st.key;
+  $('t-cwd').textContent = s ? s.cwd : '';
+  updateLocalBadge(s);
+  needsYou.delete(st.key);
+  renderNeedsYouBadge();
+  if (view === 'town' && townView) { $('termwin').classList.add('attached'); townView.activeKey = st.key; townView.needsRedraw = true; }
+  syncTermButtons();
   renderChips();
 }
 
@@ -1734,6 +1810,7 @@ function fillForm(cfg) {
   $('cfg-pollMs').value = cfg.pollMs != null ? cfg.pollMs : '';
   $('cfg-netDisplay').checked = !!cfg.netDisplay;
   $('cfg-theme').value = getTheme();
+  $('cfg-tabs').checked = tabsEnabled;
   $('cfg-tls').checked = !!cfg.tls;
   toggleTlsPaths();
   $('cfg-cert').value = cfg.cert || '';
@@ -1848,6 +1925,8 @@ $('cfg-save').onclick = async () => {
 // one-time form bindings
 $('cfg-tls').addEventListener('change', toggleTlsPaths);
 $('cfg-theme').addEventListener('change', () => setTheme($('cfg-theme').value));
+// Session tabs: browser-only pref — applies immediately, no server round-trip.
+$('cfg-tabs').addEventListener('change', () => setTabsEnabled($('cfg-tabs').checked));
 $('cfg-token-toggle').onclick = () => {
   const inp = $('cfg-token');
   const showing = inp.type === 'text';

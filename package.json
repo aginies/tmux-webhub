@@ -19,7 +19,7 @@
   ],
   "scripts": {
     "start": "node server.js",
-    "test": "node test/smoke.js"
+    "test": "node test/smoke.js && node test/tabs-toggle.js"
   },
   "keywords": [
     "tmux",
