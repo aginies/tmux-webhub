@@ -101,6 +101,18 @@ const fakeWs = () => `({ readyState: 1, onclose: null, send(){}, close(){ this.r
 
 console.log('# session tabs toggle');
 
+// Static guard: duplicate element ids in index.html. getElementById resolves to the
+// FIRST match in document order, so a second element with the same id is silently
+// unreachable — this is how the "Session tabs" checkbox (cfg-tabs) was shadowed by
+// the settings modal's tab strip and the toggle appeared to do nothing.
+{
+  const html = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8');
+  const ids = [...html.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]);
+  const dupes = ids.filter((id, i) => ids.indexOf(id) !== i);
+  check('index.html has no duplicate element ids', dupes.length === 0);
+  if (dupes.length) console.log('  duplicate ids: ' + [...new Set(dupes)].join(', '));
+}
+
 check('default tabsEnabled is ON', call('tabsEnabled') === true);
 
 call('setTabsEnabled(false)');
@@ -154,3 +166,6 @@ check('dead-socket collapse: fresh ws has legacy onclose', typeof call('active.w
 
 if (failed) { console.log(`\n${failed} check(s) FAILED`); process.exit(1); }
 console.log('\nall checks passed');
+// app.js starts a polling interval in the VM (host timers) — without an explicit
+// exit the process would hang after the last check even though everything passed.
+process.exit(0);

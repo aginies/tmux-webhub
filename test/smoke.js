@@ -412,6 +412,20 @@ async function waitForCwd(name, timeoutMs = 3000) {
     catch { if (Date.now() - t0 > timeoutMs) return null; await new Promise((r) => setTimeout(r, 100)); }
   }
 }
+// POST /api/sessions with retry. When a previous test's kill-session was the LAST one,
+// the tmux server exits — and a new-session issued immediately after can connect to
+// the dying server and fail with "server exited unexpectedly" (observed ~1 in 15
+// kill→new round-trips on tmux 3.8). A short wait + retry is what a human user gets
+// for free; without it this test is flaky by construction.
+async function postSession(host, name, cwd, tries = 5) {
+  for (let i = 0; ; i++) {
+    const r = await fetch(base + '/api/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie }, body: JSON.stringify({ host, name, cwd }) });
+    if (r.status === 200 || i >= tries - 1) return r;
+    const body = await r.json().catch(() => ({}));
+    if (!/server exited unexpectedly/.test(body.error || '')) return r;
+    await new Promise((res) => setTimeout(res, 150));
+  }
+}
 
 // pure shell check (the [ -d ] guard fails before tmux is invoked) → runs without tmux
 test('POST /api/sessions: nonexistent absolute dir → 400 "not a directory"', async () => {
@@ -431,7 +445,7 @@ test('POST /api/sessions: ~/x resolves to an absolute path', { skip: !hasTmux },
   fs.mkdirSync(homeSub);
   const name = 'pc-tilde-s-' + Date.now();
   try {
-    const r = await fetch(base + '/api/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie }, body: JSON.stringify({ host: 'testhost', name, cwd: '~/' + sub }) });
+    const r = await postSession('testhost', name, '~/' + sub);
     assert.equal(r.status, 200, JSON.stringify(await r.clone().json()));
     assert.equal(await waitForCwd(name), homeSub);
   } finally {
@@ -443,7 +457,7 @@ test('POST /api/sessions: ~/x resolves to an absolute path', { skip: !hasTmux },
 test('POST /api/sessions: empty cwd → home', { skip: !hasTmux }, async () => {
   const name = 'pc-home-' + Date.now();
   try {
-    const r = await fetch(base + '/api/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie }, body: JSON.stringify({ host: 'testhost', name, cwd: '' }) });
+    const r = await postSession('testhost', name, '');
     assert.equal(r.status, 200, JSON.stringify(await r.clone().json()));
     assert.equal(await waitForCwd(name), os.homedir());
   } finally {
@@ -509,7 +523,7 @@ test('POST/PUT/DELETE /api/hosts: add, update, remove a host', async () => {
 // above, so the pane outlives the checks). Skipped when tmux is absent.
 test('REST session endpoints: get, send-keys, resize, kill', { skip: !hasTmux }, async () => {
   const name = 'pc-restsess-' + Date.now();
-  let r = await fetch(base + '/api/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie }, body: JSON.stringify({ host: 'testhost', name, cwd: '~' }) });
+  let r = await postSession('testhost', name, '~');
   assert.equal(r.status, 200, JSON.stringify(await r.clone().json()));
   // a plain GET forces a poll of the (just-invalidated) host so the cache is fresh
   const prime = async () => { await fetch(base + '/api/sessions', { headers: { Cookie: cookie } }); };
@@ -594,7 +608,7 @@ test('pi pane: activity from last session entry', { skip: !hasTmux }, async () =
     fs.chmodSync(fakePi, 0o755);
     const actCsrf = await (await fetch(base + '/api/config', { headers: { Cookie: cookie } })).json().then((d) => d.csrf);
     await fetch(base + '/api/config', { method: 'PUT', headers: { 'Content-Type': 'application/json', Cookie: cookie }, body: JSON.stringify({ port: 0, host: '127.0.0.1', token, tls: false, hosts: [{ name: 'pihost', cmd: fakePi }], csrf: actCsrf }) });
-    const r = await fetch(base + '/api/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie }, body: JSON.stringify({ host: 'pihost', name, cwd: dir }) });
+    const r = await postSession('pihost', name, dir);
     assert.equal(r.status, 200, JSON.stringify(await r.clone().json()));
     // poll until the flag matches (the poller refreshes every POLL_MS while a client is present)
     async function expectActivity(want, timeoutMs = 15000) {
