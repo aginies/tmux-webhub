@@ -153,6 +153,13 @@ ${envLine}
 ExecStart=${execStartLine(exe, args)}
 Restart=on-failure
 RestartSec=2
+# Only signal the node process on stop/restart. The default (control-group)
+# would SIGTERM everything in the unit's cgroup — including the tmux server
+# daemon, which is started by the first `tmux attach-session` the service
+# spawns and detaches but stays in this cgroup. That kills ALL tmux sessions
+# on the host every restart. `mixed` is not enough: it still SIGKILLs the
+# rest of the cgroup.
+KillMode=process
 
 # Deliberately NOT set:
 #   PrivateTmp         — the tmux socket lives in /tmp/tmux-$UID/ on the host
