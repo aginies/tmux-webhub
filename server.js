@@ -114,6 +114,11 @@ const BUF_4MB = 4 * 1024 * 1024;   // maxBuffer: list-sessions / runOn default
 // poll period (ms): config "pollMs" (clamped so a typo can't hammer the hosts or
 // freeze the UI). Restart-scoped like the other server settings.
 const POLL_MS = Math.min(60000, Math.max(1000, parseInt(CONFIG.pollMs, 10) || 5000));
+// the first /api/sessions before the startup prewarm finished blocks on the cold
+// poll — capped so dead hosts (ConnectTimeout) and cold SSH handshakes can't hold
+// the page for tens of seconds; after the cap the client gets polling:true and its
+// next poll picks up the rest
+const FIRST_POLL_CAP_MS = 4000;
 const ACTIVE_WINDOW_MS = 2 * POLL_MS; // a session is "active" if it produced output within this window
 // an OFFLINE host (ssh failed) is not re-polled every cycle: a dead host stays dead
 // for minutes, and every check costs its full ConnectTimeout (~2 s) — retry at most
@@ -130,6 +135,81 @@ const LOGIN_WINDOW_MS = 15 * 60 * 1000; // brute-force guard window
 const WS_PAUSE_BYTES = 8 * 1024 * 1024;
 const WS_RESUME_BYTES = 2 * 1024 * 1024;
 
+// ---------- logging ----------
+// Tiny built-in logger (no dependency): `2026-01-01T00:00:00.000Z [warn] [ssh] msg key=value`.
+// Goes to stderr (the systemd journal picks it up; stdout stays free for the startup
+// line, which the smoke test waits for). Level: PC_LOG_LEVEL env > config "logLevel"
+// > --debug flag > "info". Scopes: poll, ssh, ws, http, auth, config, process.
+// Secret-bearing keys (token/totp/secret/cookie/password) are masked, never logged.
+const LOG_LEVELS = { debug: 10, info: 20, warn: 30, error: 40 };
+let logLevel = (() => {
+  const env = (process.env.PC_LOG_LEVEL || '').toLowerCase();
+  if (LOG_LEVELS[env]) return env;
+  const cfg = String(CONFIG.logLevel || '').toLowerCase();
+  if (LOG_LEVELS[cfg]) return cfg;
+  return process.argv.includes('--debug') ? 'debug' : 'info';
+})();
+// last non-empty line of a string (stderr is usually multi-line; the last line is
+// the actual error, the rest is ssh/tmux preamble)
+const lastLine = (s) => (s || '').trim().split('\n').pop();
+const log = {
+  setLevel(name) { if (LOG_LEVELS[name]) logLevel = name; },
+  _write(level, scope, msg, ctx) {
+    if (LOG_LEVELS[level] < LOG_LEVELS[logLevel]) return;
+    const entries = [];
+    let line = `${new Date().toISOString()} [${level}] [${scope}] ${msg}`;
+    if (ctx) for (const [k, v] of Object.entries(ctx)) {
+      if (v === undefined || v === null || v === '') continue;
+      const s = (typeof v === 'string' ? v : JSON.stringify(v)).slice(0, 300);
+      const masked = /(token|totp|secret|cookie|password)/i.test(k) ? '***' : s;
+      entries.push([k, masked]);
+      line += ` ${k}=${masked}`;
+    }
+    process.stderr.write(line + '\n');
+    if (logFileFd !== null) {
+      try {
+        const obj = { ts: new Date().toISOString(), level, scope, msg };
+        for (const [k, v] of entries) obj[k] = v;
+        fs.writeSync(logFileFd, JSON.stringify(obj) + '\n');
+        if (fs.fstatSync(logFileFd).size >= LOG_FILE_MAX) logFileRotate();
+      } catch { /* the file sink is best-effort and must never take the server down */ }
+    }
+  },
+  debug(scope, msg, ctx) { this._write('debug', scope, msg, ctx); },
+  info(scope, msg, ctx) { this._write('info', scope, msg, ctx); },
+  warn(scope, msg, ctx) { this._write('warn', scope, msg, ctx); },
+  error(scope, msg, ctx) { this._write('error', scope, msg, ctx); },
+};
+// Optional file sink: config "logFile" (path; relative paths resolve against the
+// install dir, like cert/key). Off by default — the journal is the primary sink.
+// JSON lines, size-rotated: 5 MB × 3 (file → .1 → .2).
+const LOG_FILE_MAX = 5 * 1024 * 1024;
+let logFile = null;
+let logFileFd = null;
+function logFileRotate() {
+  try {
+    fs.closeSync(logFileFd);
+    for (let i = 1; i >= 0; i--) {
+      const from = i === 0 ? logFile : `${logFile}.${i}`;
+      if (fs.existsSync(from)) fs.renameSync(from, `${logFile}.${i + 1}`);
+    }
+    logFileFd = fs.openSync(logFile, 'a');
+  } catch { logFileFd = null; }
+}
+function logFileInit() {
+  const p = (typeof CONFIG.logFile === 'string' && CONFIG.logFile) ? path.resolve(__dirname, CONFIG.logFile) : null;
+  if (!p) return;
+  try {
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    logFile = p;
+    logFileFd = fs.openSync(p, 'a');
+    log.info('log', `file logging → ${p} (rotates at 5 MB × 3)`);
+  } catch (e) {
+    console.error(`tmux-webhub: cannot open logFile ${p} (${e.message}) — file logging off`);
+  }
+}
+logFileInit();
+
 // key-auth only (no password prompts); ServerAlive detects a dead host so the pty exits.
 // ControlMaster: reuse ONE authenticated ssh connection per host (ssh ~100 ms → ~5 ms);
 // ControlPersist keeps it warm 60 s after the last command so the 4 s poller never re-auths.
@@ -144,6 +224,19 @@ for (const f of fs.readdirSync(CM_DIR)) {
   if (f.startsWith('cm-')) { try { fs.unlinkSync(path.join(CM_DIR, f)); } catch {} }
 }
 const cmPath = (target) => path.join(CM_DIR, 'cm-' + crypto.createHash('md5').update(target).digest('hex').slice(0, 8));
+// config "ssh" may carry an optional port: `user@host:2222`. OpenSSH does NOT parse
+// that — it would try to resolve a hostname literally called "host:2222" — so split
+// it off and pass ssh's own `-p`. Callers use sshSplit(host.ssh).target as the
+// destination; cmPath() is keyed on the FULL string, so the same box on two ports
+// gets two separate ControlMaster sockets.
+function sshSplit(ssh) {
+  const m = /^(.*?):(\d{1,5})$/.exec(ssh);
+  if (m) {
+    const port = parseInt(m[2], 10);
+    if (port >= 1 && port <= 65535) return { target: m[1], port };
+  }
+  return { target: ssh, port: 0 };
+}
 const SSH_OPTS = [
   '-o', 'BatchMode=yes',
   '-o', 'ConnectTimeout=5',
@@ -152,8 +245,14 @@ const SSH_OPTS = [
   '-o', 'ControlMaster=auto',
   '-o', 'ControlPersist=60',
 ];
-// ControlPath is per-host, so it is appended where the ssh target is known
-const sshOptsFor = (host, base) => (host.ssh ? [...base, '-o', `ControlPath=${cmPath(host.ssh)}`] : base);
+// ControlPath is per-host, so it is appended where the ssh target is known; a
+// configured ":port" becomes `-p` here (see sshSplit), so every code path that
+// builds an ssh command gets it for free.
+const sshOptsFor = (host, base) => {
+  if (!host.ssh) return base;
+  const { port } = sshSplit(host.ssh);
+  return [...(port ? [...base, '-p', String(port)] : base), '-o', `ControlPath=${cmPath(host.ssh)}`];
+};
 // polls fail fast (2 s) so a dead host never holds up the poller; WS attach keeps 5 s
 const POLL_SSH_OPTS = SSH_OPTS.flatMap((o) => (o === 'ConnectTimeout=5' ? ['ConnectTimeout=2'] : [o]));
 
@@ -193,7 +292,7 @@ function loadHosts() {
     return hosts;
   } catch (e) {
     configError = e.message;
-    console.warn(`tmux-webhub: config unreadable (${e.message}) — keeping last good host list`);
+    log.warn('config', `config unreadable (${e.message}) — keeping last good host list`);
     return lastGoodHosts || [];
   }
 }
@@ -213,6 +312,14 @@ const SSH_HOST_RE = /^[a-zA-Z0-9._-]+(:[0-9]+)?$/;
 const SSH_USER_HOST_RE = /^[a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+(:[0-9]+)?$/;
 function validateSshHost(ssh) {
   if (!ssh || typeof ssh !== 'string') return false;
+  // a ":port" suffix must be a usable port (1–65535): 0, 65536+ or a 5-digit
+  // overflow would reach sshSplit, fall back to treating the whole string as the
+  // hostname, and fail only later as a DNS error
+  const m = /^(.*?):(\d{1,5})$/.exec(ssh);
+  if (m) {
+    const port = parseInt(m[2], 10);
+    if (!(port >= 1 && port <= 65535)) return false;
+  }
   return SSH_HOST_RE.test(ssh) || SSH_USER_HOST_RE.test(ssh);
 }
 
@@ -250,13 +357,30 @@ function runOn(host, args, timeoutMs = CMD_TIMEOUT_MS, maxBuffer = BUF_4MB, sshO
   if (host.ssh) {
     // Validate SSH host string to prevent command injection
     if (!validateSshHost(host.ssh)) {
+      log.warn('ssh', 'invalid SSH host rejected', { host: host.name, ssh: host.ssh });
       return Promise.resolve({ ok: false, stdout: '', stderr: `invalid SSH host: ${host.ssh}`, timeout: false });
     }
     // Build SSH command with validated host and quoted arguments
-    const sshCmd = ['ssh', '-T', ...sshOptsFor(host, sshOpts), host.ssh, args.map(shellQuote).join(' ')];
-    return execFileP(sshCmd[0], sshCmd.slice(1), { timeout: timeoutMs, maxBuffer });
+    const sshCmd = ['ssh', '-T', ...sshOptsFor(host, sshOpts), sshSplit(host.ssh).target, args.map(shellQuote).join(' ')];
+    return timedRun(host, sshCmd, timeoutMs, maxBuffer);
   }
-  return execFileP(args[0], args.slice(1), { timeout: timeoutMs, maxBuffer });
+  return timedRun(host, args, timeoutMs, maxBuffer);
+}
+// run + log: debug on every command (host, cmd, ms), warn on failure with the last
+// stderr line — this is what makes ssh problems (auth, firewall, ControlMaster death)
+// visible in the journal instead of surfacing as a bare "offline" in the UI.
+function timedRun(host, cmd, timeoutMs, maxBuffer) {
+  const t0 = Date.now();
+  // full argv (each element truncated) so the ssh options — including the `-p` port
+  // derived from "user@host:2222" — are visible in the log; capped so a long script
+  // argument can't flood the journal
+  const desc = cmd.map((a) => (a.length > 80 ? a.slice(0, 77) + '…' : a)).join(' ').slice(0, 400);
+  return execFileP(cmd[0], cmd.slice(1), { timeout: timeoutMs, maxBuffer }).then((r) => {
+    const ms = Date.now() - t0;
+    if (r.ok) log.debug('ssh', 'cmd ok', { host: host.name, cmd: desc, ms });
+    else log.warn('ssh', r.timeout ? 'cmd timed out' : 'cmd failed', { host: host.name, cmd: desc, ms, err: lastLine(r.stderr || r.stdout) });
+    return r;
+  });
 }
 
 // activity: for pi / pi-bolt panes the LAST entry of pi's session JSONL is the
@@ -276,13 +400,13 @@ function runOn(host, args, timeoutMs = CMD_TIMEOUT_MS, maxBuffer = BUF_4MB, sshO
 // no-server / offline detection below is unchanged. (The \t below are REAL tabs.)
 const LIST_SH = `now=$(date +%s)
 _prevWList=$1
-out=$(tmux list-sessions -F '#{session_name}\t#{session_attached}\t#{pane_current_path}\t#{window_activity}\t#{pane_current_command}')
+out=$(tmux list-sessions -F '#{session_name}\t#{session_attached}\t#{pane_current_path}\t#{window_activity}\t#{pane_current_command}\t#{session_created}')
 st=$?
 [ "$st" -eq 0 ] || printf '%s\\n' "$out" >&2
 if [ -n "$out" ]; then
-  printf '%s\\n' "$out" | while IFS='\t' read -r n a c w cmd; do
+  printf '%s\\n' "$out" | while IFS='\t' read -r n a c w cmd created; do
     pe=''
-    # tiny live preview: the pane's last 6 lines, base64 (one token, no tabs).
+    # tiny live preview: the pane's last 9 lines, base64 (one token, no tabs).
     # $_prevWList carries the previous poll's window_activity per session ("name:w" tokens):
     # window_activity unchanged ⇒ no output since the last poll ⇒ the pane cannot
     # have changed ⇒ emit the sentinel and let Node reuse the cached capture (the
@@ -299,7 +423,7 @@ if [ -n "$out" ]; then
     esac
     done
     IFS=$_if
-    [ -n "$prevw" ] && [ "$prevw" = "$w" ] || cap=$(tmux capture-pane -p -t "=$n:" -S -6 2>/dev/null | base64 | tr -d '\\n')
+    [ -n "$prevw" ] && [ "$prevw" = "$w" ] || cap=$(tmux capture-pane -p -t "=$n:" -S -9 2>/dev/null | base64 | tr -d '\\n')
     case "$cmd" in
       pi|pi-bolt)
         # a session-file append always coincides with window output, so a stale window
@@ -321,7 +445,7 @@ if [ -n "$out" ]; then
         fi
         ;;
     esac
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\\n' "$n" "$a" "$c" "$w" "$cmd" "$pe" "$cap"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\\n' "$n" "$a" "$c" "$w" "$cmd" "$pe" "$cap" "$created"
   done
 fi
 echo "__NOW__$now"
@@ -400,6 +524,8 @@ async function listHostSessions(host) {
     // (connection refused / timeout / permission denied / bad host) carry a different
     // phrase and correctly fall through to 'offline' below.
     if (/no server running|no sessions? (exist|found)|error connecting to|server exited unexpectedly/i.test(msg)) return { name: host.name, state: elapsed > SLOW_MS ? 'slow' : 'ok', sessions: [] };
+    // no log here: timedRun already logged the command failure with the same error;
+    // refreshHosts logs the online↔offline TRANSITION (the line worth keeping)
     return { name: host.name, state: 'offline', error: msg.split('\n').pop() || 'unreachable', sessions: [] };
   }
   // the __NOW__ line carries the host clock (remote for ssh, wall clock for local);
@@ -412,7 +538,7 @@ async function listHostSessions(host) {
   const seenCache = new Set();
   const seenCaps = new Set();
   const sessions = rows.map((line) => {
-    const [name, attached, pth, act, cmd, piLast, cap] = line.split('\t');
+    const [name, attached, pth, act, cmd, piLast, cap, created] = line.split('\t');
     const actSec = parseInt(act, 10) || 0;
     const ageMs = remoteNow ? (remoteNow - actSec) * 1000 : -1; // -1 = unknown clock → not active
     // window fallback: the window produced output within the last ACTIVE_WINDOW_MS
@@ -429,7 +555,7 @@ async function listHostSessions(host) {
       if (!hm) { hm = new Map(); piLastCache.set(host.name, hm); }
       hm.set(cacheKey, piEntry);
     } else if (hostMap) hostMap.delete(cacheKey);
-    // decode the tiny pane preview (base64 → the last 6 lines of the pane); the
+    // decode the tiny pane preview (base64 → the last 9 lines of the pane); the
     // __CAPCACHED__ sentinel reuses the capture from the last fresh poll (the window
     // produced no output since then, so the pane is unchanged)
     let preview = '';
@@ -450,6 +576,7 @@ async function listHostSessions(host) {
       cwd: pth || '',
       activity: piActive(cmd, piEntry, winActive),
       preview,
+      created: parseInt(created, 10) || 0,
     };
   });
   // prune this host's cached panes that no longer exist (scoped to the host's map)
@@ -467,6 +594,7 @@ async function listHostSessions(host) {
   }
   // host connection state: ok / slow (>2 s to answer, or timed out) / offline
   const state = elapsed > SLOW_MS ? 'slow' : 'ok';
+  log.debug('poll', 'host polled', { host: host.name, state, ms: elapsed, sessions: sessions.length });
   return { name: host.name, state, sessions };
 }
 
@@ -514,8 +642,14 @@ function refreshHosts(force = false) {
     .then((fresh) => {
       // offline hosts back off (OFFLINE_RETRY_MS); anything that answers is polled every cycle
       for (const f of fresh) {
-        if (f.state === 'offline') hostBackoff.set(f.name, Date.now() + OFFLINE_RETRY_MS);
-        else hostBackoff.delete(f.name);
+        const prev = cached.get(f.name);
+        if (f.state === 'offline') {
+          hostBackoff.set(f.name, Date.now() + OFFLINE_RETRY_MS);
+          if (!prev || prev.state !== 'offline') log.warn('poll', 'host went offline', { host: f.name, err: f.error });
+        } else {
+          hostBackoff.delete(f.name);
+          if (prev && prev.state === 'offline') log.info('poll', 'host back online', { host: f.name, sessions: f.sessions.length });
+        }
       }
       const freshByName = new Map(fresh.map((h) => [h.name, h]));
       const hosts = wanted.map((h) => {
@@ -542,11 +676,11 @@ function invalidateHost(name) {
   hostBackoff.delete(name); // a deliberate invalidation (toggle/rename/kill) re-checks immediately
   if (hostsCache) hostsCache.hosts = hostsCache.hosts.map((h) => (h.name === name ? { ...h, at: 0 } : h));
 }
-setInterval(() => { refreshHosts().catch(() => {}); }, POLL_MS).unref();
+setInterval(() => { refreshHosts().catch((e) => log.error('poll', 'refresh failed', { err: String((e && e.stack) || e) })); }, POLL_MS).unref();
 // prewarm: poll once at startup (force: no client is connected yet) so the first
 // page load after a restart gets an instant response instead of blocking on a full
 // cold poll (SSH handshakes + the offline hosts' ConnectTimeout)
-refreshHosts(true).catch(() => {});
+refreshHosts(true).catch((e) => log.error('poll', 'prewarm failed', { err: String((e && e.stack) || e) }));
 
 // ---------- tls: self-signed cert on first run (or user-provided via config) ----------
 function ensureCert() {
@@ -565,11 +699,11 @@ function ensureCert() {
       '-subj', '/CN=tmux-webhub', '-addext', `subjectAltName=${san}`,
     ], { stdio: 'pipe' });
   } catch (e) {
-    console.error(`tmux-webhub: could not generate the TLS cert with openssl (${e.message || e}).\n` +
-      `Install openssl, or provide your own cert/key paths in config.json (or set "tls": false).`);
+    log.error('cert', `could not generate the TLS cert with openssl (${e.message || e})`);
+    console.error('Install openssl, or provide your own cert/key paths in config.json (or set "tls": false).');
     process.exit(1);
   }
-  console.log(`generated self-signed cert (10y, SAN: ${san}) → ${CERT}`);
+  log.info('cert', `generated self-signed cert (10y, SAN: ${san}) → ${CERT}`);
 }
 
 // ---------- auth: shared token → HttpOnly cookie (WS: cookie or ?token=) ----------
@@ -693,10 +827,16 @@ function authed(req) {
   if (sessionOf(req)) return true; // 2FA session cookie
   // raw-token cookie: valid while 2FA is off, or while no TOTP secret is enrolled.
   // A lingering secret with 2FA set to "off" must NOT block login (the mode wins).
-  if ((TWOFA === null || totpSecret() === null) && validToken(cookieOf(req))) return true;
-  // Authorization: Bearer header (non-browser clients)
+  const rawOk = TWOFA === null || totpSecret() === null;
+  if (rawOk && validToken(cookieOf(req))) return true;
+  // Authorization: Bearer header (non-browser clients). Gated EXACTLY like the raw
+  // cookie above: once a TOTP secret is enrolled the bare token must not grant
+  // access anywhere — an ungated Bearer path was a 2FA bypass (token leaked via
+  // ?token= in proxy logs, a shoulder-surfed curl, a copied config.json → full API
+  // + terminal without the code). With 2FA enrolled, non-browser clients log in
+  // (POST /login, token + code) and use the session cookie.
   const auth = req.headers.authorization || '';
-  if (auth.startsWith('Bearer ') && validToken(auth.slice(7))) return true;
+  if (rawOk && auth.startsWith('Bearer ') && validToken(auth.slice(7))) return true;
   return false;
 }
 // brute-force guard: 5 failed logins / 15 min per source IP
@@ -798,12 +938,13 @@ function otpauthUrl(secret, req) {
 }
 async function handleLogin(req, res, url, send, ip) {
   if (!token()) return send(400, { error: 'token auth is not configured' });
-  if (tooManyLogins(ip)) return send(429, { error: 'too many failed attempts, try again in 15 min' });
+  if (tooManyLogins(ip)) { log.warn('auth', 'login rate-limited', { ip }); return send(429, { error: 'too many failed attempts, try again in 15 min' }); }
   const body = await readBody(req);
   let j = {};
   try { j = JSON.parse(body || '{}') || {}; } catch {}
   if (!validToken(j.token)) {
     recordLoginFail(ip);
+    log.warn('auth', 'login failed: wrong token', { ip });
     return send(401, { error: 'wrong token' });
   }
   const secret = totpSecret();
@@ -817,12 +958,14 @@ async function handleLogin(req, res, url, send, ip) {
     }
     if (!validTotp(pendingEnroll.secret, j.code)) {
       recordLoginFail(ip);
+      log.warn('auth', 'login failed: wrong TOTP code (enrollment)', { ip });
       return send(401, { error: 'wrong code' });
     }
     const werr = setTotpSecretInConfig(pendingEnroll.secret);
     if (werr) return send(500, { error: 'cannot save secret: ' + werr });
     pendingEnroll = null;
     loginFails.delete(ip);
+    log.info('auth', 'TOTP enrolled, login ok', { ip });
     return send(200, { ok: true }, { 'Set-Cookie': sessionCookie(newSession()) });
   }
   pendingEnroll = null; // expired or consumed
@@ -836,9 +979,11 @@ async function handleLogin(req, res, url, send, ip) {
     }
     if (!validTotp(secret, j.code)) {
       recordLoginFail(ip);
+      log.warn('auth', 'login failed: wrong TOTP code', { ip });
       return send(401, { error: 'wrong code' });
     }
     loginFails.delete(ip);
+    log.info('auth', 'login ok (2FA)', { ip });
     return send(200, { ok: true }, { 'Set-Cookie': sessionCookie(newSession()) });
   }
   // 3. not enrolled: "required" forces onboarding now; "optional" offers it (enroll flag)
@@ -850,6 +995,7 @@ async function handleLogin(req, res, url, send, ip) {
   // 4. no 2FA in effect: as before. With a mode set the cookie is a session id (the
   //    raw token stops circulating); without one it stays the raw token.
   loginFails.delete(ip);
+  log.info('auth', 'login ok', { ip });
   return send(200, { ok: true }, {
     'Set-Cookie': TWOFA ? sessionCookie(newSession()) : `${COOKIE}=${encodeURIComponent(token())}; HttpOnly${COOKIE_SECURE}; SameSite=Lax; Path=/; Max-Age=2592000`,
   });
@@ -917,15 +1063,22 @@ tmux new-session -d -s "$1" -c "$d" "$2"`;
 async function handleApiSessions(req, res, url, send) {
   if (req.method === 'GET') {
     lastSessionsGet = Date.now(); // this request IS a client → allow the poll below
+    const hostsCacheAtRequest = !!hostsCache; // captured BEFORE the race: is this a placeholder response?
     // serve the cache instantly; only block when there is nothing to serve yet
     // (first load before the startup prewarm finished). Stale entries refresh in the
     // background — the client's next poll (5 s) picks up the fresh data, so a slow
-    // host (offline ConnectTimeout, cold SSH handshake) never holds up the page
-    if (!hostsCache) await refreshHosts();
+    // host (offline ConnectTimeout, cold SSH handshake) never holds up the page.
+    // The first block is CAPPED (FIRST_POLL_CAP_MS): after it, serve whatever is
+    // cached (maybe nothing) with polling:true — the poll keeps running in the
+    // background (hostsInflight) and the client's next poll gets the real data.
+    if (!hostsCache) await Promise.race([refreshHosts(), new Promise((res) => setTimeout(res, FIRST_POLL_CAP_MS).unref())]);
     else refreshHosts().catch(() => {});
     const snap = hostsCache || { hosts: [], configError: null };
     // strip the internal per-host `at` (would churn the client's change-detection snapshot)
-    return send(200, { hosts: snap.hosts.map(({ at, ...h }) => h), pi: PI_CMD, pollMs: POLL_MS, configError: snap.configError, net: NET_DISPLAY ? netRate() : undefined });
+    // polling: true ONLY when this response is a placeholder (the cache was empty when
+    // the request started and the first poll is still running). A background refresh
+    // overlapping a normal request must NOT set it — the data served is the real cache.
+    return send(200, { hosts: snap.hosts.map(({ at, ...h }) => h), pi: PI_CMD, pollMs: POLL_MS, configError: snap.configError, net: NET_DISPLAY ? netRate() : undefined, polling: !hostsCacheAtRequest && hostsInflight !== null });
   }
   if (req.method === 'POST') {
     const body = await readBody(req);
@@ -1082,6 +1235,7 @@ async function handleApiConfig(req, res, send) {
     }
     const werr = writeConfigAtomic(parsed);
     if (werr) return send(500, { error: 'cannot write config: ' + werr });
+    log.info('config', 'config updated via API', { keys: Object.keys(parsed).join(',') });
     configTouched(); // don't wait out the loadHosts stat gate
     resetHostCache(); // the host LIST itself may have changed (added/removed/renamed) → full re-poll
     return send(200, { ok: true });
@@ -1198,6 +1352,7 @@ async function handleAddHost(req, res, send) {
   cfg.hosts.push({ name, ssh, cmd });
   const werr = writeConfigAtomic(cfg);
   if (werr) return send(500, { error: 'cannot write config: ' + werr });
+  log.info('config', 'host added', { host: name, remote: !!ssh });
   configTouched();
   resetHostCache();
   return send(200, { ok: true, host: name });
@@ -1213,6 +1368,7 @@ async function handleRemoveHost(req, res, name, send) {
   cfg.hosts.splice(idx, 1);
   const werr = writeConfigAtomic(cfg);
   if (werr) return send(500, { error: 'cannot write config: ' + werr });
+  log.info('config', 'host removed', { host: name });
   configTouched();
   resetHostCache();
   return send(200, { ok: true, host: name });
@@ -1244,6 +1400,7 @@ async function handleUpdateHost(req, res, name, send) {
   }
   const werr = writeConfigAtomic(cfg);
   if (werr) return send(500, { error: 'cannot write config: ' + werr });
+  log.info('config', 'host updated', { host: name, keys: Object.keys(parsed).join(',') });
   configTouched();
   resetHostCache();
   return send(200, { ok: true, host: name });
@@ -1266,6 +1423,7 @@ async function handleHostToggle(req, res, send) {
   if (enabled) delete entry.enabled; else entry.enabled = false;
   const werr = writeConfigAtomic(cfg);
   if (werr) return send(500, { error: 'cannot write config: ' + werr });
+  log.info('config', 'host toggled', { host: name, enabled });
   configTouched();
   // force a re-poll of just this host on the next cycle (a disabled stub or a fresh
   // entry would otherwise look "not stale" and hide the change for up to POLL_MS)
@@ -1355,7 +1513,13 @@ function serveStatic(req, res, url) {
   }
   fs.stat(full, (err, st) => {
     if (err || !st.isFile()) { res.writeHead(404, SEC_HEADERS); return res.end('not found'); }
-    const cc = full.startsWith(PUBLIC_DIR + path.sep + 'vendor' + path.sep)
+    // Truly vendored libs (xterm, qrcode, the herdr-world town-art bundle) are
+    // immutable. space-art.js is OUR space-theme override and changes often, so
+    // it revalidates (no-cache + ETag) — otherwise a browser would keep a stale
+    // copy for a year and never see art fixes (e.g. the minion eye count).
+    const isVendored = full.startsWith(PUBLIC_DIR + path.sep + 'vendor' + path.sep);
+    const isOurArt = full === path.join(PUBLIC_DIR, 'vendor', 'space-art.js');
+    const cc = (isVendored && !isOurArt)
       ? 'public, max-age=31536000, immutable'
       : 'no-cache';
     const respond = (c) => {
@@ -1396,7 +1560,11 @@ function resolveSession(hostName, sessName, send) {
 }
 
 const server = (TLS ? https : http).createServer(tlsOpts, async (req, res) => {
+  const t0 = Date.now();
   const send = (code, obj, extraHeaders = {}) => {
+    // access line at debug (req.url, not url.pathname: send() is also the 400 path
+    // where the URL failed to parse and `url` is still undefined)
+    log.debug('http', `${req.method} ${req.url} → ${code}`, { ip: req.socket.remoteAddress || '?', ms: Date.now() - t0 });
     res.writeHead(code, { 'Content-Type': 'application/json', ...SEC_HEADERS, ...extraHeaders });
     res.end(JSON.stringify(obj));
   };
@@ -1422,6 +1590,7 @@ const server = (TLS ? https : http).createServer(tlsOpts, async (req, res) => {
       if (req.method === 'GET' && url.pathname === '/api/totp/status') return handleTotpStatus(res, send); // public: login page
       if (req.method === 'GET' && url.pathname === '/api/version') return send(200, { version: VERSION }); // public: version info
       if (!authed(req)) return send(401, { error: 'unauthorized' });
+      if (req.method === 'GET' && url.pathname === '/api/debug') return handleApiDebug(res, send);
       if (req.method === 'GET' && url.pathname === '/api/net-interfaces') return handleNetInterfaces(res, send); // authed: leaks local IPs, so gated
       if (url.pathname === '/api/sessions') return await handleApiSessions(req, res, url, send);
       if (url.pathname === '/api/sessions/rename') return await handleApiRename(req, res, send);
@@ -1456,6 +1625,7 @@ const server = (TLS ? https : http).createServer(tlsOpts, async (req, res) => {
     if (req.method === 'GET' || req.method === 'HEAD') return serveStatic(req, res, url);
     res.writeHead(405, SEC_HEADERS); res.end();
   } catch (e) {
+    log.error('http', 'unhandled error', { method: req.method, url: req.url, err: String((e && e.stack) || e) });
     send(500, { error: String(e.message || e) });
   }
 });
@@ -1499,7 +1669,35 @@ if (NET_DISPLAY) {
   }, 1000).unref();
 }
 function netRate() {
-  return { inBps: netStats.sum5In, outBps: netStats.sum5Out, inTotal: netStats.inTotal, outTotal: netStats.outTotal };
+  // histIn/histOut: per-second samples (60 s cap) for the Space-view sparkline;
+  // ≤ 120 small numbers per poll, and only ever sent when netDisplay is on.
+  return { inBps: netStats.sum5In, outBps: netStats.sum5Out, inTotal: netStats.inTotal, outTotal: netStats.outTotal,
+           histIn: netStats.histIn.slice(-60), histOut: netStats.histOut.slice(-60) };
+}
+
+// GET /api/debug — what the server sees right now (authed: it names hosts and their
+// last errors). The browser-side half of the Debugging section: no shell on the box
+// needed to see why a host is offline or a poll is stale.
+function handleApiDebug(res, send) {
+  const hosts = (hostsCache ? hostsCache.hosts : []).map((h) => ({
+    name: h.name,
+    state: h.state || 'unknown',
+    lastPollAt: h.at ? new Date(h.at).toISOString() : null,
+    lastError: h.error || null,
+    sessions: (h.sessions || []).length,
+  }));
+  return send(200, {
+    version: VERSION,
+    node: process.version,
+    pid: process.pid,
+    uptimeS: Math.round(process.uptime()),
+    logLevel,
+    logFile: logFile || null,
+    wsClients,
+    heapMB: Math.round(process.memoryUsage().heapUsed / 1048576),
+    configError: configError || null,
+    hosts,
+  });
 }
 
 // ---------- websocket: browser ⇄ tmux session (local or over ssh) ----------
@@ -1544,9 +1742,13 @@ function keyToArgv(k) {
 }
 const wss = new WebSocket.Server({ server, path: '/ws', maxPayload: 4 * 1024 * 1024 });
 
-// Rate limiting for WebSocket connections per IP
+// Rate limiting for WebSocket connections per IP. Sized for the browser tab UI:
+// each terminal tab holds ONE live WS (switching tabs no longer reconnects), and
+// page reloads / re-attaches still churn connections — 10/min was hit by normal
+// use and rejected sockets close the tab on the client. 30/min stays a real
+// DoS bound while leaving room for a multi-tab session plus reloads.
 const wsConnectionsByIp = new Map();
-const WS_MAX_CONNECTIONS_PER_IP = 10;
+const WS_MAX_CONNECTIONS_PER_IP = 30;
 const WS_RATE_WINDOW_MS = 60000; // 1 minute
 
 function cleanupWsRateMap() {
@@ -1581,52 +1783,62 @@ function isWsRateLimited(ip) {
 
 wss.on('connection', (ws, req) => {
   wsClients++;
-  refreshHosts().catch(() => {}); // a client just arrived → fresh data now
+  refreshHosts().catch((e) => log.error('poll', 'refresh failed', { err: String((e && e.stack) || e) })); // a client just arrived → fresh data now
   const ip = req.socket.remoteAddress || '?';
+  const t0 = Date.now();
+  let bytesIn = 0, bytesOut = 0;
   // Rate limit WebSocket connections per IP
   if (isWsRateLimited(ip)) {
+    log.warn('ws', 'rejected: too many connections from this IP', { ip });
     ws.close(4290, 'too many WebSocket connections from this IP');
     return;
   }
   // sync listener: a throw here is an uncaughtException (server exit) — guard the parse
   let url;
-  try { url = new URL(req.url, 'http://localhost'); } catch { ws.close(1002, 'bad request'); return; }
+  try { url = new URL(req.url, 'http://localhost'); } catch { log.warn('ws', 'rejected: bad request', { ip, url: req.url }); ws.close(1002, 'bad request'); return; }
   // CSWSH hardening: if an Origin header is sent (browsers), ensure it matches Host
   const origin = req.headers.origin;
   if (origin) {
     try {
       const oh = new URL(origin).host;
       if (oh && req.headers.host && oh.toLowerCase() !== req.headers.host.toLowerCase()) {
+        log.warn('ws', 'rejected: cross-origin', { ip, origin });
         ws.close(4403, 'cross-origin forbidden'); return;
       }
     } catch {
+      log.warn('ws', 'rejected: bad origin', { ip, origin });
       ws.close(4403, 'bad origin'); return;
     }
   }
   // brute-force guard (same 5 / 15 min per source IP as /login): the WS handshake
   // accepts ?token= with no throttle today, so under 2FA-off a wrong token is
   // brute-forceable over the socket — cap it like /login does.
-  if (tooManyLogins(ip)) { ws.close(4401, 'too many attempts, try again in 15 min'); return; }
+  if (tooManyLogins(ip)) { log.warn('ws', 'rejected: too many attempts', { ip }); ws.close(4401, 'too many attempts, try again in 15 min'); return; }
   // auth: cookie (same-origin browsers) or ?token= (non-browser clients). With a TOTP
   // secret enrolled the raw token is rejected here too — only the session cookie
-  // (token + code at login) gets through. Prefer the `Authorization: Bearer` header
+  // (token + code at login) gets through, whichever way the raw token is presented
+  // (?token=, a raw-token cookie, or Authorization: Bearer — authed() gates all
+  // three identically; see the comment there). Prefer the `Authorization: Bearer` header
   // over ?token= for non-browser clients: query strings land in proxy / access logs
   // and the Referer header, leaking the token. ?token= is retained only for the
   // pitux/mobile companion (which can't set a custom header); its residual risk
   // (token in logs) is closed by enrolling 2FA, which rejects the raw token here.
   if (token() && !authed(req) && !(totpSecret() === null && validToken(url.searchParams.get('token')))) {
     recordLoginFail(ip);
+    // ip only — req.url carries ?token= and must not be logged
+    log.warn('ws', 'rejected: unauthorized', { ip });
     ws.close(4401, 'unauthorized'); return;
   }
   const host = hostByName(url.searchParams.get('host') || 'localhost');
   const name = url.searchParams.get('session') || '';
-  if (!host) { ws.close(4000, 'unknown host'); return; }
-  if (!NAME_RE.test(name)) { ws.close(4000, 'bad session name'); return; }
+  if (!host) { log.warn('ws', 'rejected: unknown host', { ip, host: url.searchParams.get('host') }); ws.close(4000, 'unknown host'); return; }
+  if (!NAME_RE.test(name)) { log.warn('ws', 'rejected: bad session name', { ip, session: name }); ws.close(4000, 'bad session name'); return; }
 
   // initial size from the client (its fitted xterm), so the pty starts at the right size
   const clamp = (v, d) => { const n = parseInt(v, 10); return Number.isFinite(n) && n >= 2 && n <= 1000 ? n : d; };
   const cols = clamp(url.searchParams.get('cols'), 80);
   const rows = clamp(url.searchParams.get('rows'), 24);
+  log.debug('ws', 'connect', { ip, host: host.name, session: name, cols, rows, remote: !!host.ssh });
 
   // the pty is spawned asynchronously (after has-session); queue messages until it exists,
   // otherwise the client's first resize (sent on ws open) is lost. Bounded like the
@@ -1641,7 +1853,7 @@ wss.on('connection', (ws, req) => {
       // coalesces fast typing into one frame). Both are plain text written to the
       // pty in order; validate each piece is a string before writing.
       const parts = Array.isArray(m.chunks) ? m.chunks : (typeof m.data === 'string' ? [m.data] : []);
-      for (const p of parts) if (typeof p === 'string') { try { term.write(p); } catch {} }
+      for (const p of parts) { bytesIn += p.length; if (typeof p === 'string') { try { term.write(p); } catch {} } }
     }
     else if (m.type === 'resize' && m.cols > 0 && m.rows > 0) {
       // clamp like the WS URL path: an unbounded size would grow the remote tmux window
@@ -1661,8 +1873,8 @@ wss.on('connection', (ws, req) => {
       sendKeysToSession(host, name, m.keys).then((r) => {
         // log, don't swallow: a dead ssh link / unknown session would otherwise
         // make the palette look broken with zero trace (journal: journalctl --user -u tmux-webhub)
-        if (!r.ok) console.error(`send-keys ${r.failedKey} → ${host.name}:${name} failed: ${r.error}`);
-      }).catch((e) => console.error(`send-keys → ${host.name}:${name} failed: ${e.message}`));
+        if (!r.ok) log.warn('ws', `send-keys ${r.failedKey} failed`, { host: host.name, session: name, err: r.error });
+      }).catch((e) => log.error('ws', 'send-keys failed', { host: host.name, session: name, err: String((e && e.stack) || e) }));
     }
   };
   ws.on('message', (msg) => {
@@ -1674,21 +1886,27 @@ wss.on('connection', (ws, req) => {
     } else handleMsg(m);
   });
   ws.on('error', () => {}); // socket errors always lead to 'close'; avoid unhandled throw
-  ws.on('close', () => {
+  ws.on('close', (code, reason) => {
     wsClients--;
     closed = true;
     if (term) { try { term.kill(); } catch {} } // detach; tmux session keeps running
+    log.debug('ws', 'close', { host: host.name, session: name, code, reason: reason ? reason.toString() : '', durS: Math.round((Date.now() - t0) / 1000), inKB: Math.round(bytesIn / 1024), outKB: Math.round(bytesOut / 1024) });
   });
 
   runOn(host, ['tmux', 'has-session', '-t', name], 6000).then((r) => {
     if (closed) return;
     try {
-      if (!r.ok) { ws.close(4001, 'no such tmux session'); return; }
+      if (!r.ok) {
+        // the real cause (ssh exit 255, auth failure, timeout) lives in stderr — log it,
+        // the client only gets the generic close reason
+        log.warn('ws', 'attach failed: no such tmux session', { host: host.name, session: name, err: lastLine(r.stderr || r.stdout) || (r.timeout ? 'timed out' : 'unknown') });
+        ws.close(4001, 'no such tmux session'); return;
+      }
       // interactive attach: -tt forces remote pty allocation (plain ssh does not allocate one
       // when spawned from node-pty), no -T obviously
       const remote = ['tmux', 'attach-session', '-t', name].map(shellQuote).join(' ');
       const args = host.ssh
-        ? ['ssh', '-tt', ...sshOptsFor(host, SSH_OPTS), host.ssh, remote]
+        ? ['ssh', '-tt', ...sshOptsFor(host, SSH_OPTS), sshSplit(host.ssh).target, remote]
         : ['tmux', 'attach-session', '-t', name];
       term = pty.spawn(args[0], args.slice(1), {
         name: 'xterm-256color',
@@ -1709,12 +1927,17 @@ wss.on('connection', (ws, req) => {
       };
       term.onData((data) => {
         if (ws.readyState !== WebSocket.OPEN) return;
+        bytesOut += data.length;
         if (!ptyPaused && ws.bufferedAmount > WS_PAUSE_BYTES) { ptyPaused = true; term.pause(); }
         ws.send(data, maybeResumePty);
       });
-      term.onExit(() => { try { ws.close(1000, 'session ended'); } catch {} });
+      term.onExit(({ exitCode }) => {
+        log.info('ws', 'pty exited', { host: host.name, session: name, exitCode });
+        try { ws.close(1000, 'session ended'); } catch {}
+      });
       for (const m of pending.splice(0)) handleMsg(m);
     } catch (e) {
+      log.error('ws', 'pty spawn failed', { host: host.name, session: name, err: String((e && e.stack) || e) });
       try { ws.close(4002, 'attach failed: ' + (e.message || e)); } catch {}
     }
   });
@@ -1722,10 +1945,10 @@ wss.on('connection', (ws, req) => {
 
 // ---------- process-level safety net ----------
 process.on('unhandledRejection', (reason) => {
-  console.error('tmux-webhub: unhandled rejection (continuing):', reason);
+  log.error('process', 'unhandled rejection (continuing)', { err: String((reason && reason.stack) || reason) });
 });
 process.on('uncaughtException', (err) => {
-  console.error('tmux-webhub: uncaught exception, shutting down:', err);
+  log.error('process', 'uncaught exception, shutting down', { err: String((err && err.stack) || err) });
   try { server.close(); } catch {}
   setTimeout(() => process.exit(1), 500).unref();
 });
@@ -1733,10 +1956,10 @@ process.on('uncaughtException', (err) => {
 server.listen(PORT, HOST, () => {
   const proto = TLS ? 'https' : 'http';
   const twoFaNote = TWOFA ? `  2FA: ${TWOFA}${totpSecret() ? ', enrolled' : ', not enrolled'}` : '';
-  console.log(`tmux-webhub on ${proto}://${HOST}:${PORT}  (pi: ${PI_CMD}, config: ${CONFIG_FILE})` + (token() ? '' : '  ⚠ NO token configured — open access') + twoFaNote);
+  console.log(`tmux-webhub on ${proto}://${HOST}:${PORT}  (pi: ${PI_CMD}, config: ${CONFIG_FILE}, log level: ${logLevel})` + (token() ? '' : '  ⚠ NO token configured — open access') + twoFaNote);
 });
 server.on('error', (e) => {
-  if (e.code === 'EADDRINUSE') console.error(`port ${PORT} already in use (PC_PORT to change)`);
-  else console.error(e);
+  if (e.code === 'EADDRINUSE') log.error('http', `port ${PORT} already in use (PC_PORT to change)`);
+  else log.error('http', 'server error', { err: String((e && e.stack) || e) });
   process.exit(1);
 });

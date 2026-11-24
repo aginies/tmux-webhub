@@ -75,6 +75,10 @@
   }
   input:focus, select:focus { border-color: var(--accent); }
   header button { padding: 3px 9px; font-size: 12.5px; }
+  /* "needs you" badge: count of sessions that settled after working (awaiting input). Click filters the list. */
+  #needs-you { color: var(--amber); border-color: rgba(240,196,83,.5); background: rgba(240,196,83,.10); }
+  #needs-you.off { display: none; }
+  #needs-you.on { background: var(--amber); color: #1a1a1a; font-weight: 700; }
   /* split view: vertical only, 50/50 */
   #termwrap.split { display: grid; grid-template-columns: 1fr 1fr; gap: 2px; height: 100%; }
   #termwrap.split .split-pane { border: 1px solid var(--border); border-radius: 4px; overflow: hidden; display: flex; flex-direction: column; height: 100%; }
@@ -162,6 +166,12 @@
   .chip.split-select { border-color: var(--amber); animation: pc-pulse 1.5s ease-in-out infinite; }
   .chip .flash { flex: 0 0 auto; display: inline-flex; animation: pc-pulse 1.2s ease-in-out infinite; }
   .chip .ind-empty { width: 11px; flex: 0 0 auto; } /* reserves the indicator slot so chips don't shift */
+  /* "needs you": settled after working → awaiting input. Amber dot reads as "attention"
+     without colliding with the ⚡ active flash; border yields to the selection ring. */
+  .chip .need { width: 11px; height: 11px; border-radius: 50%; background: var(--amber); box-shadow: 0 0 6px var(--amber); flex: 0 0 auto; animation: pc-pulse 1.6s ease-in-out infinite; }
+  .chip.needs-you:not(.active) { border-color: var(--amber); background: rgba(240,196,83,.08); }
+  /* filter mode (badge click): only needs-you chips stay visible; empty host groups hide in JS */
+  #hosts.filtering .chip:not(.needs-you) { display: none; }
   @keyframes pc-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
   .chip .cname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   /* per-chip action (✎ rename): hover-revealed on desktop, always (subtle) on touch */
@@ -194,6 +204,7 @@
      below #main's subtree (the terminal window) — a fullscreen terminal
      covers them. z-index must stay under #main's 2: #main is a stacking
      context, so anything >= 2 would float above the terminal too. */
+  body.view-town #net { display: none; } /* the Space-view console (canvas art) replaces the header pill */
   #town-ctl {
     display: none; position: fixed; left: 12px; bottom: 12px; z-index: 1;
     flex-direction: column; gap: 4px;
@@ -304,6 +315,33 @@
   #t-detach { margin-left: auto; padding: 2px 9px; font-size: 12px; flex: 0 0 auto; }
   /* panel hidden: keep the session name clear of the fixed "☰ sessions" button */
   body.panel-hidden #termbar { padding-left: 116px; }
+  /* tab bar: sessions within the terminal window */
+  #tabbar { display: flex; flex-direction: row; align-items: center; gap: 3px; padding: 3px 6px; background: var(--panel-2, var(--panel, #101521)); border-bottom: 1px solid var(--border); flex: 0 0 auto; overflow-x: auto; scrollbar-width: thin; }
+  #tabbar::-webkit-scrollbar { height: 4px; }
+  #tabbar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+  .tab { display: flex; align-items: center; gap: 4px; padding: 3px 10px; border-radius: 6px 6px 0 0; font-size: 12px; font-family: var(--font-mono); cursor: pointer; white-space: nowrap; border: 1px solid transparent; border-bottom: none; transition: background .1s; }
+  .tab:hover { background: var(--chip-hover, rgba(255,255,255,.05)); }
+  .tab.active { background: var(--panel); border-color: var(--border); font-weight: 700; }
+  .tab.dead { opacity: .55; }
+  /* indicator dot = socket state: green = live WS (tabs keep it open in the
+     background), red = connection lost / rate-limited — click the tab to reconnect */
+  .tab.dead .tab-indicator { background: var(--red); }
+  /* toast: transient banner under the header (rate-limit warnings etc.) */
+  #toast {
+    position: fixed; top: 52px; left: 50%; transform: translateX(-50%); z-index: 60;
+    background: var(--panel-2, #1b2232); color: var(--text);
+    border: 1px solid var(--amber); border-radius: 8px;
+    padding: 8px 14px; font-size: 13px; max-width: min(92vw, 520px);
+    box-shadow: 0 8px 30px rgba(0,0,0,.4); display: none;
+  }
+  #toast.show { display: block; }
+  .tab .tab-name { overflow: hidden; text-overflow: ellipsis; max-width: 120px; }
+  .tab .tab-close { flex: 0 0 auto; width: 16px; height: 16px; display: flex; align-items: center; justify-content: center; border-radius: 3px; font-size: 13px; color: var(--dim); opacity: 0; transition: opacity .1s; }
+  .tab:hover .tab-close { opacity: .7; }
+  .tab .tab-close:hover { opacity: 1; background: var(--red); color: #fff; }
+  .tab .tab-indicator { width: 6px; height: 6px; border-radius: 50%; flex: 0 0 auto; }
+  .tab .tab-indicator { background: var(--green); }
+  .tab.active .tab-indicator { box-shadow: 0 0 4px var(--green); }
   #termwrap { flex: 1 1 auto; min-height: 0; padding: 4px 6px; position: relative; }
   #term { position: absolute; inset: 4px 6px; touch-action: none; }
   /* touch-action:none: all gestures on the terminal are handled in JS —
@@ -509,10 +547,33 @@
   /* touch devices: targets >= 44 px (style guide hit areas); 16 px inputs stop
      iOS auto-zoom on focus */
   @media (pointer: coarse) {
-    header button, #unhide { padding: 11px 12px; min-height: 44px; font-size: 13px; }
+    /* no physical keyboard on touch devices — the shortcut bar keeps its
+       phone buttons in every orientation (the base rule shows only ⌨)
+       and dims them while no session is attached (taps would no-op) */
+    #term-ctl button:not(#btn-keys) { display: inline-flex; }
+    #term-ctl button:disabled { opacity: .35; }
+    /* Town view hides the whole header bar — but on a phone the floating
+       terminal still needs ⎋ Pg↑ Pg↓ ⌨, so keep them as a floating pill
+       while a session is attached (body.attached is set by app.js). Parked
+       below the termbar: on phones the terminal is a fullscreen sheet and
+       its ✕/⛶ buttons live at the very top-right. */
+    body.view-town.attached #term-ctl {
+      display: inline-flex !important;
+      position: fixed; top: 44px; right: 10px; z-index: 6;
+      background: rgba(10, 15, 24, .94);
+      border: 1px solid rgba(0, 229, 255, .35); border-radius: 10px;
+      padding: 4px; gap: 4px;
+      box-shadow: 0 4px 14px rgba(0,0,0,.35);
+    }
+    /* :not(.crename) — the chip's ✎ button is also a header <button>; the 44 px
+       touch sizing used to leak into it and inflate every session chip */
+    header button:not(.crename), #unhide { padding: 11px 12px; min-height: 44px; font-size: 13px; }
     #t-detach { padding: 8px 12px; min-height: 40px; font-size: 13px; }
     #term-ctl button { padding: 11px; min-height: 44px; font-size: 13px; white-space: nowrap; }
-    .chip { padding: 10px 12px; min-height: 44px; font-size: 13px; }
+    /* compact session chips: 44 px made the mobile host strip (and every list
+       row) unnecessarily tall — 34 px is still a comfortable tap target on a
+       chip that is at least a name wide */
+    .chip { padding: 6px 10px; min-height: 34px; font-size: 13px; }
     .modal .row button { padding: 10px 14px; min-height: 44px; }
     .dirlist div { padding: 10px 12px; }
     .modal input, .modal select { padding: 10px 11px; font-size: 16px; }
@@ -528,6 +589,7 @@
 <header id="header">
   <button id="toggle-panel" title="Hide session panel">☰</button>
   <div id="hosts"></div>
+  <button id="needs-you" class="off" title="Sessions awaiting your input">🔔</button>
   <div class="spacer"></div>
   <span id="net" class="net" title="server bandwidth (5 s average)"></span>
   <button id="new-session" class="primary">+New</button>
@@ -541,6 +603,7 @@
   <button id="edit-config" title="Edit config.json">⚙</button>
 </header>
 <button id="unhide" class="hidden" title="Show session panel">☰ sessions</button>
+<div id="toast" role="status"></div>
 
 <div id="layout">
   <main id="main">
@@ -554,6 +617,7 @@
       <button id="t-full" title="Fullscreen (the terminal window fills the screen)" style="display:none">⛶</button>
       <button id="t-detach" title="Detach (the session keeps running in tmux)" style="display:none">✕</button>
     </div>
+    <div id="tabbar" style="display:none"></div>
     <div id="termwrap">
       <div id="placeholder">click a session above to attach — sessions are grouped by host (config.json)</div>
       <div id="term"></div>
@@ -624,7 +688,9 @@
   <div class="modal" id="cfg-modal">
     <h2 id="cfg-title">config.json</h2>
     <div class="cfg-note">hosts / cmd apply immediately · port, token, tls, cert, key, pollMs, netDisplay, twoFA need a server restart · changing the token logs out all clients</div>
-    <div id="cfg-tabs" class="cfg-tabs">
+    <!-- id must not collide with the "Session tabs" checkbox's id (cfg-tabs) —
+         getElementById would resolve to whichever comes first in the document -->
+    <div id="cfg-mtabs" class="cfg-tabs">
       <button type="button" class="cfg-tab on" data-tab="server">Server</button>
       <button type="button" class="cfg-tab" data-tab="auth">Authentication</button>
       <button type="button" class="cfg-tab" data-tab="hosts">Hosts</button>
@@ -661,6 +727,19 @@
             <option value="contrast">high contrast</option>
           </select>
           <span class="cfg-hint">browser only</span>
+        </div>
+        <div class="cfg-field">
+          <label for="cfg-crew">Crew</label>
+          <select id="cfg-crew">
+            <option value="minions">Minions</option>
+            <option value="evil">Evil minions (purple)</option>
+            <option value="astronauts">Astronauts</option>
+          </select>
+          <span class="cfg-hint">browser only · Space view characters — Kevin, Stuart, Bob &amp; Otto</span>
+        </div>
+        <div class="cfg-field chk">
+          <label><span>Session tabs</span><input id="cfg-tabs" type="checkbox"></label>
+          <span class="cfg-hint">browser only · default off · on: clicking a session opens it as a tab in the same window; off: it replaces the current one</span>
         </div>
         <div class="cfg-field chk">
           <label><span>Use TLS</span><input id="cfg-tls" type="checkbox"></label>
@@ -833,7 +912,7 @@
 <script src="/vendor/xterm.js"></script>
 <script src="/vendor/xterm-addon-fit.js"></script>
 <script src="/vendor/town-art.js"></script>
-<script src="/vendor/space-art.js"></script>
+<script src="/vendor/space-art.js?v=2"></script>
 <script src="/town.js"></script>
 <script src="/app.js"></script>
 </body>

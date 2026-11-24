@@ -6,9 +6,40 @@ let active = null;     // {key, host, name, ws, dataSub}
 let splitActive = null; // {key, host, name, ws, dataSub} — split pane session
 let splitTerm = null;   // second xterm instance for split view
 let splitFit = null;    // fit addon for split terminal
+// Pending "+New" boot reveal: after creating a session we attach it HIDDEN (the
+// terminal window stays covered by the placeholder + the modal) and only reveal it
+// once the command produces VISIBLE output — otherwise the window flashes empty
+// while a slow command (e.g. pi-bolt) is still booting. {st, s, timer} or null.
+let bootReveal = null;
+// Tab sessions within the terminal window: shared xterm, one WS per tab.
+// { key, host, name, ws, dataSub } — active tab is at tabs[activeTab]
+let tabs = [];        // array of tab objects
+let activeTab = -1;   // index into tabs, -1 = no tabs open
+// Whether the terminal window opens new sessions as TABS (one shared xterm, one WS
+// each) or as a LEGACY single-session swap (detach + attach). Browser-only pref,
+// persisted like the theme. Default ON (current behavior). Toggling OFF while tabs
+// are open collapses them to the selected tab (see setTabsEnabled).
+let tabsEnabled = localStorage.getItem('pc.tabs') === '1';
 // host → sessions lookup, rebuilt once per renderChips so displayName is O(1)/chip instead
 // of an O(#hosts) hosts.find per chip (render is O(sessions × hosts) otherwise).
 let hostSessionsLookup = null;
+// Last rendered +New host <select> (names/reachability/enabled), so populateHostSelect()
+// can skip a DOM rebuild when nothing changed. Declared here — NOT next to its function —
+// because setView(view) runs while this file is still being evaluated and calls
+// populateHostSelect(): a `let` further down would be in its temporal dead zone and throw
+// "Cannot access 'lastHostsSnap' before initialization", aborting the rest of app.js (every
+// handler below it — ⎋ Pg↑ Pg↓ ⌨, the ✕ detach, the keys palette, refresh() — never binds).
+let lastHostsSnap = '';
+
+// "Needs you": a session that was working (activity true) and has since settled
+// (activity false) is awaiting your input. Derived client-side from the activity
+// boolean's transitions — no new server field, the activity contract is untouched.
+// A key is flagged the moment we observe active→settled and cleared when the agent
+// resumes (settled→active) or you attach to it. Latched (not transient) so the badge
+// survives the next poll; entries are pruned when the session disappears.
+const needsYou = new Set();      // keys (host:name) awaiting input
+const prevActivity = new Map();  // key → last observed activity boolean
+let filterNeedsYou = false;      // list filtered to needs-you chips only
 
 const $ = (id) => document.getElementById(id);
 const keyOf = (host, name) => host + ':' + name; // neither may contain ':' (server-enforced)
@@ -76,7 +107,9 @@ term.open($('term'));
 
 let resizeSendTimer = null;
 function fitTerm() {
-  if (!active) return;
+  // currentConn(): the resize must reach the ACTIVE TAB's ws in tab mode
+  // (`active` is null there) — otherwise window/drag resizes never reach tmux
+  if (!currentConn()) return;
   try {
     fit.fit(); // immediate: the xterm layout must follow the container right away
     // throttle the ws.send: a resize drag fires per pixel and each send is a tmux
@@ -84,8 +117,9 @@ function fitTerm() {
     if (resizeSendTimer) return;
     resizeSendTimer = setTimeout(() => {
       resizeSendTimer = null;
-      if (active) {
-        try { active.ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows })); } catch {}
+      const conn = currentConn(); // re-resolve: the tab may have switched during the throttle
+      if (conn && conn.ws.readyState === WebSocket.OPEN) {
+        try { conn.ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows })); } catch {}
       }
     }, 100);
   } catch {}
@@ -187,6 +221,7 @@ function connectTerminal(key, host, name, term, onOpen) {
     ws.send(JSON.stringify({ type: 'input', data: chunks.join(''), chunks }));
   };
   st.dataSub = term.onData((d) => {
+    if (st.active === false) return; // only the active tab sends input (undefined = non-tab path, allowed)
     buf.push(d);
     if (buf.length >= INPUT_MAX) buf.shift(); // drop oldest
     if (flushTimer == null) flushTimer = setTimeout(flush, INPUT_FLUSH_MS);
@@ -197,48 +232,449 @@ function connectTerminal(key, host, name, term, onOpen) {
   };
   ws.onmessage = (ev) => {
     // server→client text frames ARE the terminal output (no control messages from server)
-    if (typeof ev.data === 'string') term.write(ev.data);
+    // only write if this tab is active (other tabs' WS stay open but don't pollute the display)
+    if (st.active !== false && typeof ev.data === 'string') term.write(ev.data);
   };
   return st;
 }
 
-function attach(key) {
+// True if the terminal's parsed buffer has non-whitespace text in any row ABOVE the
+// last one. On attach, tmux first redraws the current screen: for a freshly created
+// session the main area is BLANK, but the bottom row (tmux's status bar — session /
+// window name) is drawn immediately and DOES contain visible text. So "any visible
+// text" would fire too early; we specifically wait for the command's output to land
+// in the rows above the status bar, which is what makes the window non-empty.
+function hasMainContent() {
+  const buf = term.buffer.active;
+  const total = buf.length;
+  const start = Math.max(0, total - term.rows); // first visible row (skips scrollback)
+  const end = total - 1; // exclude the last visible row (the status bar)
+  for (let r = start; r < end; r++) {
+    const line = buf.getLine(r);
+    if (line && line.translateToString(true).trim()) return true;
+  }
+  return false;
+}
+
+// Reveal a hidden (+New boot) terminal: mirror attach()'s non-hidden reveal path.
+// Guards on `active === st` so a detach in the meantime is a no-op. Async: right
+// after a create the in-memory host list is still stale (the server's background
+// re-poll lags the POST), so if the session isn't found we refresh once to get the
+// real name/cwd for the termbar instead of showing the raw key.
+async function doReveal(st, s) {
+  // st is the current connection if it's the non-tab attach OR the active tab
+  const isCurrent = () => active === st || (activeTab >= 0 && tabs[activeTab] === st);
+  if (!isCurrent()) return;
+  let ss = s || findSession(st.key);
+  if (!ss) { await refresh(); ss = findSession(st.key); }
+  if (!isCurrent()) return; // detached/switched during the refresh
+  if (view === 'town' && townView) { $('termwin').classList.add('attached'); townView.activeKey = st.key; townView.needsRedraw = true; }
+  $('placeholder').style.display = 'none';
+  $('t-detach').style.display = '';
+  $('t-name').textContent = ss ? `${displayName(ss)}  [${ss.host}:${ss.name}]` : st.key;
+  $('t-cwd').textContent = ss ? ss.cwd : '';
+  if (ss) updateLocalBadge(ss); // ss can still be undefined (session already gone) — don't crash
+  $('modal-bg').classList.remove('open'); // the +New modal was kept open showing "starting…"
+  fitTerm(); term.focus();
+  syncTermButtons();
+  renderChips();
+}
+
+// Called when the booting session emits visible output (or the safety timer fires).
+function revealTerminal() {
+  if (!bootReveal) return;
+  const { st, s } = bootReveal;
+  clearTimeout(bootReveal.timer);
+  bootReveal = null;
+  doReveal(st, s); // async; safe to fire-and-forget
+}
+
+// Attach was done hidden: watch the buffer and reveal once the command's output has
+// landed in the rows above the status bar; a safety timer reveals anyway so a
+// silent/very slow command can't keep the modal open forever.
+function setupBootReveal(st, s) {
+  const orig = st.ws.onmessage;
+  st.ws.onmessage = (ev) => {
+    if (orig) orig(ev); // writes the frame to term (updates the parsed buffer)
+    if (bootReveal && bootReveal.st === st && hasMainContent()) revealTerminal();
+  };
+  bootReveal = { st, s, timer: setTimeout(revealTerminal, 8000) };
+}
+
+// Close the +New modal. If a create is in flight (bootReveal pending) the session
+// already exists — reveal the (hidden) terminal instead of just closing, so the
+// user is never left staring at "starting…" with no window.
+function closeNewModal() {
+  if (bootReveal) { revealTerminal(); return; }
+  $('modal-bg').classList.remove('open');
+}
+
+// Drop a session from the in-memory host list and repaint right away. Called the
+// moment we learn a session has ended (its WS closed with 'session ended') so its
+// town desk + chip vanish immediately instead of lingering until the next poll — a
+// dead desk must not stay clickable (clicking it would just fail with 'no such
+// tmux session'). The next poll reconciles (the server's list already lacks it), so
+// this optimistic drop is safe. No-op if the session isn't in the list.
+function dropSession(key) {
+  const idx = key.indexOf(':');
+  if (idx < 0) return;
+  const host = key.slice(0, idx), name = key.slice(idx + 1);
+  let changed = false;
+  for (const h of hosts) {
+    if (h.name !== host || !Array.isArray(h.sessions)) continue;
+    const before = h.sessions.length;
+    h.sessions = h.sessions.filter((s) => s.name !== name);
+    if (h.sessions.length !== before) changed = true;
+  }
+  if (!changed) return;
+  // currentConn(): in tab mode `active` is null — passing it would clear the
+  // Town highlight (red desk outline) of the selected tab on every poll
+  const conn = currentConn();
+  if (townView && view === 'town') townView.update(hosts, conn && conn.key);
+  if (view === 'list') renderChips();
+}
+
+// ---------- tab sessions within the terminal window ----------
+// Shared xterm instance, one WebSocket per tab. Switching a tab closes the old WS
+// and opens a new one on the same terminal.
+function findTab(key) {
+  return tabs.findIndex((t) => t.key === key);
+}
+// Reset the terminal window to the "no session" state. Shared by closeTab and
+// setupTabClose when the last tab goes away — detach() can't be used there since
+// `active` is null in tab mode. Mirrors detach()'s teardown (incl. the modals).
+function resetTerminalWindow() {
+  term.reset();
+  if (view === 'town' && townView) { $('termwin').classList.remove('attached'); townView.activeKey = null; townView.needsRedraw = true; }
+  $('placeholder').style.display = 'flex';
+  $('t-detach').style.display = 'none';
+  $('keys-bg').classList.remove('open');
+  $('rn-bg').classList.remove('open');
+  $('t-name').textContent = 'no session selected';
+  $('t-cwd').textContent = '';
+  $('t-local').style.display = 'none';
+  syncTermButtons();
+  renderChips();
+}
+// Transient banner under the header — used for recoverable conditions the user
+// should understand (e.g. the server's WS rate limit), auto-hides.
+let toastTimer = null;
+function showToast(msg, ms) {
+  const el = $('toast');
+  if (!el) return;
+  el.textContent = msg;
+  el.classList.add('show');
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.classList.remove('show'); toastTimer = null; }, ms || 8000);
+}
+// Set up ws.onclose for a tab — if the WS dies (server disconnect, session killed),
+// remove the tab and switch to the next available one.
+function setupTabClose(tab) {
+  tab.ws.onclose = (ev) => {
+    const idx = findTab(tab.key);
+    if (idx === -1) return; // already removed
+    const wasActive = (idx === activeTab);
+    const sessionEnded = /session ended/i.test(ev.reason || '');
+    // Rate-limited by the server (too many WS connections this minute): keep the
+    // tab even if it was ACTIVE, mark it dead and explain — clicking it reconnects.
+    // Removing it would silently eat the window (the 4290 arrives right after a
+    // tab open, when it's usually the only/active one).
+    if (ev.code === 4290) {
+      tab.wsDead = true;
+      try { tab.dataSub.dispose(); } catch {}
+      renderTabs();
+      showToast('⚠ Too many terminal connections this minute — click the tab to reconnect in a few seconds.');
+      return;
+    }
+    if (!wasActive && !sessionEnded) {
+      // A BACKGROUND tab lost its WS (network blip / server restart) — keep the
+      // tab and mark the socket dead; switchTab reconnects on activation. Only a
+      // real 'session ended' or the death of the ACTIVE tab removes the tab.
+      tab.wsDead = true;
+      try { tab.dataSub.dispose(); } catch {}
+      renderTabs();
+      return;
+    }
+    try { tab.dataSub.dispose(); } catch {}
+    tabs.splice(idx, 1);
+    if (wasActive) {
+      const next = tabs.length > 0 ? Math.min(idx, tabs.length - 1) : -1;
+      activeTab = -1; // sentinel: switchTab must NOT early-return — the replacement tab needs reconnecting
+      if (next >= 0) switchTab(next);
+      else resetTerminalWindow(); // last tab gone
+    } else if (activeTab > idx) {
+      activeTab--;
+    }
+    renderTabs();
+    const why = ev.reason ? ev.reason : 'connection closed';
+    term.write('\x1b[90m[' + why + ' — ' + tab.key + ']\x1b[0m\r\n');
+  };
+}
+function openTab(key, opts) {
+  opts = opts || {};
+  const idx = findTab(key);
+  if (idx !== -1) { switchTab(idx); return idx; }
+  const s = opts.session || findSession(key);
+  const sessionName = (opts && opts.name) || (s ? s.name : key.split(':').pop());
+  const host = (opts && opts.host) || (s ? s.host : 'localhost');
+  // Deactivate the current tab but KEEP ITS WS OPEN (st.active gates its I/O) —
+  // see switchTab for why we don't close/reconnect per switch (server WS rate limit)
+  if (activeTab >= 0 && activeTab < tabs.length) tabs[activeTab].active = false;
+  term.reset(); // clear old content before new tab's tmux redraw
+  const st = connectTerminal(key, host, sessionName, term, () => {
+    if (activeTab === tabs.length - 1) { fitTerm(); term.focus(); }
+  });
+  st.tabIdx = tabs.length;
+  st.active = true;
+  tabs.push(st);
+  setupTabClose(st);
+  activeTab = tabs.length - 1;
+  needsYou.delete(st.key); // you're looking at it now — it no longer "needs you"
+  renderNeedsYouBadge();
+  updateLocalBadge(findSession(st.key));
+  // Town view: move the active-desk highlight (red outline) to the new tab now —
+  // don't wait for the next poll to catch up
+  if (view === 'town' && townView) { $('termwin').classList.add('attached'); townView.activeKey = st.key; townView.needsRedraw = true; }
+  if (view === 'list') renderChips(); // move the selection ring to the new tab now
+  syncTermButtons();
+  return activeTab;
+}
+function switchTab(idx) {
+  const cur0 = tabs[idx];
+  // clicking the ALREADY-active tab only does something when its socket is dead
+  // (rate-limited / blipped) — then it's the reconnect gesture the toast promises
+  if (idx === activeTab && !(cur0 && (cur0.wsDead || !cur0.ws || cur0.ws.readyState >= WebSocket.CLOSING))) return;
+  // Deactivate the current tab but KEEP ITS WS OPEN: reconnecting on every switch
+  // hammers the server's WS rate limiter (10 conn/min/IP → close 4290 → tab removed
+  // → window closes) and re-spawns ssh+tmux-attach per switch. The st.active flag
+  // already gates its input/output while inactive.
+  if (activeTab >= 0 && activeTab < tabs.length && activeTab !== idx) tabs[activeTab].active = false;
+  activeTab = idx;
+  const tab = tabs[idx];
+  if (!tab) return;
+  // clear terminal so only the new tab's content shows
+  term.reset();
+  const wsDead = !tab.ws || tab.wsDead || tab.ws.readyState >= WebSocket.CLOSING;
+  if (wsDead) {
+    // WS died while the tab was inactive (network blip / server restart):
+    // fresh attach — tmux full-redraws the screen on attach
+    try { tab.dataSub.dispose(); } catch {}
+    const st = connectTerminal(tab.key, tab.host, tab.name, term, () => {
+      fitTerm(); term.focus();
+    });
+    st.active = true;
+    tabs[idx] = st; // replace in array so the onData closure's st IS tabs[idx]
+    setupTabClose(st);
+    // the reconnect gesture succeeded — retire any rate-limit/blip toast
+    if (toastTimer) { clearTimeout(toastTimer); toastTimer = null; }
+    const tEl = $('toast'); if (tEl) tEl.classList.remove('show');
+  } else {
+    tab.active = true;
+    // The WS was never closed, so tmux won't redraw spontaneously: toggle the pty
+    // size by one row (two SIGWINCHes) to force a full repaint of the screen.
+    // At rows<=2 the row toggle would be a no-op (min size is 2) — toggle cols then.
+    if (tab.ws.readyState === WebSocket.OPEN) {
+      try {
+        const rr = (c, r) => tab.ws.send(JSON.stringify({ type: 'resize', cols: c, rows: r }));
+        if (term.rows > 2) { rr(term.cols, term.rows - 1); rr(term.cols, term.rows); }
+        else { rr(Math.max(2, term.cols - 1), term.rows); rr(term.cols, term.rows); }
+      } catch {}
+    }
+    term.focus();
+  }
+  const cur = tabs[idx];
+  $('placeholder').style.display = 'none';
+  $('t-detach').style.display = '';
+  $('t-name').textContent = cur.name;
+  const ss = findSession(cur.key);
+  $('t-cwd').textContent = ss ? ss.cwd : '';
+  needsYou.delete(cur.key); // you're looking at it now — it no longer "needs you"
+  renderNeedsYouBadge();
+  updateLocalBadge(ss);
+  if (view === 'town' && townView) { $('termwin').classList.add('attached'); townView.activeKey = cur.key; townView.needsRedraw = true; }
+  renderTabs();
+  if (view === 'list') renderChips(); // move the selection ring to the new tab now
+  syncTermButtons();
+}
+function closeTab(idx) {
+  if (idx < 0 || idx >= tabs.length) return;
+  const tab = tabs[idx];
+  tab.ws.onclose = null; // prevent setupTabClose from firing on intentional close
+  try { tab.dataSub.dispose(); } catch {}
+  try { tab.ws.close(); } catch {}
+  tabs.splice(idx, 1);
+  // adjust activeTab
+  if (activeTab === idx) {
+    const next = tabs.length > 0 ? Math.min(idx, tabs.length - 1) : -1;
+    activeTab = -1; // sentinel: switchTab must NOT early-return — the replacement tab needs reconnecting
+    if (next >= 0) switchTab(next);
+    else resetTerminalWindow(); // last tab closed (detach() won't work — `active` is null in tab mode)
+  } else if (activeTab > idx) {
+    activeTab--;
+  }
+  renderTabs();
+}
+function renderTabs() {
+  const bar = $('tabbar');
+  if (!bar) return;
+  if (tabs.length === 0) { bar.style.display = 'none'; return; }
+  bar.style.display = 'flex';
+  // reconcile in place (like renderChips)
+  const existing = new Map();
+  for (const child of bar.children) {
+    if (child.dataset.tabIdx !== undefined) existing.set(parseInt(child.dataset.tabIdx), child);
+  }
+  const needed = new Set(tabs.map((_, i) => i));
+  // update/add tabs
+  for (let i = 0; i < tabs.length; i++) {
+    const tab = tabs[i];
+    let el = existing.get(i);
+    if (!el) {
+      el = document.createElement('div');
+      el.className = 'tab';
+      el.dataset.tabIdx = i;
+      const ind = document.createElement('span');
+      ind.className = 'tab-indicator';
+      const nm = document.createElement('span');
+      nm.className = 'tab-name';
+      nm.textContent = tab.name;
+      const cl = document.createElement('span');
+      cl.className = 'tab-close';
+      cl.textContent = '×';
+      cl.onclick = (e) => { e.stopPropagation(); closeTab(i); };
+      el.append(ind, nm, cl);
+      el.onclick = () => switchTab(i);
+      bar.appendChild(el);
+    }
+    el.className = 'tab' + (i === activeTab ? ' active' : '') + (tab.wsDead ? ' dead' : '');
+    el.querySelector('.tab-name').textContent = tab.name;
+    el.title = tab.wsDead ? tab.key + ' — connection lost, click to reconnect' : tab.key;
+  }
+  // remove old tabs
+  for (const [i, el] of existing) {
+    if (!needed.has(i)) el.remove();
+  }
+}
+
+function attach(key, opts) {
+  const hidden = !!(opts && opts.hidden); // +New: attach but keep the window covered until the command has output
+  // Split view owns session clicks: replace the split pane's session instead of
+  // touching tabs/the main attach (split and tabs are mutually exclusive modes).
+  if (splitTerm) {
+    if (splitActive) {
+      splitActive.ws.onclose = null;
+      try { splitActive.dataSub.dispose(); } catch {}
+      try { splitActive.ws.close(); } catch {}
+      splitActive = null;
+    }
+    attachSplit(key);
+    return;
+  }
+  // If tabs are open (and tab mode is on), use tab system instead of detaching/attaching
+  if (tabsEnabled && tabs.length > 0) {
+    const ti = openTab(key, opts);
+    // +New boot flow: keep the modal on "starting…" until the command has visible output
+    if (hidden && tabs[ti]) setupBootReveal(tabs[ti], findSession(key));
+    renderTabs();
+    return;
+  }
+  // No tabs yet — if there's an active session not in tabs, convert it to the first tab
+  // so the new session opens as a second tab (user clicks another chip while one is open)
+  if (tabsEnabled && active && active.key !== key) {
+    const orig = active; // save before we clear it
+    // Convert the existing active session into tab 0 (inactive — tab 1 will be
+    // active). Its WS stays OPEN, gated by active=false; setupTabClose replaces
+    // attach()'s onclose (which guards on active === st, now null, so it could
+    // never fire correctly anyway). switchTab repaints it when clicked.
+    orig.active = false;
+    orig.tabIdx = 0;
+    tabs.push(orig);
+    setupTabClose(orig);
+    active = null;
+    term.reset(); // clear old content before new tab's tmux redraw
+    // now create tab 1 directly (don't use openTab — it would deactivate tab 0)
+    const s = findSession(key);
+    const sessionName = (opts && opts.name) || (s ? s.name : key.split(':').pop());
+    const host = (opts && opts.host) || (s ? s.host : 'localhost');
+    const st1 = connectTerminal(key, host, sessionName, term, () => {
+      if (activeTab === 1) { fitTerm(); term.focus(); }
+    });
+    st1.tabIdx = 1;
+    st1.active = true;
+    tabs.push(st1);
+    setupTabClose(st1);
+    activeTab = 1;
+    needsYou.delete(st1.key); // you're looking at it now — it no longer "needs you"
+    renderNeedsYouBadge();
+    updateLocalBadge(s);
+    if (hidden) setupBootReveal(st1, s); // +New boot flow works in tab mode too
+    // Town view: highlight the newly selected tab's desk immediately
+    if (view === 'town' && townView) { $('termwin').classList.add('attached'); townView.activeKey = st1.key; townView.needsRedraw = true; }
+    renderTabs();
+    syncTermButtons();
+    return;
+  }
   detach();
   const s = findSession(key);
   try { fit.fit(); } catch {} // sync xterm to the container so we can pass the real size
-  // If the session is not found in the list (stale list), extract the session name
-  // from the key (format: host:session_name) instead of using the full key.
-  const sessionName = s ? s.name : key.split(':').pop();
-  const host = s ? s.host : 'localhost';
+  // If the session is not found in the list (stale list — the server's background
+  // re-poll hasn't landed yet right after a create), fall back to the explicit
+  // host/name from opts, then to parsing the key. Using 'localhost' here would make
+  // the WS attach to the wrong host ("unknown host").
+  const sessionName = (opts && opts.name) || (s ? s.name : key.split(':').pop());
+  const host = (opts && opts.host) || (s ? s.host : 'localhost');
   const st = connectTerminal(key, host, sessionName, term, () => {
+    if (hidden) return; // +New boot: the window is revealed (and focused) later, not now
     fitTerm(); term.focus();
     // re-assert a few times: on slow/remote hosts the WS can open before the
     // container is painted, and the first focus() is then dropped by the browser
     for (const d of [60, 200, 500, 1000]) setTimeout(() => { if (active === st) term.focus(); }, d);
   });
   active = st;
-  if (view === 'town' && townView) { $('termwin').classList.add('attached'); townView.activeKey = key; townView.needsRedraw = true; }
-  $('placeholder').style.display = 'none';
-  $('t-detach').style.display = '';
+  // the shortcut bar (⎋ Pg↑ Pg↓ ⌨) lights up the moment the ws is really open
+  st.ws.addEventListener('open', () => { if (active === st) syncTermButtons(); });
+  if (!hidden) {
+    if (view === 'town' && townView) { $('termwin').classList.add('attached'); townView.activeKey = key; townView.needsRedraw = true; }
+    $('placeholder').style.display = 'none';
+    $('t-detach').style.display = '';
+    // no term.reset() here: detach() above already cleared the screen when a session
+    // was active, and a fresh tmux attach full-redraws it when we come from a
+    // closed/detached state — a second reset was redundant
+    $('t-name').textContent = s ? `${displayName(s)}  [${s.host}:${s.name}]` : key;
+    $('t-cwd').textContent = s ? s.cwd : '';
+    updateLocalBadge(s);
+  }
+  needsYou.delete(key); // you're looking at it now — it no longer "needs you"
+  renderNeedsYouBadge();
   syncTermButtons();
-  // no term.reset() here: detach() above already cleared the screen when a session
-  // was active, and a fresh tmux attach full-redraws it when we come from a
-  // closed/detached state — a second reset was redundant
-  $('t-name').textContent = s ? `${displayName(s)}  [${s.host}:${s.name}]` : key;
-  $('t-cwd').textContent = s ? s.cwd : '';
-  updateLocalBadge(s);
   renderChips();
 
-  st.ws.onclose = (ev) => {
+  st.ws.onclose = legacyWsClose(st, key);
+
+  if (hidden) setupBootReveal(st, s);
+}
+
+// ws.onclose for a LEGACY (non-tab) attach: one session at a time, so the socket
+// dying means the window detaches. Shared by attach() and setTabsEnabled(false)
+// (which promotes a tab back to a plain attach and needs the same handler).
+function legacyWsClose(st, key) {
+  return (ev) => {
     if (active !== st) return;
+    const wasBooting = !!(bootReveal && bootReveal.st === st);
+    const sessionEnded = /session ended/i.test(ev.reason || '');
     const why = ev.reason ? ev.reason : 'detached — session still runs in tmux';
-    detach(); // resets the terminal — the reason is written over the CLEAN screen
+    detach(); // resets the terminal — the reason is written over the CLEAN screen (also cancels bootReveal)
+    if (wasBooting) $('modal-bg').classList.remove('open'); // don't leave the user on "starting…"
+    if (sessionEnded) dropSession(key); // the tmux session is gone — kill its desk/chip now, not on the next poll
     term.write('\x1b[90m[' + why + ' — ' + key + ']\x1b[0m\r\n');
   };
 }
 
 function detach() {
+  // If tabs are open, close the active tab instead of full detach
+  if (tabs.length > 0) { closeTab(activeTab >= 0 ? activeTab : 0); return; }
   if (!active) return;
+  if (bootReveal) { clearTimeout(bootReveal.timer); bootReveal = null; } // a hidden +New attach is being torn down
   try { active.dataSub.dispose(); } catch {}
   try { active.ws.close(); } catch {}
   active = null;
@@ -255,20 +691,113 @@ function detach() {
   renderChips();
 }
 
+// ---------- tab-mode toggle (Settings → "Session tabs") ----------
+// Flip the pref, persist it, and — when turning OFF while tabs are open —
+// collapse the tab bar to the selected tab as a plain (legacy) attach so the
+// user never loses the session they're looking at. Turning ON is a no-op on
+// state: the next chip click takes the tab path (converting `active` to tab 0).
+function setTabsEnabled(on) {
+  tabsEnabled = !!on;
+  localStorage.setItem('pc.tabs', tabsEnabled ? '1' : '0');
+  const el = $('cfg-tabs');
+  if (el) el.checked = tabsEnabled;
+  if (!tabsEnabled) collapseTabsToActive();
+}
+// Close every tab except the selected one and promote that one to the plain
+// `active` attach. Reuses legacyWsClose so its socket-death handling matches a
+// normal attach. If the kept tab's socket is dead (rate-limited / blipped), it's
+// reconnected fresh — a dead socket can't be promoted.
+function collapseTabsToActive() {
+  if (tabs.length === 0) return;
+  const keepIdx = (activeTab >= 0 && activeTab < tabs.length) ? activeTab : 0;
+  // close the non-kept tabs (guard their onclose so setupTabClose can't react)
+  for (let i = tabs.length - 1; i >= 0; i--) {
+    if (i === keepIdx) continue;
+    const t = tabs[i];
+    t.ws.onclose = null;
+    try { t.dataSub.dispose(); } catch {}
+    try { t.ws.close(); } catch {}
+  }
+  const st = tabs[keepIdx];
+  tabs = [];
+  activeTab = -1;
+  const bar = $('tabbar');
+  if (bar) bar.style.display = 'none';
+  // retire any rate-limit / blip toast — the tab UI it referred to is gone
+  if (toastTimer) { clearTimeout(toastTimer); toastTimer = null; }
+  const tEl = $('toast'); if (tEl) tEl.classList.remove('show');
+  // promote the kept tab to a plain attach
+  st.active = true;
+  if (!st.ws || st.wsDead || st.ws.readyState >= WebSocket.CLOSING) {
+    // dead socket: reconnect fresh (tmux full-redraws on attach)
+    try { st.dataSub.dispose(); } catch {}
+    try { st.ws.close(); } catch {}
+    term.reset();
+    const fresh = connectTerminal(st.key, st.host, st.name, term, () => { fitTerm(); term.focus(); });
+    fresh.active = true;
+    fresh.ws.onclose = legacyWsClose(fresh, fresh.key);
+    active = fresh;
+  } else {
+    st.ws.onclose = legacyWsClose(st, st.key);
+    active = st;
+  }
+  // repaint the termbar header + badges (mirrors the tail of attach())
+  const s = findSession(st.key);
+  $('placeholder').style.display = 'none';
+  $('t-detach').style.display = '';
+  $('t-name').textContent = s ? `${displayName(s)}  [${s.host}:${s.name}]` : st.key;
+  $('t-cwd').textContent = s ? s.cwd : '';
+  updateLocalBadge(s);
+  needsYou.delete(st.key);
+  renderNeedsYouBadge();
+  if (view === 'town' && townView) { $('termwin').classList.add('attached'); townView.activeKey = st.key; townView.needsRedraw = true; }
+  syncTermButtons();
+  renderChips();
+}
+
 // Termbar buttons that only make sense per view: split view is a List-view
 // feature (the Town floating window is too small for two panes — the ⤢ icon
 // is hidden there), fullscreen only makes sense in Town (List is already
 // full-area). Called from attach/detach/setView so the buttons track the view.
 function syncTermButtons() {
   const inTown = view === 'town' && !!townView;
+  const conn = currentConn();
+  // split view stays exclusive to the non-tab attach: tabs are themselves a
+  // multi-session mode, and split moves the shared xterm into a pane
   $('t-split').style.display = inTown ? 'none' : (active ? '' : 'none');
-  $('t-full').style.display = inTown && active ? '' : 'none';
+  $('t-full').style.display = inTown && conn ? '' : 'none';
+  // The phone shortcuts only work against a live attach — dim them instead of
+  // letting taps silently do nothing (the classic "sometimes it doesn't work").
+  const ready = !!(conn && conn.ws && conn.ws.readyState === WebSocket.OPEN);
+  for (const id of ['btn-esc', 'btn-pgup', 'btn-pgdn', 'btn-keys']) $(id).disabled = !ready;
+  // drives the floating shortcut bar of the Town view on touch devices (CSS)
+  document.body.classList.toggle('attached', !!conn);
+}
+
+// The connection currently driving the terminal window: the non-tab `active`
+// session, or the active tab. Shared by syncTermButtons/otherAttached so the
+// termbar buttons and the "other clients" badge track tab mode too.
+function currentConn() {
+  if (active) return active;
+  return (activeTab >= 0 && activeTab < tabs.length) ? tabs[activeTab] : null;
+}
+// Is this session key the one currently shown in the terminal window? Works in
+// both modes (non-tab `active` and tab selection) — chips/desks use it for the
+// selection highlight, which must follow the SELECTED TAB, not just `active`.
+function isKeyActive(key) {
+  const conn = currentConn();
+  return !!(conn && conn.key === key);
 }
 
 // tmux counts our own web client once its ws is open; subtract it to get the number of
-// OTHER clients attached (shared by the chip tooltip and the "also attached" badge)
+// OTHER clients attached (shared by the chip tooltip and the "also attached" badge).
+// Tab mode keeps background tabs' sockets OPEN, so check every live tab connection
+// (tabs dedupe by key, so at most one of them matches), not just the active one.
 function otherAttached(s) {
-  const selfAttached = active && active.key === keyOf(s.host, s.name) && active.ws.readyState === WebSocket.OPEN;
+  const k = keyOf(s.host, s.name);
+  const live = (c) => c && c.key === k && c.ws && !c.wsDead && c.ws.readyState === WebSocket.OPEN;
+  let selfAttached = live(active);
+  if (!selfAttached) { for (const t of tabs) { if (live(t)) { selfAttached = true; break; } } }
   return s.attached - (selfAttached ? 1 : 0);
 }
 
@@ -280,8 +809,19 @@ function updateLocalBadge(s) {
 }
 
 // ---------- split view ----------
+// Split and tabs are mutually exclusive multi-session modes:
+// - openSplit() closes any open tabs first (defensive — the ⤢ button is hidden
+//   in tab mode since syncTermButtons only shows it for a non-tab `active`)
+// - while a split is open, session clicks always feed the split pane (attach()
+//   routes to attachSplit, replacing the pane's session once it's filled)
 function openSplit() {
   if (splitActive || splitTerm) return; // already split
+  // close any open tabs — their WS would otherwise keep writing to the shared
+  // xterm once it moves into pane 1
+  while (tabs.length > 0) closeTab(tabs.length - 1);
+  // hide tab bar — split already provides multi-session
+  const tabbar = $('tabbar');
+  if (tabbar) tabbar.style.display = 'none';
   const wrap = $('termwrap');
   wrap.classList.add('split');
 
@@ -353,6 +893,9 @@ function closeSplitView() {
   const wrap = $('termwrap');
   wrap.classList.remove('split');
   wrap.style.gridTemplateColumns = '';
+  // show tab bar again (tabs are available when split is closed)
+  const tabbar = $('tabbar');
+  if (tabbar && tabs.length > 0) tabbar.style.display = 'flex';
 
   // move the main terminal back out of its pane
   const pane1 = wrap.querySelector('.split-pane[data-pane="1"]');
@@ -572,10 +1115,24 @@ function displayName(s) {
 
 // host connection state → short label for the chip tooltip
 const stateLabel = (hs) => hs === 'slow' ? 'connected (slow)' : hs === 'offline' ? 'host offline' : 'connected';
-// chip tooltip: host · state · tmux name · cwd (+ other clients, + active)
+// "running 2h 14m" from the session's created epoch (host clock). '' when unknown
+// (created 0 — a tmux without #{session_created}) or when the host clock is behind.
+function runningFor(s) {
+  if (!s.created) return '';
+  let sec = Math.floor(Date.now() / 1000) - s.created;
+  if (sec < 0) sec = 0;
+  if (sec < 60) return 'running ' + sec + 's';
+  const m = Math.floor(sec / 60);
+  if (m < 60) return 'running ' + m + 'm';
+  const h = Math.floor(m / 60);
+  if (h < 24) return 'running ' + h + 'h ' + (m % 60) + 'm';
+  return 'running ' + Math.floor(h / 24) + 'd ' + (h % 24) + 'h';
+}
+// chip tooltip: host · state · tmux name · cwd (+ other clients, + active, + uptime)
 const chipTitle = (s, hostState, others) =>
   `${s.host}: ${stateLabel(hostState)} · tmux: ${s.name} · ${s.cwd}` +
-  (others > 0 ? ` · ${others} other client(s) attached` : '') + (s.activity ? ' · active' : '');
+  (others > 0 ? ` · ${others} other client(s) attached` : '') + (s.activity ? ' · active' : '') +
+  (runningFor(s) ? ' · ' + runningFor(s) : '');
 
 // rename a session (tmux rename-session). If it's the one we're attached to, the WS
 // keeps working (tmux clients follow the session, not its name) — just re-point the
@@ -626,6 +1183,34 @@ $('rn-name').addEventListener('keydown', (e) => { if (e.key === 'Enter') doRenam
 // mid-rebuild. Existing chips are updated by key (host+name); only added/removed
 // sessions and hosts create or remove DOM nodes.
 const FLASH_SVG = '<svg viewBox="0 0 24 24" width="11" height="11" aria-hidden="true"><path d="M11 21h-1l1-7H7.5c-.86 0-.91-.28-.71-.61l.07-.12C8.48 10.94 10.42 7.54 13 3h1l-1 7h3.5c.49 0 .56.33.47.51l-.07.15C12.96 17.55 11 21 11 21z" fill="var(--amber)"/></svg>';
+// Derive the "needs you" set from activity transitions (runs every poll, before the
+// view renders, so List and Space both see a fresh set). We only flag a transition we
+// actually observed (active → settled); a session already idle on first load is
+// "parked", not "awaiting you", so it stays unflagged until it works and settles again.
+function updateNeedsYou() {
+  const seen = new Set();
+  for (const h of hosts) for (const s of h.sessions) {
+    const key = keyOf(h.name, s.name);
+    seen.add(key);
+    if (prevActivity.get(key) === true && !s.activity) needsYou.add(key);
+    if (s.activity) needsYou.delete(key); // resumed → no longer waiting on you
+    prevActivity.set(key, !!s.activity);
+  }
+  for (const k of needsYou) if (!seen.has(k)) needsYou.delete(k);
+  for (const k of prevActivity.keys()) if (!seen.has(k)) prevActivity.delete(k);
+  if (!needsYou.size && filterNeedsYou) filterNeedsYou = false; // nothing left to filter to
+}
+// Header badge: count of awaiting-input sessions; click toggles the list filter.
+function renderNeedsYouBadge() {
+  const el = $('needs-you');
+  const n = needsYou.size;
+  el.textContent = n ? `🔔 ${n}` : '🔔';
+  el.classList.toggle('off', n === 0);
+  el.classList.toggle('on', filterNeedsYou);
+  el.title = n
+    ? `${n} session${n > 1 ? 's' : ''} finished and are awaiting your input — click to ${filterNeedsYou ? 'show all' : 'filter the list'}`
+    : 'No session is awaiting your input';
+}
 function renderChips() {
   const box = $('hosts');
   hostSessionsLookup = new Map(hosts.map((h) => [h.name, h.sessions]));
@@ -640,6 +1225,9 @@ function renderChips() {
     syncChips(g.querySelector('.chips'), h);
   });
   for (const [name, g] of groups) if (!seen.has(name)) g.remove();
+  // "needs you" filter: hide non-needs-you chips (CSS) and their now-empty host groups
+  box.classList.toggle('filtering', filterNeedsYou);
+  for (const g of box.children) g.style.display = filterNeedsYou && !g.querySelector('.chip.needs-you') ? 'none' : '';
 }
 
 function syncGroupHead(g, h, idx) {
@@ -698,10 +1286,13 @@ function syncChips(box, h) {
 }
 
 function syncChip(c, s, hostState) {
-  c.classList.toggle('active', !!(active && active.key === keyOf(s.host, s.name)));
+  const key = keyOf(s.host, s.name);
+  c.classList.toggle('active', isKeyActive(key));
+  c.classList.toggle('needs-you', needsYou.has(key));
   const ind = c.children[0];
-  if (s.activity && ind.className !== 'flash') { ind.className = 'flash'; ind.innerHTML = FLASH_SVG; }
-  else if (!s.activity && ind.className !== 'ind-empty') { ind.className = 'ind-empty'; ind.innerHTML = ''; }
+  if (s.activity) { if (ind.className !== 'flash') { ind.className = 'flash'; ind.innerHTML = FLASH_SVG; } }
+  else if (needsYou.has(key)) { if (ind.className !== 'need') { ind.className = 'need'; ind.innerHTML = ''; } }
+  else { if (ind.className !== 'ind-empty') { ind.className = 'ind-empty'; ind.innerHTML = ''; } }
   const nm = c.children[1];
   const nmText = displayName(s);
   if (nm.textContent !== nmText) nm.textContent = nmText; // skip the DOM write when unchanged
@@ -738,14 +1329,16 @@ function chipEl(s, hostState) {
   const key = keyOf(s.host, s.name);
   const c = document.createElement('div');
   c.dataset.key = key;
-  c.className = 'chip' + (active && active.key === key ? ' active' : '');
+  c.className = 'chip' + (isKeyActive(key) ? ' active' : '') + (needsYou.has(key) ? ' needs-you' : '');
   const others = otherAttached(s);
-  // indicator: ⚡ only while the session is active; idle sessions show nothing
-  // (host connection state is still visible on the host label)
+  // indicator: ⚡ while active, an amber dot when settled-but-awaiting-input ("needs
+  // you"), nothing otherwise (host connection state is still on the host label)
   const ind = document.createElement('span');
   if (s.activity) {
     ind.className = 'flash';
     ind.innerHTML = FLASH_SVG;
+  } else if (needsYou.has(key)) {
+    ind.className = 'need';
   } else {
     ind.className = 'ind-empty';
   }
@@ -771,6 +1364,16 @@ function chipEl(s, hostState) {
 
 // ---------- api polling ----------
 let netFails = 0;
+// first-load status: the page is blank until the first /api/sessions answers, and
+// that first answer can take a while (cold SSH handshakes, dead hosts' ConnectTimeout).
+// Say what's happening instead of showing an empty station with no explanation.
+let firstLoad = true;
+let firstLoadTimer = null;
+function firstLoadStatus(text) {
+  if (text) { setConnBanner(text); return; }
+  firstLoad = false;
+  if (firstLoadTimer) { clearTimeout(firstLoadTimer); firstLoadTimer = null; }
+}
 // poll cadence comes from the server (single source of truth); DEFAULT_POLL_MS is
 // only the fallback for the first poll, before a response has supplied the real value
 const DEFAULT_POLL_MS = 5000;
@@ -793,18 +1396,31 @@ function setNetReadout(n) {
   const el = $('net');
   el.textContent = `↓ ${fmtBytes(n.inBps)}/s · ↑ ${fmtBytes(n.outBps)}/s`;
   el.title = `server bandwidth (5 s average) — since start: ↓ ${fmtBytes(n.inTotal)} · ↑ ${fmtBytes(n.outTotal)}`;
+  // Space view: TownView draws the console right of the Town Hall as canvas
+  // art (same language as the Orbital Sessions manifest) — feed it the payload
+  if (townView) townView.setNetData(n);
+}
+function clearNetReadout() {
+  $('net').textContent = '';
+  if (townView) townView.setNetData(null); // netDisplay: false → no console in Space view
 }
 async function refresh() {
   refreshTimer = null;
   if (refreshing) return; // one already in flight; it reschedules on completion
   refreshing = true;
+  if (firstLoad) {
+    setConnBanner('Loading sessions…');
+    if (!firstLoadTimer) firstLoadTimer = setTimeout(() => {
+      if (firstLoad) setConnBanner('Still loading — contacting hosts (the first poll can take a few seconds)…');
+    }, 3000);
+  }
   try {
     const r = await fetch('/api/sessions');
     const d = await r.json();
     netFails = 0;
     if (Number.isFinite(d.pollMs) && d.pollMs > 0) pollMs = d.pollMs;
     if (typeof d.pi === 'string' && d.pi) defaultCmd = d.pi;
-    if (d.net) setNetReadout(d.net); else $('net').textContent = ''; // netDisplay: false
+    if (d.net) setNetReadout(d.net); else clearNetReadout(); // netDisplay: false
     // While a host's enable/disable toggle is in flight, a stale in-flight poll
     // must not snap it back to its old value (the "off → on → off" flicker).
     const prevHosts = hosts;
@@ -813,12 +1429,24 @@ async function refresh() {
       const local = prevHosts.find((x) => x.name === h.name);
       return local ? { ...h, enabled: local.enabled } : h;
     });
-    if (townView && view === 'town') townView.update(hosts, active && active.key);
+    updateNeedsYou();      // derive "needs you" from activity transitions (both views)
+    renderNeedsYouBadge(); // keep the header badge current
+    // currentConn(): the selected tab must keep its Town highlight across polls
+    // (`active` is null in tab mode and would clear it every refresh)
+    const conn = currentConn();
+    if (townView && view === 'town') townView.update(hosts, conn && conn.key);
     if (view === 'list') renderChips();
     // keep the +New host select current in both views (the Town "+" button
     // relies on it being populated even when the list isn't shown)
     populateHostSelect();
-    setConnBanner(d.configError ? `⚠ config.json unreadable (${d.configError}) — showing last good host list` : null);
+    if (d.polling) {
+      // the server's first (capped) poll is still running: keep the status banner —
+      // the data is a placeholder (possibly empty), the next poll brings the real list
+      setConnBanner('Still loading — contacting hosts (the first poll can take a few seconds)…');
+    } else {
+      firstLoadStatus(null);
+      setConnBanner(d.configError ? `⚠ config.json unreadable (${d.configError}) — showing last good host list` : null);
+    }
     if (active) {
       const s = findSession(active.key);
       if (s) updateLocalBadge(s);
@@ -826,12 +1454,18 @@ async function refresh() {
     }
   } catch {
     netFails++;
-    // one failed poll is normal (a server restart, a Wi-Fi blip) — stay silent so a
-    // quick blip doesn't flash a scary banner over perfectly good data; two in a row
-    // means the server is actually gone
-    setConnBanner(netFails >= 2
-      ? `⚠ server unreachable (${netFails} failed polls) — showing stale data`
-      : null);
+    if (firstLoad) {
+      // no data at all yet — a failed first poll is not a "quick blip", say so now
+      firstLoadStatus(null);
+      setConnBanner('⚠ server unreachable — retrying…');
+    } else {
+      // one failed poll is normal (a server restart, a Wi-Fi blip) — stay silent so a
+      // quick blip doesn't flash a scary banner over perfectly good data; two in a row
+      // means the server is actually gone
+      setConnBanner(netFails >= 2
+        ? `⚠ server unreachable (${netFails} failed polls) — showing stale data`
+        : null);
+    }
   } finally {
     refreshing = false;
   }
@@ -936,6 +1570,19 @@ if (window.TownView) {
   });
   view = localStorage.getItem('pc.view') || (innerWidth < 640 ? 'list' : 'town');
 }
+
+// ---------- crew style (Space view) ----------
+// minions (default) | evil (diabolic purple minions) | astronauts. Browser-only
+// pref read by space-art.js's townCharacter; the sprite cache is keyed by mode,
+// so the change applies live on the next frame.
+function setCrew(mode) {
+  if (mode !== 'minions' && mode !== 'evil' && mode !== 'astronauts') mode = 'minions';
+  window.WhCrew = window.WhCrew || {};
+  window.WhCrew.mode = mode;
+  localStorage.setItem('pc.crew', mode);
+  if (townView) townView.needsRedraw = true; // reduced-motion: force one redraw
+}
+setCrew(localStorage.getItem('pc.crew') || 'minions');
 function setView(v) {
   if (v === 'town' && !townView) v = 'list'; // no art bundle → list only
   // The town floating window carries inline left/top/width/height from
@@ -954,10 +1601,15 @@ function setView(v) {
   view = v;
   localStorage.setItem('pc.view', v);
   document.body.classList.toggle('view-town', v === 'town');
+  // a session attached in List view keeps its floating window when Space view
+  // takes over — attach() only adds the class when the town view is already up,
+  // so without this the window would vanish on the switch (the CSS that shows
+  // it is scoped to body.view-town, so the class is inert in List view)
+  if (v === 'town' && active) $('termwin').classList.add('attached');
   $('view-toggle').textContent = v === 'town' ? 'List' : 'Space';
   if ($('town-view-toggle')) $('town-view-toggle').textContent = v === 'town' ? 'List' : 'Space';
   if (townView) {
-    if (v === 'town') { townView.update(hosts, active && active.key); townView.start(); }
+    if (v === 'town') { const conn = currentConn(); townView.update(hosts, conn && conn.key); townView.start(); }
     else { townView.stop(); renderChips(); populateHostSelect(); }
   } else if (v === 'list') {
     renderChips();
@@ -969,6 +1621,15 @@ function setView(v) {
   setTimeout(fitTerm, 50);
 }
 $('view-toggle').onclick = () => setView(view === 'town' ? 'list' : 'town');
+// "needs you" badge: in List view it toggles the filter; from Space view it turns the
+// filter on and brings you to the list (the filter is a list-view display mode).
+$('needs-you').onclick = () => {
+  if (!needsYou.size) return;
+  if (view === 'town') { filterNeedsYou = true; setView('list'); }
+  else filterNeedsYou = !filterNeedsYou;
+  renderChips();
+  renderNeedsYouBadge();
+};
 setView(view);
 
 // ---------- cwd completion: subdirectories on the chosen host (local or ssh) ----------
@@ -1021,7 +1682,6 @@ $('ns-host').addEventListener('change', scheduleDirs);
 
 // ---------- new session modal ----------
 const modal = $('modal-bg');
-let lastHostsSnap = '';
 function populateHostSelect() {
   // skip the DOM rebuild when the host list (names + reachability + enabled) is unchanged
   const snap = hosts.map((h) => h.name + (h.error ? '!' : '') + (h.enabled === false ? 'x' : '')).join(',');
@@ -1047,10 +1707,10 @@ function hostDefaultCmd(name) {
   const c = h && typeof h.cmd === 'string' && h.cmd.trim() ? h.cmd.trim() : defaultCmd;
   return c;
 }
-$('new-session').onclick = () => { $('ns-err').textContent = ''; $('ns-name').value = ''; $('ns-cwd').value = ''; $('ns-cmd').value = ''; $('ns-cmd').placeholder = hostDefaultCmd($('ns-host').value); hideDirs(); modal.classList.add('open'); $('ns-name').focus(); };
+$('new-session').onclick = () => { $('ns-err').textContent = ''; $('ns-name').value = ''; $('ns-cwd').value = ''; $('ns-cmd').value = ''; $('ns-cmd').placeholder = hostDefaultCmd($('ns-host').value); $('ns-ok').disabled = false; hideDirs(); modal.classList.add('open'); $('ns-name').focus(); };
 $('ns-host').addEventListener('change', () => { $('ns-cmd').placeholder = hostDefaultCmd($('ns-host').value); });
-$('ns-cancel').onclick = () => modal.classList.remove('open');
-modal.addEventListener('click', (e) => { if (e.target === modal) modal.classList.remove('open'); });
+$('ns-cancel').onclick = () => closeNewModal();
+modal.addEventListener('click', (e) => { if (e.target === modal) closeNewModal(); });
 $('ns-ok').onclick = async () => {
   const host = $('ns-host').value;
   const name = $('ns-name').value.trim();
@@ -1059,13 +1719,29 @@ $('ns-ok').onclick = async () => {
   if (!host) { $('ns-err').textContent = 'no reachable host'; return; }
   // mirrors NAME_RE in server.js (and valid_name in pitux) — keep in sync
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) { $('ns-err').textContent = 'name: start with letter/digit, then letters, digits, . _ -'; return; }
+  const ok = $('ns-ok');
+  ok.disabled = true; // guard against double-submit while the POST is in flight
   $('ns-err').textContent = 'creating…';
-  const r = await fetch('/api/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ host, name, cwd, cmd }) });
-  const d = await r.json();
-  if (!r.ok) { $('ns-err').textContent = d.error || 'failed'; return; }
-  modal.classList.remove('open');
+  let r, d;
+  try {
+    r = await fetch('/api/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ host, name, cwd, cmd }) });
+    d = await r.json();
+  } catch (e) {
+    ok.disabled = false;
+    $('ns-err').textContent = 'network error';
+    return;
+  }
+  if (!r.ok) { ok.disabled = false; $('ns-err').textContent = d.error || 'failed'; return; }
+  // Keep the modal open ("starting…") and attach HIDDEN: the terminal window is
+  // revealed only once the command produces visible output (or after a timeout),
+  // so the user never sees an empty window while a slow command (pi-bolt) boots.
+  $('ns-err').textContent = 'starting…';
   await refresh();
-  setTimeout(() => attach(keyOf(host, name)), 400); // let tmux + pi boot a moment
+  // pass host+name explicitly: the list refresh above may still be stale (the
+  // server's background re-poll lags the POST), so attach must not rely on findSession
+  attach(keyOf(host, name), { hidden: true, host, name });
+  // ok stays disabled — the modal is closed on reveal (or the user cancels, which
+  // reveals). It's re-enabled the next time the +New modal is opened.
 };
 
 // ---------- config editor (friendly form) ----------
@@ -1089,7 +1765,7 @@ function renderHostRow(host, idx) {
     '</div></div>' +
     '<div class="cfg-host-row">' +
     '<input class="cfg-h-name" type="text" placeholder="name">' +
-    '<input class="cfg-h-ssh" type="text" placeholder="ssh (user@host)">' +
+    '<input class="cfg-h-ssh" type="text" placeholder="ssh (user@host[:port])">' +
     '<input class="cfg-h-cmd" type="text" placeholder="cmd (default: pi)">' +
     '<label class="cfg-h-enchk"><span>on</span><input class="cfg-h-enabled" type="checkbox"></label>' +
     '</div>';
@@ -1147,6 +1823,8 @@ function fillForm(cfg) {
   $('cfg-pollMs').value = cfg.pollMs != null ? cfg.pollMs : '';
   $('cfg-netDisplay').checked = !!cfg.netDisplay;
   $('cfg-theme').value = getTheme();
+  $('cfg-crew').value = (window.WhCrew && window.WhCrew.mode) || 'astronauts';
+  $('cfg-tabs').checked = tabsEnabled;
   $('cfg-tls').checked = !!cfg.tls;
   toggleTlsPaths();
   $('cfg-cert').value = cfg.cert || '';
@@ -1261,6 +1939,10 @@ $('cfg-save').onclick = async () => {
 // one-time form bindings
 $('cfg-tls').addEventListener('change', toggleTlsPaths);
 $('cfg-theme').addEventListener('change', () => setTheme($('cfg-theme').value));
+// Crew style: browser-only pref — applies immediately, no server round-trip.
+$('cfg-crew').addEventListener('change', () => setCrew($('cfg-crew').value));
+// Session tabs: browser-only pref — applies immediately, no server round-trip.
+$('cfg-tabs').addEventListener('change', () => setTabsEnabled($('cfg-tabs').checked));
 $('cfg-token-toggle').onclick = () => {
   const inp = $('cfg-token');
   const showing = inp.type === 'text';
@@ -1303,8 +1985,10 @@ $('tf-disable').onclick = async () => {
 // ---------- keyboard ----------
 window.addEventListener('keydown', (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'b') { e.preventDefault(); setPanelHidden(!header.classList.contains('hidden')); }
-  // Esc detaches only when the terminal is NOT focused (Esc is a normal key inside TUIs)
-  if (e.key === 'Escape' && active && !term.isActive) detach();
+  // Esc detaches only when the terminal is NOT focused (Esc is a normal key inside TUIs).
+  // Not during a +New boot-reveal: the hidden attach is still waiting for output, and
+  // Esc must not tear it down (the modal's Cancel reveals it instead).
+  if (e.key === 'Escape' && active && !term.isActive && !bootReveal) detach();
 });
 
 // ---------- keyboard focus (both views) ----------
@@ -1359,8 +2043,11 @@ document.addEventListener('keydown', (e) => {
 // the byte in bracketed-paste markers, which vim & co. treat as a literal paste,
 // not an Esc key.
 function sendKeys(keys) {
-  if (active && active.ws.readyState === WebSocket.OPEN)
+  if (active && active.ws.readyState === WebSocket.OPEN) {
     active.ws.send(JSON.stringify({ type: 'send-keys', keys }));
+    return true;
+  }
+  return false; // no live attach (or ws still connecting) — nothing was sent
 }
 $('btn-esc').onclick = () => sendKeys(['Escape']);
 
@@ -1494,7 +2181,7 @@ for (const b of $('keys-page2').querySelectorAll('button[data-key], button[data-
         return;
       }
       const name = comboName(b.dataset.key);
-      sendKeys([name]);
+      if (!sendKeys([name])) return; // not sent → no misleading flash
       b.classList.add('sent');
       setTimeout(() => b.classList.remove('sent'), 150);
     };
@@ -1506,7 +2193,7 @@ for (const b of $('keys-page2').querySelectorAll('button[data-key], button[data-
 keysPanel.addEventListener('contextmenu', (e) => e.preventDefault());
 for (const b of $('keys-grid').querySelectorAll('button'))
   b.onclick = () => {
-    sendKeys([b.dataset.key]);
+    if (!sendKeys([b.dataset.key])) return; // not sent → no misleading flash
     b.classList.add('sent'); // brief flash: the key was sent (the app may still not react)
     setTimeout(() => b.classList.remove('sent'), 150);
   };

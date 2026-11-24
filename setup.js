@@ -120,24 +120,6 @@ function resolveConfigLocation(opts) {
   }
   return { configDir: DEFAULT_CONFIG_DIR, configFile: path.join(DEFAULT_CONFIG_DIR, 'config.json') };
 }
-// A fresh config: generated token, cert/key pinned to ABSOLUTE paths under the
-// config dir (so they survive `npm update` and are removed cleanly on uninstall —
-// server.js otherwise resolves relative cert paths against the *package* dir).
-function buildConfig(configDir, token) {
-  return {
-    port: 8787,
-    host: '0.0.0.0',
-    token,
-    tls: true,
-    cert: path.join(configDir, '.certs', 'cert.pem'),
-    key: path.join(configDir, '.certs', 'key.pem'),
-    cmd: 'pi',
-    pollMs: 5000,
-    netDisplay: true,
-    twoFA: 'optional',
-    hosts: [{ name: 'localhost' }],
-  };
-}
 
 // ---------- systemd ----------
 function systemdAvailable(opts) {
@@ -171,6 +153,13 @@ ${envLine}
 ExecStart=${execStartLine(exe, args)}
 Restart=on-failure
 RestartSec=2
+# Only signal the node process on stop/restart. The default (control-group)
+# would SIGTERM everything in the unit's cgroup — including the tmux server
+# daemon, which is started by the first `tmux attach-session` the service
+# spawns and detaches but stays in this cgroup. That kills ALL tmux sessions
+# on the host every restart. `mixed` is not enough: it still SIGKILLs the
+# rest of the cgroup.
+KillMode=process
 
 # Deliberately NOT set:
 #   PrivateTmp         — the tmux socket lives in /tmp/tmux-$UID/ on the host

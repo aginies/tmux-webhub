@@ -5,6 +5,14 @@
 
   const TT = 16;
 
+  // Crew style preference (browser-only, ⚙ → Crew): 'minions' (default),
+  // 'evil' (diabolic purple minions) or 'astronauts'. app.js updates window.WhCrew
+  // on change; townCharacter reads it per call and keys its cache by it, so the
+  // switch applies live on the next frame.
+  try {
+    window.WhCrew = window.WhCrew || { mode: localStorage.getItem('pc.crew') || 'minions' };
+  } catch { window.WhCrew = window.WhCrew || { mode: 'minions' }; }
+
   // Custom Space Sprites
   function createSpaceSprites() {
     const sp = original.buildTownSprites();
@@ -316,6 +324,96 @@
       ctx.fillRect(7, 4, 1, 1);
     });
 
+    // ---- Minion mischief bubbles (idle antics: fart / burp / giggle / banana,
+    //      plus POW + dizzy for the lounge brawls). Same 13×14 speech-bubble
+    //      shell as the other idle activities; only minions ever show these.
+    sp.bubble.fart = makeBubble((ctx) => {
+      // green gas cloud with stink squiggles
+      ctx.fillStyle = '#84cc16';
+      ctx.fillRect(3, 5, 4, 3);
+      ctx.fillRect(6, 4, 4, 4);
+      ctx.fillRect(4, 4, 2, 1);
+      ctx.fillStyle = '#4d7c0f';
+      ctx.fillRect(4, 2, 1, 2); ctx.fillRect(6, 1, 1, 2); ctx.fillRect(8, 2, 1, 2);
+    });
+    sp.bubble.burp = makeBubble((ctx) => {
+      // rising belch waves
+      ctx.fillStyle = '#65a30d';
+      ctx.fillRect(3, 7, 7, 2);
+      ctx.fillStyle = '#84cc16';
+      ctx.fillRect(4, 5, 5, 1); ctx.fillRect(5, 3, 3, 1); ctx.fillRect(6, 1, 2, 1);
+    });
+    sp.bubble.giggle = makeBubble((ctx) => {
+      // "hee hee" — three ascending laugh dots + a grin
+      ctx.fillStyle = '#f59e0b';
+      ctx.fillRect(3, 6, 1, 1); ctx.fillRect(5, 4, 1, 1); ctx.fillRect(7, 2, 1, 1);
+      ctx.fillStyle = '#1e293b';
+      ctx.fillRect(4, 8, 5, 1); ctx.fillRect(3, 7, 1, 1); ctx.fillRect(9, 7, 1, 1);
+    });
+    sp.bubble.banana = makeBubble((ctx) => {
+      // yellow banana crescent
+      ctx.fillStyle = '#fde047';
+      ctx.fillRect(3, 3, 2, 4);
+      ctx.fillRect(4, 6, 4, 2);
+      ctx.fillRect(8, 5, 2, 2);
+      ctx.fillStyle = '#a16207';
+      ctx.fillRect(3, 2, 1, 1); ctx.fillRect(9, 4, 1, 1);
+    });
+    sp.bubble.pow = makeBubble((ctx) => {
+      // comic impact starburst
+      ctx.fillStyle = '#ef4444';
+      ctx.fillRect(5, 2, 3, 7); ctx.fillRect(3, 4, 7, 3);
+      ctx.fillStyle = '#fde047';
+      ctx.fillRect(5, 4, 3, 3);
+      ctx.fillRect(4, 3, 1, 1); ctx.fillRect(8, 6, 1, 1);
+    });
+    sp.bubble.dizzy = makeBubble((ctx) => {
+      // circling stars (post-brawl)
+      ctx.fillStyle = '#fde047';
+      ctx.fillRect(3, 3, 2, 2); ctx.fillRect(8, 5, 2, 2); ctx.fillRect(5, 7, 2, 2);
+      ctx.fillStyle = '#f59e0b';
+      ctx.fillRect(4, 4, 1, 1); ctx.fillRect(9, 6, 1, 1);
+    });
+    // Crazy-activity bubbles (minions goof off even while working at the desk)
+    sp.bubble.panic = makeBubble((ctx) => {
+      // !! alarm
+      ctx.fillStyle = '#ef4444';
+      ctx.fillRect(4, 2, 2, 5); ctx.fillRect(4, 8, 2, 1);
+      ctx.fillRect(8, 2, 2, 5); ctx.fillRect(8, 8, 2, 1);
+    });
+    sp.bubble.coffee = makeBubble((ctx) => {
+      // steaming coffee cup (caffeine jitter)
+      ctx.fillStyle = '#7c4a12'; ctx.fillRect(4, 5, 5, 4);
+      ctx.fillStyle = '#f1f5f9'; ctx.fillRect(3, 4, 7, 1);
+      ctx.fillStyle = '#9ca3af'; ctx.fillRect(5, 2, 1, 2); ctx.fillRect(7, 1, 1, 2);
+    });
+    sp.bubble.music = makeBubble((ctx) => {
+      // music notes (headbanging / air guitar)
+      ctx.fillStyle = '#38bdf8';
+      ctx.fillRect(4, 3, 1, 5); ctx.fillRect(3, 7, 2, 2);
+      ctx.fillRect(9, 2, 1, 5); ctx.fillRect(8, 6, 2, 2);
+      ctx.fillRect(4, 2, 6, 1);
+    });
+    sp.bubble.sneeze = makeBubble((ctx) => {
+      // spray droplets (achoo!)
+      ctx.fillStyle = '#38bdf8';
+      ctx.fillRect(3, 4, 2, 2); ctx.fillRect(6, 2, 2, 2); ctx.fillRect(9, 4, 2, 2);
+      ctx.fillRect(5, 7, 2, 2); ctx.fillRect(8, 7, 1, 1);
+    });
+    sp.bubble.party = makeBubble((ctx) => {
+      // confetti burst (rocket jump)
+      ctx.fillStyle = '#fde047'; ctx.fillRect(5, 3, 3, 5); ctx.fillRect(4, 4, 5, 3);
+      ctx.fillStyle = '#ef4444'; ctx.fillRect(2, 2, 1, 1); ctx.fillRect(10, 6, 1, 1);
+      ctx.fillStyle = '#38bdf8'; ctx.fillRect(9, 2, 1, 1); ctx.fillRect(3, 7, 1, 1);
+      ctx.fillStyle = '#50fa7b'; ctx.fillRect(6, 1, 1, 1); ctx.fillRect(7, 8, 1, 1);
+    });
+    sp.bubble.bang = makeBubble((ctx) => {
+      // gunshot burst (brawl weapon)
+      ctx.fillStyle = '#f59e0b'; ctx.fillRect(5, 2, 3, 7); ctx.fillRect(3, 4, 7, 3);
+      ctx.fillStyle = '#ef4444'; ctx.fillRect(5, 4, 3, 3);
+      ctx.fillStyle = '#fde047'; ctx.fillRect(2, 2, 1, 1); ctx.fillRect(10, 2, 1, 1); ctx.fillRect(2, 7, 1, 1); ctx.fillRect(10, 7, 1, 1);
+    });
+
     // Millennium Falcon (Star Wars YT-1300 light freighter)
     const createFalcon = () => {
       const c = document.createElement('canvas');
@@ -558,6 +656,11 @@
   // Intercept HerdrTownArt
   window.HerdrTownArt = Object.assign({}, original, {
     buildTownSprites: createSpaceSprites,
+
+    // Bigger crew than the vendor town default (1.4): the astronaut / minion
+    // sprites read too small at fleet-fit zoom. Minions are drawn at 2× internal
+    // resolution and scaled back by charScale in town.js to keep their footprint.
+    TOWN_AGENT_SCALE: 2.0,
 
     // Deep space background with twinkling stars and energy roads
     // Space Background (pure transparent, allowing full-viewport animated cosmic sky & galaxies to shine through without any rectangular boundaries)
@@ -1026,10 +1129,228 @@
     // every call was the largest per-frame CPU cost in the Space view.
     townCharacter: (() => {
       const cache = new Map();
+
+      // ---- Minion crew (alternative to the EVA astronauts) ----
+      // Four types, assigned deterministically per agent from its look hash:
+      //   kevin  — tall, two eyes, sprout hair
+      //   stuart — medium, one eye, flat centre-parted hair
+      //   bob    — short & round, two eyes (green + brown), nearly bald
+      //   otto   — tall & round, two eyes, braces, sparse strands
+      // 'evil' turns any type diabolic: purple skin, wild frizz, buck teeth.
+      // Same 20×24 canvas as the astronaut, feet planted at the bottom edge,
+      // so desk placement, click targets and scales are untouched.
+      const MINIONS = {
+        kevin:  { top: 2, w: 20, eyes: 2, hair: 'sprout' },
+        stuart: { top: 8, w: 20, eyes: 1, hair: 'flat' },
+        bob:    { top: 12, w: 24, eyes: 2, hair: 'bald', hetero: true },
+        otto:   { top: 6, w: 24, eyes: 2, hair: 'strands', braces: true },
+      };
+      const MINION_NAMES = Object.keys(MINIONS);
+      const minionFor = (look) => {
+        const s = `${look && look.skin}|${look && look.hair}|${look && look.shirt}|${look && look.style}|${look && look.tone}`;
+        let h = 2166136261;
+        for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
+        return MINION_NAMES[(h >>> 0) % MINION_NAMES.length];
+      };
+      const crewMode = () => (window.WhCrew && window.WhCrew.mode) || 'astronauts';
+
+      const renderMinion = (ctx, look, dir, frame, pose, eyesClosed, evil) => {
+        const type = MINIONS[minionFor(look)];
+        const isRepair = !!(look && look.isRepair);
+        const isSit = pose === 'sit';
+        const legFrame = frame % 4;
+        const cx = 20;
+        const w = type.w, x0 = cx - w / 2;
+        const top = type.top, domeR = w / 2, domeCy = top + domeR;
+        const bodyBot = 38;                       // overalls end / legs start
+        const eyeY = domeCy;                      // goggles on the dome centre
+        const mouthY = eyeY + 6;
+        const ovTop = Math.min(bodyBot - 4, mouthY + 6);
+        const skin = evil ? '#a855f7' : '#fdd835';
+        const skinHi = evil ? '#c084fc' : '#fde68a';
+        const skinShade = evil ? '#7e22ce' : '#eab308';
+        const denim = isRepair ? '#0284c7' : evil ? '#312e81' : '#3b5ba5';
+        const denimHi = isRepair ? '#38bdf8' : evil ? '#4338ca' : '#5b7cc9';
+        const denimDark = isRepair ? '#0369a1' : evil ? '#1e1b4b' : '#2c4a8a';
+        const hairC = evil ? '#581c87' : '#3a2a1a';
+        const hairHi = evil ? '#7c3aed' : '#5a4632';
+        const glove = '#111827';
+        const outline = evil ? '#2a0a4a' : '#1f2430';
+        const brass = '#f59e0b';
+
+        // crisp pixel disc (integer rows) — smooth at this logical resolution
+        const disc = (gx, gy, r, color) => {
+          ctx.fillStyle = color;
+          for (let dy = -r; dy <= r; dy++) {
+            const hw = Math.floor(Math.sqrt(r * r - dy * dy) + 0.5);
+            if (hw > 0) ctx.fillRect(gx - hw, gy + dy, hw * 2, 1);
+          }
+        };
+
+        // 0. Bold cartoon outline (silhouette two px proud of the body)
+        disc(cx, domeCy, domeR + 2, outline);
+        ctx.fillStyle = outline;
+        ctx.fillRect(x0 - 2, domeCy, w + 4, bodyBot - domeCy + 2);
+
+        // 1. Capsule body + soft shading
+        disc(cx, domeCy, domeR, skin);
+        ctx.fillStyle = skin;
+        ctx.fillRect(x0, domeCy, w, bodyBot - domeCy);
+        ctx.fillStyle = skinShade;
+        ctx.fillRect(x0 + w - 2, domeCy, 2, bodyBot - domeCy);
+        ctx.fillStyle = skinHi;
+        ctx.fillRect(x0, domeCy, 2, bodyBot - domeCy);
+        ctx.fillRect(x0 + 2, domeCy + 2, 1, bodyBot - domeCy - 4); // soft inner highlight
+
+        // 2. Hair (individual strands with a highlight)
+        ctx.fillStyle = hairC;
+        if (evil) {
+          for (let i = -4; i <= 4; i++) {
+            const hh = 3 + (Math.abs(i) % 2) * 2;
+            ctx.fillRect(cx + i * 2, top - hh + 2, 1, hh);
+          }
+          ctx.fillRect(x0 - 2, domeCy - 4, 1, 6);
+          ctx.fillRect(x0 + w + 1, domeCy - 4, 1, 6);
+        } else if (type.hair === 'sprout') {
+          for (const [ox, hh] of [[-4, 4], [-2, 6], [0, 7], [2, 6], [4, 4]])
+            ctx.fillRect(cx + ox, top - hh + 2, 1, hh);
+          ctx.fillStyle = hairHi; ctx.fillRect(cx, top - 4, 1, 2);
+        } else if (type.hair === 'flat') {
+          ctx.fillRect(cx - 6, top, 6, 2); ctx.fillRect(cx + 1, top, 6, 2);
+          ctx.fillRect(cx - 7, top + 2, 2, 4); ctx.fillRect(cx + 6, top + 2, 2, 4);
+          ctx.fillStyle = hairHi; ctx.fillRect(cx - 5, top, 4, 1); ctx.fillRect(cx + 2, top, 4, 1);
+        } else if (type.hair === 'bald') {
+          ctx.fillRect(cx - 2, top - 2, 1, 3); ctx.fillRect(cx + 1, top - 1, 1, 2); ctx.fillRect(cx + 4, top - 2, 1, 2);
+        } else { // strands
+          for (const [ox, hh] of [[-5, 3], [-2, 5], [1, 6], [4, 4]])
+            ctx.fillRect(cx + ox, top - hh + 2, 1, hh);
+          ctx.fillStyle = hairHi; ctx.fillRect(cx + 1, top - 3, 1, 2);
+        }
+
+        // 3. Denim overalls: waist, bib, straps, stitching, pocket, brass buttons, Gru logo
+        ctx.fillStyle = denim;
+        ctx.fillRect(x0, ovTop, w, bodyBot - ovTop);
+        ctx.fillRect(cx - 6, ovTop - 4, 12, 4);
+        ctx.fillStyle = denimDark;
+        ctx.fillRect(x0, ovTop - 6, 4, 6); ctx.fillRect(x0 + w - 4, ovTop - 6, 4, 6); // straps
+        ctx.fillRect(x0, ovTop, w, 2);                       // waist seam
+        ctx.fillStyle = denimHi;                             // stitch dashes
+        for (let sx = x0 + 1; sx < x0 + w - 1; sx += 3) { ctx.fillRect(sx, ovTop + 3, 2, 1); ctx.fillRect(sx, bodyBot - 3, 2, 1); }
+        ctx.fillRect(x0 + 1, ovTop + 5, 1, bodyBot - ovTop - 8); ctx.fillRect(x0 + w - 2, ovTop + 5, 1, bodyBot - ovTop - 8);
+        ctx.fillStyle = brass;                               // strap buttons
+        ctx.fillRect(x0 + 1, ovTop - 5, 2, 2); ctx.fillRect(x0 + w - 3, ovTop - 5, 2, 2);
+        if (dir !== 'up') {
+          ctx.fillStyle = denimDark; ctx.fillRect(cx - 4, ovTop - 4, 8, 4);   // bib pocket
+          ctx.fillStyle = brass; ctx.fillRect(cx - 1, ovTop - 3, 2, 1);       // pocket button
+          disc(cx, ovTop + 6, 3, '#0f172a');                                  // Gru logo
+          ctx.fillStyle = '#e2e8f0'; ctx.fillRect(cx - 1, ovTop + 5, 3, 1); ctx.fillRect(cx - 1, ovTop + 5, 1, 3); ctx.fillRect(cx - 1, ovTop + 7, 2, 1);
+        }
+
+        // 4. Goggle strap + eyes (back view: strap only)
+        ctx.fillStyle = '#374151';
+        ctx.fillRect(x0, eyeY - 2, w, 4);
+        ctx.fillStyle = '#9ca3af'; ctx.fillRect(x0 + w - 3, eyeY - 1, 2, 2);  // strap buckle
+        const irisFor = (side) => evil ? '#b91c1c' : (type.hetero && side < 0) ? '#3f8f4f' : '#7a4a21';
+        const goggle = (gx, r, side) => {
+          disc(gx, eyeY, r, '#4b5563');            // dark metal rim
+          disc(gx, eyeY, r - 1, '#9ca3af');        // bright metal ring
+          ctx.fillStyle = '#e5e7eb'; ctx.fillRect(gx - r + 2, eyeY - r + 2, 3, 1); // rim glint
+          ctx.fillStyle = '#374151';               // rim screws
+          ctx.fillRect(gx - 1, eyeY - r + 1, 2, 1); ctx.fillRect(gx - 1, eyeY + r - 2, 2, 1);
+          ctx.fillRect(gx - r + 1, eyeY - 1, 1, 2); ctx.fillRect(gx + r - 2, eyeY - 1, 1, 2);
+          if (eyesClosed) {
+            disc(gx, eyeY, r - 2, skin);           // eyelid
+            ctx.fillStyle = evil ? '#3b0764' : '#7c4a12';
+            ctx.fillRect(gx - r + 2, eyeY, (r - 2) * 2, 2); // lash line
+            return;
+          }
+          disc(gx, eyeY, r - 2, '#f9fafb');        // eyeball
+          ctx.fillStyle = '#e0f2fe'; ctx.fillRect(gx - r + 3, eyeY - r + 3, 2, 2); // glass glint
+          const lx = dir === 'right' ? 2 : dir === 'left' ? -2 : 0;
+          const ir = r >= 8 ? 6 : 4;               // iris scales with the goggle (one eyeball)
+          ctx.fillStyle = irisFor(side);
+          ctx.fillRect(gx - ir / 2 + lx, eyeY - ir / 2, ir, ir);
+          ctx.fillStyle = '#1f2937';               // pupil (one per eye)
+          ctx.fillRect(gx - 1 + lx, eyeY - 1, 2, 2);
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(gx - 1 + lx, eyeY - 1, 1, 1);
+        };
+        if (dir !== 'up') {
+          if (dir === 'down') {
+            if (type.eyes === 1) goggle(cx, 8, 0);
+            else { goggle(cx - 6, 6, -1); goggle(cx + 6, 6, 1); }
+          } else {
+            const sgn = dir === 'right' ? 1 : -1;
+            goggle(cx + sgn * (type.eyes === 1 ? 2 : 4), type.eyes === 1 ? 8 : 6, sgn);
+          }
+          ctx.fillStyle = evil ? 'rgba(126,34,206,0.5)' : 'rgba(244,114,182,0.45)'; // rosy cheeks
+          if (type.eyes === 1) ctx.fillRect(cx - 4, eyeY + 6, 8, 2);
+          else { ctx.fillRect(cx - 9, eyeY + 5, 3, 2); ctx.fillRect(cx + 6, eyeY + 5, 3, 2); }
+        }
+
+        // 5. Mouth: smile with teeth (otto: braces), evil: buck-toothed maw
+        if (dir !== 'up') {
+          const mx = dir === 'down' ? cx : cx + (dir === 'right' ? 4 : -4);
+          if (evil) {
+            ctx.fillStyle = '#3b0764'; ctx.fillRect(mx - 6, mouthY - 2, 12, 5);
+            ctx.fillStyle = '#f1f5f9';
+            ctx.fillRect(mx - 4, mouthY - 2, 2, 3); ctx.fillRect(mx - 1, mouthY - 2, 2, 3); ctx.fillRect(mx + 2, mouthY - 2, 2, 3);
+            ctx.fillRect(mx - 6, mouthY + 1, 2, 2); ctx.fillRect(mx + 4, mouthY + 1, 2, 2);
+          } else if (type.braces) {
+            ctx.fillStyle = '#f1f5f9'; ctx.fillRect(mx - 4, mouthY, 8, 2);
+            ctx.fillStyle = '#9ca3af'; ctx.fillRect(mx - 4, mouthY + 1, 8, 1);
+            ctx.fillRect(mx - 2, mouthY, 1, 2); ctx.fillRect(mx + 1, mouthY, 1, 2);
+            ctx.fillStyle = '#7c4a12'; ctx.fillRect(mx - 5, mouthY - 1, 1, 2); ctx.fillRect(mx + 4, mouthY - 1, 1, 2);
+          } else {
+            ctx.fillStyle = '#7c4a12'; ctx.fillRect(mx - 4, mouthY, 8, 2);
+            ctx.fillRect(mx - 5, mouthY - 1, 1, 2); ctx.fillRect(mx + 4, mouthY - 1, 1, 2);
+            ctx.fillStyle = '#f1f5f9'; ctx.fillRect(mx - 2, mouthY, 2, 1); ctx.fillRect(mx + 1, mouthY, 2, 1); // teeth
+          }
+        }
+
+        // 6. Legs & shoes (walk cycle; soles + a lace dot)
+        const legShift = isSit ? 0 : (legFrame === 1 ? 2 : legFrame === 3 ? -2 : 0);
+        ctx.fillStyle = denimDark;
+        if (isSit) {
+          ctx.fillRect(cx - 8, 38, 16, 4);
+          ctx.fillStyle = glove; ctx.fillRect(cx - 10, 42, 8, 6); ctx.fillRect(cx + 2, 42, 8, 6);
+          ctx.fillStyle = '#475569'; ctx.fillRect(cx - 10, 46, 8, 1); ctx.fillRect(cx + 2, 46, 8, 1);
+        } else {
+          ctx.fillRect(cx - 8, 38, 6, 4 + legShift); ctx.fillRect(cx + 2, 38, 6, 4 - legShift);
+          ctx.fillStyle = glove; ctx.fillRect(cx - 10, 42 + legShift, 8, 6); ctx.fillRect(cx + 2, 42 - legShift, 8, 6);
+          ctx.fillStyle = '#475569'; ctx.fillRect(cx - 10, 46 + legShift, 8, 1); ctx.fillRect(cx + 2, 46 - legShift, 8, 1);
+          ctx.fillStyle = '#e5e7eb'; ctx.fillRect(cx - 7, 43 + legShift, 2, 1); ctx.fillRect(cx + 5, 43 - legShift, 2, 1);
+        }
+
+        // 7. Arms & gloves with finger lines (evil: longer arms; sit = typing)
+        const shoulderY = ovTop - 6;
+        const armLen = evil ? 12 : 8;
+        ctx.fillStyle = skin;
+        const fingers = (fx, fy) => { ctx.fillStyle = '#0f172a'; ctx.fillRect(fx + 1, fy + 1, 1, 2); ctx.fillRect(fx + 2, fy + 1, 1, 2); };
+        if (isSit) {
+          const ty = frame % 2 ? 2 : 0;
+          ctx.fillStyle = skin; ctx.fillRect(x0 - 4, shoulderY, 4, armLen); ctx.fillRect(x0 + w, shoulderY, 4, armLen);
+          ctx.fillStyle = glove; ctx.fillRect(x0 - 4, shoulderY + armLen - ty, 4, 4); ctx.fillRect(x0 + w, shoulderY + armLen - (2 - ty), 4, 4);
+          fingers(x0 - 4, shoulderY + armLen - ty); fingers(x0 + w, shoulderY + armLen - (2 - ty));
+        } else {
+          const swing = legFrame === 1 ? 2 : legFrame === 3 ? -2 : 0;
+          ctx.fillStyle = skin; ctx.fillRect(x0 - 4, shoulderY, 4, armLen + swing); ctx.fillRect(x0 + w, shoulderY, 4, armLen - swing);
+          ctx.fillStyle = glove; ctx.fillRect(x0 - 4, shoulderY + armLen + swing, 4, 4); ctx.fillRect(x0 + w, shoulderY + armLen - swing, 4, 4);
+          fingers(x0 - 4, shoulderY + armLen + swing); fingers(x0 + w, shoulderY + armLen - swing);
+        }
+
+        // 8. EVA repair crew beacon antenna
+        if (isRepair) { ctx.fillStyle = '#00e5ff'; ctx.fillRect(cx + domeR - 4, top - 4, 2, 6); }
+      };
+
       const render = (look, dir, frame, pose, eyesClosed) => {
+      // Astronauts + guards rasterise at 8× (160×192) for crisper edges at zoom;
+      // town.js charScale() normalises every crew canvas to the same on-screen
+      // footprint, so resolution is independent of desk / hit-box geometry.
       const canvas = document.createElement('canvas');
-      canvas.width = 20; canvas.height = 24;
+      canvas.width = 160; canvas.height = 192;
       const ctx = canvas.getContext('2d');
+      ctx.scale(8, 8);
 
       const isSit = pose === 'sit';
       const legFrame = frame % 4;
@@ -1088,7 +1409,7 @@
         ctx.fillStyle = '#1e293b';
         ctx.fillRect(3.5, 4, 13, 2);
 
-        // Sentry Tactical Visor: Glowing narrow slit HUD optic (colour cycles per poll)
+        // Sentry Tactical Visor: Glowing narrow slit HUD optic (blinks per poll, rests gold)
         ctx.fillStyle = (look && look.visor) || '#00e5ff';
         ctx.fillRect(6.5, 5.5, 7, 1.5);
         ctx.fillStyle = '#ffffff';
@@ -1142,6 +1463,21 @@
         ctx.fillRect(11, 23, 5, 1);
 
         return canvas;
+      }
+
+      // Minion crew mode: replaces the EVA astronauts (guards stay imperial).
+      // Drawn on a fine 40×48 logical grid at 16× (640×768) — the sweet spot:
+      // 1:1 pixel-perfect at the deep zoom limit (Z_MAX 8) on a 2× HiDPI screen
+      // (640 device px), ~356 MB for a large fleet. town.js charScale() scales
+      // it to the desk footprint; sprite2x skips sources this large.
+      const mode = crewMode();
+      if (mode === 'minions' || mode === 'evil') {
+        const mc = document.createElement('canvas');
+        mc.width = 640; mc.height = 768;
+        const mctx = mc.getContext('2d');
+        mctx.scale(16, 16);
+        renderMinion(mctx, look, dir, frame, pose, eyesClosed, mode === 'evil');
+        return mc;
       }
 
       // Suit color theme: light blue combination for EVA repair crew, crisp white for standard crew
@@ -1315,8 +1651,11 @@
       return canvas;
       };
       return (look, dir, frame, pose, eyesClosed) => {
-        // same key shape as the original cached impl (R0(look)|dir|frame|pose|eyes)
-        const key = `${look && (look.isGuard || look.isImperial || look.empire) ? 'guard' : ''}${look && look.isRepair ? 'rep' : ''}${look && look.skin}${look && look.hair}${look && look.shirt}${look && look.pants}${look && look.style}${look && (look.outfit ?? "")}${look && (look.accessory ?? "")}${look && look.visor ? '~' + look.visor : ''}|${dir}|${frame}|${pose}|${eyesClosed ? 1 : 0}`;
+        // same key shape as the original cached impl (R0(look)|dir|frame|pose|eyes),
+        // prefixed with the crew mode + minion type when minions are on duty
+        const mode = crewMode();
+        const minionKey = (mode === 'minions' || mode === 'evil') ? mode + ':' + minionFor(look) + '|' : '';
+        const key = minionKey + `${look && (look.isGuard || look.isImperial || look.empire) ? 'guard' : ''}${look && look.isRepair ? 'rep' : ''}${look && look.skin}${look && look.hair}${look && look.shirt}${look && look.pants}${look && look.style}${look && (look.outfit ?? "")}${look && (look.accessory ?? "")}${look && look.visor ? '~' + look.visor : ''}|${dir}|${frame}|${pose}|${eyesClosed ? 1 : 0}`;
         let c = cache.get(key);
         if (!c) { c = render(look, dir, frame, pose, eyesClosed); cache.set(key, c); }
         return c;

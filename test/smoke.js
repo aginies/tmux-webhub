@@ -97,6 +97,19 @@ test('GET /api/sessions with cookie → 200 + hosts array', async () => {
   assert.equal(r.status, 200);
   const d = await r.json();
   assert.ok(Array.isArray(d.hosts));
+  assert.equal(d.polling, false); // no hosts configured → first poll resolves instantly
+});
+
+test('GET /api/sessions with Authorization: Bearer → 200 (2FA off)', async () => {
+  const r = await fetch(base + '/api/sessions', { headers: { Authorization: 'Bearer ' + token } });
+  assert.equal(r.status, 200);
+  const d = await r.json();
+  assert.ok(Array.isArray(d.hosts));
+});
+
+test('GET /api/sessions with a wrong Bearer token → 401', async () => {
+  const r = await fetch(base + '/api/sessions', { headers: { Authorization: 'Bearer nope' } });
+  assert.equal(r.status, 401);
 });
 
 test('GET /api/net-interfaces without cookie → 401', async () => {
@@ -112,18 +125,40 @@ test('GET /api/net-interfaces with cookie → 200 + addresses array', async () =
   assert.ok(d.addresses.length >= 1, 'proposes at least one address');
 });
 
+test('GET /api/debug without cookie → 401', async () => {
+  const r = await fetch(base + '/api/debug');
+  assert.equal(r.status, 401);
+});
+
+test('GET /api/debug with cookie → 200 + version/logLevel/hosts', async () => {
+  const r = await fetch(base + '/api/debug', { headers: { Cookie: cookie } });
+  assert.equal(r.status, 200);
+  const d = await r.json();
+  assert.equal(d.version, require(path.join(ROOT, 'package.json')).version);
+  assert.equal(d.logLevel, 'info'); // no logLevel in the test config → default
+  assert.equal(d.logFile, null);   // no logFile in the test config → off
+  assert.ok(Number.isFinite(d.uptimeS) && d.uptimeS >= 0);
+  assert.ok(Number.isInteger(d.wsClients));
+  assert.ok(Array.isArray(d.hosts));
+});
+
 test('GET /api/sessions: net stats present, totals monotonic', async () => {
   const g1 = await fetch(base + '/api/sessions', { headers: { Cookie: cookie } });
   const d1 = await g1.json();
   assert.ok(d1.net && typeof d1.net === 'object', 'net object present');
   assert.ok(Number.isFinite(d1.net.inBps) && Number.isFinite(d1.net.outBps), 'rates numeric');
   assert.ok(d1.net.inTotal > 0 && d1.net.outTotal > 0, 'bytes counted');
+  // per-second history for the Space-view sparkline: arrays, ≤ 60 samples, numeric
+  assert.ok(Array.isArray(d1.net.histIn) && Array.isArray(d1.net.histOut), 'histIn/histOut arrays present');
+  assert.ok(d1.net.histIn.length <= 60 && d1.net.histOut.length <= 60, 'history capped at 60 s');
+  for (const v of [...d1.net.histIn, ...d1.net.histOut]) assert.ok(Number.isFinite(v) && v >= 0, 'history samples numeric');
   // let the 1 s ring timer tick (a crash in it would kill the server)
   await new Promise((res) => setTimeout(res, 1100));
   const g2 = await fetch(base + '/api/sessions', { headers: { Cookie: cookie } });
   const d2 = await g2.json();
   assert.ok(d2.net.inTotal >= d1.net.inTotal, 'inTotal non-decreasing');
   assert.ok(d2.net.outTotal >= d1.net.outTotal, 'outTotal non-decreasing');
+  assert.ok(d2.net.histIn.length >= d1.net.histIn.length, 'history grows per second');
 });
 
 test('config: pollMs + netDisplay=false (restart-scoped)', async () => {
@@ -164,6 +199,17 @@ test('GET / with cookie → index.html', async () => {
   const r = await fetch(base + '/', { headers: { Cookie: cookie } });
   assert.equal(r.status, 200);
   assert.match(await r.text(), /tmux-webhub/);
+});
+
+test('static cache: our space-art revalidates, vendored libs immutable', async () => {
+  // space-art.js is actively edited → must NOT be immutable-cached, or browsers
+  // keep a stale copy for a year and never see art fixes (minion eye count!)
+  const art = await fetch(base + '/vendor/space-art.js', { headers: { Cookie: cookie } });
+  assert.equal(art.status, 200);
+  assert.match(art.headers.get('cache-control'), /no-cache/);
+  const lib = await fetch(base + '/vendor/town-art.js', { headers: { Cookie: cookie } });
+  assert.equal(lib.status, 200);
+  assert.match(lib.headers.get('cache-control'), /immutable/);
 });
 
 test('GET /api/config with cookie → 200 + raw file', async () => {
@@ -377,6 +423,20 @@ async function waitForCwd(name, timeoutMs = 3000) {
     catch { if (Date.now() - t0 > timeoutMs) return null; await new Promise((r) => setTimeout(r, 100)); }
   }
 }
+// POST /api/sessions with retry. When a previous test's kill-session was the LAST one,
+// the tmux server exits — and a new-session issued immediately after can connect to
+// the dying server and fail with "server exited unexpectedly" (observed ~1 in 15
+// kill→new round-trips on tmux 3.8). A short wait + retry is what a human user gets
+// for free; without it this test is flaky by construction.
+async function postSession(host, name, cwd, tries = 5) {
+  for (let i = 0; ; i++) {
+    const r = await fetch(base + '/api/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie }, body: JSON.stringify({ host, name, cwd }) });
+    if (r.status === 200 || i >= tries - 1) return r;
+    const body = await r.json().catch(() => ({}));
+    if (!/server exited unexpectedly/.test(body.error || '')) return r;
+    await new Promise((res) => setTimeout(res, 150));
+  }
+}
 
 // pure shell check (the [ -d ] guard fails before tmux is invoked) → runs without tmux
 test('POST /api/sessions: nonexistent absolute dir → 400 "not a directory"', async () => {
@@ -396,7 +456,7 @@ test('POST /api/sessions: ~/x resolves to an absolute path', { skip: !hasTmux },
   fs.mkdirSync(homeSub);
   const name = 'pc-tilde-s-' + Date.now();
   try {
-    const r = await fetch(base + '/api/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie }, body: JSON.stringify({ host: 'testhost', name, cwd: '~/' + sub }) });
+    const r = await postSession('testhost', name, '~/' + sub);
     assert.equal(r.status, 200, JSON.stringify(await r.clone().json()));
     assert.equal(await waitForCwd(name), homeSub);
   } finally {
@@ -408,7 +468,7 @@ test('POST /api/sessions: ~/x resolves to an absolute path', { skip: !hasTmux },
 test('POST /api/sessions: empty cwd → home', { skip: !hasTmux }, async () => {
   const name = 'pc-home-' + Date.now();
   try {
-    const r = await fetch(base + '/api/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie }, body: JSON.stringify({ host: 'testhost', name, cwd: '' }) });
+    const r = await postSession('testhost', name, '');
     assert.equal(r.status, 200, JSON.stringify(await r.clone().json()));
     assert.equal(await waitForCwd(name), os.homedir());
   } finally {
@@ -435,6 +495,20 @@ test('POST/PUT/DELETE /api/hosts: add, update, remove a host', async () => {
   r = await fetch(base + '/api/hosts', { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie }, body: JSON.stringify({ name: 'pc-badssh-' + Date.now(), ssh: 'user@host; rm -rf /' }) });
   assert.equal(r.status, 400);
 
+  // ssh with a port → accepted; out-of-range ports → 400 (sshSplit would otherwise
+  // fall back to treating "host:70000" as a hostname and fail later as a DNS error)
+  const portHost = 'pc-port-' + Date.now();
+  r = await fetch(base + '/api/hosts', { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie }, body: JSON.stringify({ name: portHost, ssh: 'user@host:2222' }) });
+  assert.equal(r.status, 200, JSON.stringify(await r.clone().json()));
+  cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+  assert.equal(cfg.hosts.find((h) => h.name === portHost).ssh, 'user@host:2222', 'port kept verbatim in config.json');
+  for (const bad of ['user@host:70000', 'user@host:0', 'user@host:abc']) {
+    r = await fetch(base + '/api/hosts', { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie }, body: JSON.stringify({ name: 'pc-badport-' + Math.random().toString(36).slice(2), ssh: bad }) });
+    assert.equal(r.status, 400, `ssh "${bad}" rejected`);
+  }
+  r = await fetch(base + '/api/hosts/' + portHost, { method: 'DELETE', headers: { Cookie: cookie } });
+  assert.equal(r.status, 200);
+
   // update: change the cmd
   r = await fetch(base + '/api/hosts/' + name, { method: 'PUT', headers: { 'Content-Type': 'application/json', Cookie: cookie }, body: JSON.stringify({ cmd: 'htop' }) });
   assert.equal(r.status, 200, JSON.stringify(await r.clone().json()));
@@ -460,7 +534,7 @@ test('POST/PUT/DELETE /api/hosts: add, update, remove a host', async () => {
 // above, so the pane outlives the checks). Skipped when tmux is absent.
 test('REST session endpoints: get, send-keys, resize, kill', { skip: !hasTmux }, async () => {
   const name = 'pc-restsess-' + Date.now();
-  let r = await fetch(base + '/api/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie }, body: JSON.stringify({ host: 'testhost', name, cwd: '~' }) });
+  let r = await postSession('testhost', name, '~');
   assert.equal(r.status, 200, JSON.stringify(await r.clone().json()));
   // a plain GET forces a poll of the (just-invalidated) host so the cache is fresh
   const prime = async () => { await fetch(base + '/api/sessions', { headers: { Cookie: cookie } }); };
@@ -545,7 +619,7 @@ test('pi pane: activity from last session entry', { skip: !hasTmux }, async () =
     fs.chmodSync(fakePi, 0o755);
     const actCsrf = await (await fetch(base + '/api/config', { headers: { Cookie: cookie } })).json().then((d) => d.csrf);
     await fetch(base + '/api/config', { method: 'PUT', headers: { 'Content-Type': 'application/json', Cookie: cookie }, body: JSON.stringify({ port: 0, host: '127.0.0.1', token, tls: false, hosts: [{ name: 'pihost', cmd: fakePi }], csrf: actCsrf }) });
-    const r = await fetch(base + '/api/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie }, body: JSON.stringify({ host: 'pihost', name, cwd: dir }) });
+    const r = await postSession('pihost', name, dir);
     assert.equal(r.status, 200, JSON.stringify(await r.clone().json()));
     // poll until the flag matches (the poller refreshes every POLL_MS while a client is present)
     async function expectActivity(want, timeoutMs = 15000) {
@@ -659,6 +733,15 @@ test('2FA: required forces enrollment, then token+code is mandatory', async () =
     // 6. raw token no longer accepted anywhere once enrolled
     r = await fetch(b2 + '/api/sessions', { headers: { Cookie: 'pc_token=' + encodeURIComponent(tok) } });
     assert.equal(r.status, 401, 'raw-token cookie rejected once enrolled');
+    // Bearer is the raw token too: it MUST be gated the same way, otherwise it is a
+    // 2FA bypass (a token leaked from ?token= logs or a copied config.json would grant
+    // the whole API + a terminal with no code)
+    r = await fetch(b2 + '/api/sessions', { headers: { Authorization: 'Bearer ' + tok } });
+    assert.equal(r.status, 401, 'Bearer token rejected once 2FA is enrolled');
+    r = await fetch(b2 + '/api/config', { headers: { Authorization: 'Bearer ' + tok } });
+    assert.equal(r.status, 401, 'Bearer token rejected on the config route too');
+    r = await fetch(b2 + '/api/debug', { headers: { Authorization: 'Bearer ' + tok } });
+    assert.equal(r.status, 401, 'Bearer token rejected on /api/debug too');
     r = await post('/login', { token: tok });
     // token is valid but no code yet → server asks for the 6-digit code (advances, no session)
     assert.equal(r.status, 200, 'token-only login once enrolled');
@@ -666,6 +749,12 @@ test('2FA: required forces enrollment, then token+code is mandatory', async () =
     assert.ok(!r.headers.get('set-cookie'), 'no session cookie until the code is verified');
     await new Promise((resolve, reject) => {
       const ws = new WebSocket(b2.replace('http', 'ws') + '/ws?host=x&session=y&token=' + tok);
+      ws.on('close', (code) => (code === 4401 ? resolve() : reject(new Error('close code ' + code))));
+      ws.on('error', reject);
+    });
+    // the WS upgrade reads the same authed(): a Bearer header there must be rejected too
+    await new Promise((resolve, reject) => {
+      const ws = new WebSocket(b2.replace('http', 'ws') + '/ws?host=x&session=y', { headers: { Authorization: 'Bearer ' + tok } });
       ws.on('close', (code) => (code === 4401 ? resolve() : reject(new Error('close code ' + code))));
       ws.on('error', reject);
     });
@@ -705,6 +794,9 @@ test('2FA: required forces enrollment, then token+code is mandatory', async () =
     assert.equal(JSON.parse(fs.readFileSync(cfg, 'utf8')).totp, undefined, 'secret removed');
     r = await post('/login', { token: tok });
     assert.equal(r.status, 200, 'token-only login works again after disable');
+    // 2FA off again → the raw token (Bearer) is usable by non-browser clients
+    r = await fetch(b2 + '/api/sessions', { headers: { Authorization: 'Bearer ' + tok } });
+    assert.equal(r.status, 200, 'Bearer works again once 2FA is disabled');
   } finally {
     ch.kill('SIGTERM');
     fs.rmSync(dir, { recursive: true, force: true });

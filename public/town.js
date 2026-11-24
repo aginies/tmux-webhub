@@ -23,13 +23,46 @@
   if (!TA) return; // no art bundle → list view only
   const TT = TA.TOWN_TILE;
   const AS = TA.TOWN_AGENT_SCALE;
+  // Crew sprites rasterise at 4× internal resolution (80×96) for crispness;
+  // charScale normalises every canvas to the same on-screen footprint
+  // (20×24 logical × AS) so desks, depth and the rename hit box are independent
+  // of the sprite's pixel density.
+  const charScale = (c) => AS * 20 / c.width;
   const DESK_COLORS = Object.keys(TA.TOWN_DESK_COLORS);
   const REDUCED = matchMedia('(prefers-reduced-motion: reduce)').matches;
-  const Z_MIN = 0.35, Z_MAX = 4;
-  const GUARD_VISOR_COLORS = ['#00e5ff', '#ef4444', '#f59e0b', '#a78bfa', '#34d399', '#f472b6']; // cycled per poll
+  const Z_MIN = 0.35, Z_MAX = 8;
+  // Memory budget per baked static layer, in source pixels. On HiDPI screens the
+  // ground/base layers bake at 2x; past this budget they fall back to 1x
+  // (16 Mpx ≈ 64 MB per layer at 4 bytes/px; a 4-host town at 2x is ~13 Mpx).
+  const MAX_BAKE_PX = 16e6;
+  const GUARD_VISOR_GOLD = '#f59e0b'; // resting visor colour
+  const GUARD_VISOR_BLINK = '#00e5ff'; // flash colour while acknowledging a poll
+  const GUARD_BLINK_STEP = 0.18; // s per half-blink → 3 blinks over ~1.08 s
 
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
   const hash = (s) => { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return Math.abs(h); };
+  // Minion crew on duty? (⚙ → Crew). Read live so a mid-scene switch applies.
+  const minionMode = () => { const m = window.WhCrew && window.WhCrew.mode; return m === 'minions' || m === 'evil'; };
+  const evilMode = () => (window.WhCrew && window.WhCrew.mode) === 'evil';
+  // Idle minion mischief: solo antics fire on a slow per-agent schedule, and
+  // pairs occasionally square off for a cartoon brawl (see idlePlan/drawFighter).
+  const ANTICS = ['fart', 'burp', 'giggle', 'banana', 'dance', 'sneeze', 'spin', 'panic'];
+  const WORK_ANTICS = ['panic', 'coffee', 'headbang', 'sneeze', 'spin', 'rocket'];
+  const WEAPONS = ['gun', 'banana', 'sword', 'plunger', 'fish', 'bat'];  // crazy brawl weapons
+  const ANTIC_DUR = 2.6;      // s an antic lasts
+  const FIGHT_WINDOW = 16;    // s bucket a brawl assignment lives in
+  // byte formatting for the network console (the header readout has its own copy in app.js)
+  const fmtB = (b) => b >= 1048576 ? (b / 1048576).toFixed(1) + ' MB' : b >= 1024 ? (b / 1024).toFixed(1) + ' KB' : Math.round(b) + ' B';
+  const fmtBps = (b) => fmtB(b) + '/s';
+
+  // buildTownSprites() is pure and layout-independent (a fixed set of pixel art), so
+  // bake it once instead of re-rasterizing every sprite on each town rebuild — a
+  // session create/kill or host up/down used to regenerate the whole set for no reason.
+  let _townSprites = null;
+  function townSprites() {
+    if (!_townSprites) _townSprites = TA.buildTownSprites();
+    return _townSprites;
+  }
 
   class TownView {
     constructor(canvas, api) {
@@ -38,6 +71,7 @@
       this.api = api; // { attach(key) }
       this.tip = document.getElementById('town-tip');
       this.on = false;
+      this.netData = null; // Space-view network panel data (app.js feeds it from the poll)
       this.dpr = 1;
       this.town = null;
       this.specSig = null;
@@ -63,10 +97,16 @@
       };
       // Imperial Station Security Guard: the obsidian (black) stormtrooper look
       // is drawn by the space-art.js `townCharacter` override when isGuard/isImperial is set.
-      this.guardLook = { isGuard: true, isImperial: true, visor: '#00e5ff' };
-      this.guardVisorIdx = 0;
+      this.guardLook = { isGuard: true, isImperial: true, visor: GUARD_VISOR_GOLD };
+      this.guardBlinkUntil = 0; // timestamp (s) up to which the visors blink after a poll
       this.guards = []; // { x, y, hostKey } — one guard per office entrance
-      this.guardWave = 0; // timestamp (s) guards keep waving hello (set on each poll)
+      // Hosts hidden from the map by the ORBITAL SESSIONS eye toggle (visual
+      // only — polling, sessions and the manifest are untouched). Persisted.
+      this.hiddenHosts = new Set();
+      try {
+        const saved = JSON.parse(localStorage.getItem('pc.hiddenHosts') || '[]');
+        if (Array.isArray(saved)) for (const n of saved) if (typeof n === 'string') this.hiddenHosts.add(n);
+      } catch {}
       this.nav = new Map();  // hostKey -> TA.TownNavigation (A* through the building)
       this.previewCache = new Map(); // name -> { raw, canvas } offscreen cached tactical cards
       this.layoutCols = 0; // host buildings per row (0 = vendor auto; 2 in portrait)
@@ -179,10 +219,11 @@
         const rad = g.radius;
         const size = Math.ceil(rad * 2 + 16);
         const c = document.createElement('canvas');
-        c.width = size; c.height = size;
+        c.width = size * 2; c.height = size * 2; // 2x bake for HiDPI crispness
         const ctx = c.getContext('2d');
         const cx = size / 2, cy = size / 2;
 
+        ctx.scale(2, 2);
         ctx.translate(cx, cy);
 
         // Outer diffuse galactic haze
@@ -247,6 +288,7 @@
 
         g.canvas = c;
         g.offset = size / 2;
+        g.size = size;
       }
 
       // Pre-baked pod glow sprites (drawPod): a createRadialGradient + 'lighter' fill per
@@ -270,8 +312,9 @@
       // Pre-baked holographic projection light beam (drawPreview)
       const bakeBeam = (active) => {
         const c = document.createElement('canvas');
-        c.width = 104; c.height = 6;
+        c.width = 208; c.height = 12; // 2x bake (drawn at 104×6)
         const bc = c.getContext('2d');
+        bc.scale(2, 2);
         const cx = 52;
         const beam = bc.createLinearGradient(cx, 0, cx, 6);
         beam.addColorStop(0, active ? 'rgba(0, 229, 255, 0.55)' : 'rgba(0, 180, 255, 0.35)');
@@ -293,8 +336,9 @@
       // Pre-baked settings gear badges (drawCenterBadge)
       const bakeCenterBadge = (hover) => {
         const c = document.createElement('canvas');
-        c.width = 26; c.height = 26;
+        c.width = 52; c.height = 52; // 2x bake (drawn at 26×26)
         const bc = c.getContext('2d');
+        bc.scale(2, 2);
         const cx = 13, cy = 13, R = 8;
         bc.beginPath();
         bc.arc(cx, cy, R + 3, 0, Math.PI * 2);
@@ -390,6 +434,16 @@
       this.setHover(null, null);
     }
 
+    // Space-view "network traffic" console: app.js passes the poll's net payload
+    // (rates, totals, per-second history) and the render loop draws the panel
+    // as canvas art right of the Town Hall — the same visual language as the
+    // Orbital Sessions manifest, so it keeps the town's aspect at any zoom.
+    // Pass null to hide it (netDisplay: false).
+    setNetData(n) {
+      this.netData = n || null;
+      this.needsRedraw = true;
+    }
+
     resize() {
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
       const w = this.cv.clientWidth, h = this.cv.clientHeight;
@@ -415,11 +469,17 @@
       this.nebulaCanvas = nc;
 
       // A portrait↔landscape flip changes how many offices fit per row; re-lay
-      // the town out so every host keeps showing on screen.
+      // the town out so every host keeps showing on screen. Moving to a monitor
+      // with a different devicePixelRatio changes the HiDPI bake scale — re-bake
+      // the static layers too, but leave the camera alone.
       const cols = this.layoutColumns();
-      if (cols !== this.layoutCols && this.town && this.hosts && this.hosts.length) {
-        this.buildTown(this.hosts);
-        this.initialCamera();
+      if (this.town && this.hosts && this.hosts.length) {
+        const relayout = cols !== this.layoutCols;
+        const rebake = this.bakeSFor(this.town.Wp, this.town.Hp) !== this.town.S;
+        if (relayout || rebake) {
+          this.buildTown(this.hosts);
+          if (relayout) this.initialCamera();
+        }
       }
 
       this.needsRedraw = true;
@@ -430,10 +490,8 @@
     update(hosts, activeKey) {
       this.activeKey = activeKey;
       // A poll (SSH sync of each host's tmux sessions) just happened → the
-      // guards raise a hand in greeting and cycle their visor colour.
-      this.guardWave = performance.now() / 1000 + 1.4;
-      this.guardLook.visor = GUARD_VISOR_COLORS[this.guardVisorIdx % GUARD_VISOR_COLORS.length];
-      this.guardVisorIdx++;
+      // guards acknowledge it: visor blinks 3 times, then settles back to gold.
+      this.guardBlinkUntil = performance.now() / 1000 + GUARD_BLINK_STEP * 6;
       const sessions = new Map();
       const sigHosts = [], sigRooms = [];
       for (const h of hosts) {
@@ -445,6 +503,11 @@
         }
       }
       this.sessions = sessions;
+      // Prune the offscreen preview cards of sessions that no longer exist — each
+      // entry is a supersampled canvas (up to ~1.5 MB at high zoom/HiDPI) keyed by
+      // host:name, and nothing else ever removes it, so the cache would grow without
+      // bound as sessions come and go over the page's lifetime.
+      for (const k of [...this.previewCache.keys()]) if (!sessions.has(k)) this.previewCache.delete(k);
       this.hosts = hosts;
       const hostSig = JSON.stringify(sigHosts);
       const sig = JSON.stringify([sigHosts, sigRooms]);
@@ -470,6 +533,25 @@
     hostOff(name) {
       const h = (this.hosts || []).find((x) => x.name === name);
       return !h || h.enabled === false || h.state === 'offline' || !!h.error;
+    }
+
+    isHostHidden(name) {
+      return this.hiddenHosts.has(name);
+    }
+
+    // The eye + slide switch of an ORBITAL SESSIONS row: show/hide that host's
+    // office on the map. Visual only — polling and sessions keep running, the
+    // row stays in the manifest (dimmed) so it can be brought back.
+    toggleHostVisible(name) {
+      if (this.hiddenHosts.has(name)) this.hiddenHosts.delete(name);
+      else this.hiddenHosts.add(name);
+      try { localStorage.setItem('pc.hiddenHosts', JSON.stringify([...this.hiddenHosts])); } catch {}
+      if (this.hosts && this.hosts.length) {
+        this.buildTown(this.hosts);
+        this.updateStorageShipLayout();
+        this.initialCamera();
+      }
+      this.needsRedraw = true;
     }
 
     // How many host offices per row. One office per ~280px of viewport width,
@@ -503,28 +585,33 @@
       }
     }
 
-    // A stationary station-security guard. On each poll it gives a brief
-    // "hello" wave (one arm raised), otherwise it stands at attention.
+    // A stationary station-security guard. It stands at attention; on each
+    // poll its visor blinks 3 times (gold ↔ cyan), then returns to gold.
     drawGuard(g, t) {
       const { ctx } = this;
       const off = this.hostOff(g.hostKey);
-      const waving = !off && t < this.guardWave;
-      const frame = waving ? Math.floor(t * 3) % 2 : 0; // gentle up/down arm wave
-      const c = TA.townCharacter(this.guardLook, 'down', frame, 'stand', false);
-      const gs = 1.6; // taller guard (matches the previous seated scale)
+      const blinking = !off && t < this.guardBlinkUntil;
+      const phase = blinking ? Math.floor((this.guardBlinkUntil - t) / GUARD_BLINK_STEP) % 2 : 0;
+      this.guardLook.visor = phase ? GUARD_VISOR_BLINK : GUARD_VISOR_GOLD;
+      const c = TA.townCharacter(this.guardLook, 'down', 0, 'stand', false);
+      const gs = charScale(c) * 1.05; // a head above the crew, resolution-independent
       const w = c.width * gs, h = c.height * gs;
       ctx.fillStyle = 'rgba(0,0,0,.22)';
       ctx.fillRect(Math.round(g.x) - 5, Math.round(g.y) - 1, 10, 3);
-      ctx.drawImage(this.char2x(c), Math.round(g.x) - w / 2, Math.round(g.y) - h + 1, w, h);
+      ctx.drawImage(this.sprite2x(c), Math.round(g.x) - w / 2, Math.round(g.y) - h + 1, w, h);
     }
 
     /* ---------- building the static scene ---------- */
 
     buildTown(hosts) {
       if (!hosts.length) { this.town = null; return; }
+      // Hosts hidden by the ORBITAL SESSIONS eye toggle stay out of the map
+      // layout; the others reflow (an all-hidden town is just the citadel +
+      // the storage ship, and the manifest remains the way back).
+      const visible = this.hiddenHosts.size ? hosts.filter((h) => !this.hiddenHosts.has(h.name)) : hosts;
       const input = {
-        hosts: hosts.map((h, i) => ({ key: h.name, displayOrder: i })),
-        rooms: hosts.map((h, i) => ({
+        hosts: visible.map((h, i) => ({ key: h.name, displayOrder: i })),
+        rooms: visible.map((h, i) => ({
           key: 'main', hostKey: h.name, order: i,
           deskKeys: (h.sessions || []).map((s) => s.name),
           deskSeats: (h.sessions || []).map(() => 1),
@@ -536,32 +623,49 @@
         : 'wide';
       this.layoutCols = cols;
       const { layout } = TA.layoutTown(input, formFactor);
-      const sp = TA.buildTownSprites();
+      const sp = townSprites();
       const M = 32; // margin around the layout (the film uses spec.margin * TT)
       const Wp = layout.width * TT + 2 * M, Hp = layout.height * TT + 2 * M;
+      // HiDPI: bake the static layers at 2x so the per-frame blit maps ~1:1 onto
+      // device pixels instead of bilinear-upscaling a 1x bake. 1x displays (and
+      // towns past the memory budget) keep the old 1x bakes — zero extra cost.
+      const S = this.bakeSFor(Wp, Hp);
+      this.bakeS = S;
 
       // Two baked layers so the EVA repair astronauts pass *behind* the offices
       // (occluded by the modules) while staying visible over the street:
       //   ground — grass/roads + town center + transit guideline
       //   base   — office interiors, furniture, guard and facades
       const ground = document.createElement('canvas');
-      ground.width = Wp; ground.height = Hp;
+      ground.width = Wp * S; ground.height = Hp * S;
       const gg = ground.getContext('2d');
       gg.imageSmoothingEnabled = false;
+      gg.scale(S, S);
       gg.drawImage(TA.paintTownGround(layout, { x: -M, y: -M, w: Wp, h: Hp }), 0, 0);
       gg.translate(M, M);
 
       // landscape + town center, depth-sorted by feet y
       const items = [];
       const center = layout.center;
-      items.push([(center.y + center.h) * TT, () => gg.drawImage(TA.paintTownCenter(center.w), center.x * TT, center.y * TT)]);
+      items.push([(center.y + center.h) * TT, () => this.bakeCitadel(gg, center)]);
       items.sort((a, b) => a[0] - b[0]).forEach((i) => i[1]());
 
-      // Subtle segmented glowing cyan transit guideline on the road (at same level as shuttle centerline)
+      // Segmented glowing cyan transit guideline on the shuttle's road (at the
+      // shuttle centerline): soft glow underlay + dashed neon core. Everything
+      // is baked into the ground layer, so the richer look is free per frame.
       const busRoute = TA.townBusRoute(layout);
       const busStop = busRoute && busRoute.stops[0];
       const roadY = busStop ? (busStop.wait.y - 27) : ((layout.roads[0] + 1) * TT + 29);
-      gg.strokeStyle = 'rgba(0, 229, 255, 0.35)';
+      gg.lineCap = 'round';
+      for (const [gw, ga] of [[9, 'rgba(0, 229, 255, 0.05)'], [5, 'rgba(0, 229, 255, 0.10)']]) {
+        gg.strokeStyle = ga;
+        gg.lineWidth = gw;
+        gg.beginPath();
+        gg.moveTo(-M, roadY);
+        gg.lineTo(Wp, roadY);
+        gg.stroke();
+      }
+      gg.strokeStyle = 'rgba(0, 229, 255, 0.45)';
       gg.lineWidth = 1.5;
       gg.setLineDash([16, 12]);
       gg.beginPath();
@@ -569,13 +673,15 @@
       gg.lineTo(Wp, roadY);
       gg.stroke();
       gg.setLineDash([]);
+      gg.lineCap = 'butt';
 
       // The offices layer is transparent elsewhere: the EVA repair crew is
       // drawn between it and the ground so buildings occlude the astronauts.
       const base = document.createElement('canvas');
-      base.width = Wp; base.height = Hp;
+      base.width = Wp * S; base.height = Hp * S;
       const g = base.getContext('2d');
       g.imageSmoothingEnabled = false;
+      g.scale(S, S);
       g.translate(M, M);
 
       // buildings: interior (floors, walls, desks' furniture), lounge, facade;
@@ -590,11 +696,12 @@
         }), b.x * TT, b.y * TT);
         b.plants.forEach((p) => g.drawImage(sp.plant, p.x * TT, (p.y + 1) * TT - 24));
         const L = b.lounge;
+        const LR = (L.x + L.w) * TT;   // lounge right edge — clamp furniture inside narrow hulls
         g.drawImage(sp.sofa, (L.x + 1) * TT - 1, (L.y + 1) * TT - 8);
         g.drawImage(sp.sofa, (L.x + 1) * TT - 1, (L.y + 3) * TT - 8); // second sofa, one below the other
-        g.drawImage(sp.coffee, (L.x + 4) * TT + 1, (L.y + 1) * TT - 10);
-        g.drawImage(sp.cooler, (L.x + 5) * TT + 2, (L.y + 1) * TT - 12);
-        if (sp.pingpong) g.drawImage(sp.pingpong, (L.x + 7) * TT, (L.y + 1) * TT - 8);
+        g.drawImage(sp.coffee, Math.min((L.x + 5) * TT + 1, LR - sp.coffee.width), (L.y + 1) * TT - 10);
+        g.drawImage(sp.cooler, Math.min((L.x + 10) * TT + 2, LR - sp.cooler.width), (L.y + 1) * TT - 12);
+        if (sp.pingpong) g.drawImage(sp.pingpong, Math.min((L.x + 16) * TT, LR - sp.pingpong.width), (L.y + 4) * TT - 8);
         const cx = b.doorX * TT, cy = (b.counter.y + 1) * TT - 8;
         // The imperial guard patrols the office entrance, left ↔ right.
         this.guards.push({ x: cx, y: cy + 9, hostKey: b.hostKey });
@@ -602,7 +709,8 @@
         b.plus = { x: cx + 44, y: cy - 3, s: 18 };
         g.drawImage(TA.paintTownFacade(b, theme), b.x * TT, (b.y + b.h) * TT);
         this.bakeHostSigns(b);
-        roofs.push({ host: b.hostKey, c: TA.paintTownRoof(b, theme, this.hostOff(b.hostKey)), x: b.x * TT - 4, y: b.y * TT - 12, b });
+        const rc = TA.paintTownRoof(b, theme, this.hostOff(b.hostKey));
+        roofs.push({ host: b.hostKey, c: this.pixelScale(rc, S), lw: rc.width, lh: rc.height, x: b.x * TT - 4, y: b.y * TT - 12, b });
         b.rooms.forEach((r) => r.cells.forEach((cell) => {
           if (cell.deskKey) cells.set(b.hostKey + ':' + cell.deskKey, { cell, b, name: cell.deskKey });
         }));
@@ -613,9 +721,16 @@
       const shipX = center.x * TT - shipW - 40;
       const shipY = center.y * TT + 10;
       const storageShip = { x: shipX, y: shipY, w: shipW, h: shipH, items: [], hostItems: [] };
-      this.bakeStorageShipHull(storageShip);
+      this.bakeShipHull(storageShip);
 
-      this.town = { layout, ground, base, M, sp, cells, roofs, Wp, Hp, storageShip };
+      // Network traffic console to the right of the Town Hall — same freighter
+      // hull as the Orbital Sessions ship, mirrored placement: its right flank
+      // clears the hall's outer wall by 40 px (the ship clears it the same way)
+      const netW = 420, netH = 170;
+      const netPanel = { x: (center.x + center.w) * TT + 40, y: center.y * TT + 10, w: netW, h: netH };
+      this.bakeShipHull(netPanel);
+
+      this.town = { layout, ground, base, M, S, sp, cells, roofs, Wp, Hp, storageShip, netPanel };
       this.nav.clear(); // navigation grids are bound to the building objects
       this.reanchorNaps();
       this.setupBus();
@@ -639,7 +754,6 @@
       this.bus = {
         route, stop,
         roadY: stop.wait.y - 18, // on the street (above the sidewalk stop)
-        cycleMs: 22000, // between arrivals
         haltMs: 3500,   // how long it halts at the stop
         speed: 300,     // px / s
         riders: [],     // worker names aboard (shown in the passenger window)
@@ -660,7 +774,10 @@
       const driveIn = (stopX - roadLeft) / b.speed * 1000;
       const driveOut = (roadRight - stopX) / b.speed * 1000;
       const enterMs = 0, arriveMs = driveIn, departMs = arriveMs + b.haltMs, exitMs = departMs + driveOut;
-      const cycleMs = exitMs + 4000; // a gap between runs
+      // A long quiet gap between runs: the bus is a passing visitor, not traffic.
+      // ~15 s idle after it clears, so a full arrival-to-arrival cycle is ~22 s
+      // (was a 4 s gap → ~11 s, which made it feel like constant traffic).
+      const cycleMs = exitMs + 15000;
       const phase = (t * 1000) % cycleMs;
       if (phase < enterMs || phase >= exitMs) return null;
       const eo = (u) => u < .5 ? 2 * u * u : 1 - Math.pow(-2 * u + 2, 2) / 2;
@@ -830,7 +947,7 @@
       const drawWorker = (a, weldPoint) => {
         const wf = Math.floor(t * 8) % 4;
         const c = TA.townCharacter(a.look, a.dir, wf, 'stand', false);
-        const w = c.width * AS, h = c.height * AS;
+        const w = c.width * charScale(c), h = c.height * charScale(c);
         const ax = Math.round(a.x), ay = Math.round(a.y);
 
         // Zero-g thruster puffs when floating
@@ -840,7 +957,7 @@
           ctx.fillRect(ax + puffOff, ay - h / 2, 3, 3);
         }
 
-        ctx.drawImage(c, ax - w / 2, ay - h + 1, w, h);
+        ctx.drawImage(this.sprite2x(c), ax - w / 2, ay - h + 1, w, h);
 
         // Exterior laser welding & spark effects on hull
         if (weldPoint) {
@@ -931,47 +1048,103 @@
       return from ? [from, spot] : [at.feet, at.entry, spot];
     }
 
-    // the water / nutrient synthesizer spots in the lounge
-    coolerSpots(b) {
+    // Idle spots are spread along a single roomy row at the bottom of the
+    // lounge (the furniture lines the top wall). 40px gaps keep the larger
+    // crew from standing on top of each other; overflow agents stay at their
+    // desks instead (see idlePlan), so the room never gets crowded.
+    // clamp an x onto the lounge floor — narrow ships (few sessions) have a
+    // small lounge, so the fixed tile offsets below would otherwise spill the
+    // furniture / spots outside the hull.
+    loungeX(b, x) {
       const L = b.lounge;
+      return Math.max(L.x * TT + 8, Math.min((L.x + L.w) * TT - 8, x));
+    }
+
+    // the water / nutrient synthesizer spots (below the cooler)
+    coolerSpots(b) {
+      const L = b.lounge, ry = (L.y + 4) * TT + 6;
       return [
-        { x: (L.x + 5) * TT + 2, y: (L.y + 1) * TT + 4, dir: 'up' },
-        { x: (L.x + 5) * TT + 18, y: (L.y + 1) * TT + 4, dir: 'left' },
-        { x: (L.x + 5) * TT - 14, y: (L.y + 1) * TT + 4, dir: 'right' },
+        { x: this.loungeX(b, (L.x + 10) * TT), y: ry, dir: 'up' },
+        { x: this.loungeX(b, (L.x + 10) * TT + 40), y: ry, dir: 'up' },
       ];
     }
 
-    // eating spots around the existing lounge table (fits inside lounge without extra width)
+    // eating spots below the coffee/snack table
     foodSpots(b) {
-      const L = b.lounge;
+      const L = b.lounge, ry = (L.y + 4) * TT + 6;
       return [
-        { x: (L.x + 4) * TT - 6, y: (L.y + 1) * TT + 4, dir: 'right' },
-        { x: (L.x + 4) * TT + 18, y: (L.y + 1) * TT + 4, dir: 'left' },
+        { x: this.loungeX(b, (L.x + 5) * TT), y: ry, dir: 'up' },
+        { x: this.loungeX(b, (L.x + 5) * TT + 40), y: ry, dir: 'up' },
       ];
     }
 
     sofaSpots(b) {
-      // two nappers per sofa — one sofa above, the second below
+      // one napper per sofa, centred — two sofas, one above the other
       const L = b.lounge;
       const sx = (L.x + 1) * TT - 1;
       const sy1 = (L.y + 1) * TT - 8;
       const sy2 = (L.y + 3) * TT - 8;
       return [
-        { x: sx + 14, y: sy1 + 9, side: -1 },
-        { x: sx + 34, y: sy1 + 9, side: 1 },
-        { x: sx + 14, y: sy2 + 9, side: -1 },
-        { x: sx + 34, y: sy2 + 9, side: 1 },
+        { x: sx + 24, y: sy1 + 9, side: -1 },
+        { x: sx + 24, y: sy2 + 9, side: 1 },
       ];
     }
 
-    // two idle workers square off at a ping-pong table in the lounge
+    // two idle workers square off at the ping-pong table (bottom-right of the
+    // lounge, below the bar); also the minion brawl arena
     pingpongSpots(b) {
-      const L = b.lounge;
-      const px = (L.x + 7) * TT, py = (L.y + 1) * TT + 4;
+      const L = b.lounge, ry = (L.y + 4) * TT + 6;
+      const hi = (L.x + L.w) * TT - 8;
+      let x2 = (L.x + 15) * TT + 40, x1 = x2 - 40;
+      if (x2 > hi) { x2 = hi; x1 = hi - 40; }   // keep the pair (and brawl) inside narrow ships
       return [
-        { x: px - 8, y: py, dir: 'right' },
-        { x: px + 8, y: py, dir: 'left' },
+        { x: x1, y: ry, dir: 'right' },
+        { x: x2, y: ry, dir: 'left' },
       ];
+    }
+
+    // two minions brawl INSIDE the office, on the lounge floor (the ping-pong
+    // arena — a known walkable spot where two agents already face off). Reusing
+    // it keeps the brawl indoors and pathable; idlePlan reserves the table so
+    // no one plays ping-pong on top of the fight.
+    fightSpots(b) {
+      return this.pingpongSpots(b);
+    }
+
+    // Solo idle antic for a minion at time t, or null. Deterministic per agent
+    // (hash of its key) so it is stable across frames and polls: each minion
+    // goofily does something every ~40–70 s for ANTIC_DUR seconds. Pure overlay —
+    // it never touches the nap state machine.
+    mischiefAt(key, t) {
+      if (!minionMode() || REDUCED) return null;
+      const h = hash(key);
+      const period = 14 + (h % 9);             // 14–22 s base cycle
+      const stagger = (h % 1000) / 1000 * period;
+      const u = t + stagger;
+      const cycle = Math.floor(u / period);
+      if ((h + cycle) % 3 !== 0) return null;  // only ~1 cycle in 3 → an antic every ~40–70 s
+      const p = (u - cycle * period) / ANTIC_DUR;
+      if (p < 0 || p >= 1) return null;
+      // kind via a hash decorrelated from the %3 gate (otherwise the gate's
+      // multiples-of-3 would only ever hit a subset of the antic list)
+      return { kind: ANTICS[hash(key + ':' + cycle) % ANTICS.length], p };
+    }
+
+    // Crazy antic for a minion that is WORKING at its desk — they can't sit
+    // still: panic, caffeine jitter, headbang, sneeze, spin, rocket jump. Own
+    // schedule (a touch rarer than idle) so it reads as occasional goofing, not
+    // a seizure. Pure draw-time overlay; the session keeps working underneath.
+    workAntic(key, t) {
+      if (!minionMode() || REDUCED) return null;
+      const h = hash(key + 'w');
+      const period = 18 + (h % 10);            // 18–27 s base cycle
+      const stagger = (h % 1000) / 1000 * period;
+      const u = t + stagger;
+      const cycle = Math.floor(u / period);
+      if ((h + cycle) % 3 !== 0) return null;  // ~1 cycle in 3 → every ~54–80 s
+      const p = (u - cycle * period) / ANTIC_DUR;
+      if (p < 0 || p >= 1) return null;
+      return { kind: WORK_ANTICS[hash(key + ':' + cycle) % WORK_ANTICS.length], p };
     }
 
     // deterministic idle activity for an agent (by name): sleep on sofa, drink water, or eat food
@@ -1003,8 +1176,27 @@
           if (s && !s.activity) idle.push(key);
         }
         idle.sort();
+        // Minion mode: occasionally (≈1 window in 4) pair two idle minions for a
+        // cartoon brawl on the street outside. Stable within a FIGHT_WINDOW bucket
+        // so they walk over, fight, then wander back when the window rolls over.
+        const fighting = new Set();
+        if (minionMode() && !REDUCED && idle.length >= 2) {
+          const bucket = Math.floor(performance.now() / 1000 / FIGHT_WINDOW);
+          if (hash(b.hostKey + ':' + bucket) % 4 === 0) {
+            const fs = this.fightSpots(b);
+            const i = hash(b.hostKey + 'a' + bucket) % idle.length;
+            let j = hash(b.hostKey + 'b' + bucket) % idle.length;
+            if (j === i) j = (j + 1) % idle.length;
+            const ka = idle[i], kb = idle[j];
+            const weapon = WEAPONS[hash(ka + kb + bucket) % WEAPONS.length];
+            plan.set(ka, { activity: 'fight', spot: fs[0], b, fight: { partner: kb, lead: true, weapon } });
+            plan.set(kb, { activity: 'fight', spot: fs[1], b, fight: { partner: ka, lead: false, weapon } });
+            fighting.add(ka); fighting.add(kb);
+          }
+        }
         let sofaI = 0, pingI = 0, drinkI = 0, eatI = 0;
         for (const key of idle) {
+          if (fighting.has(key)) continue; // already paired off for a brawl
           const name = key.slice(b.hostKey.length + 1);
           const want = this.activityFor(name); // 'nap' | 'drink' | 'eat'
           let activity, spot;
@@ -1012,9 +1204,12 @@
           else if (want === 'drink' && drinkI < drinks.length) { activity = 'drink'; spot = { ...drinks[drinkI++] }; }
           else if (want === 'eat' && eatI < foods.length) { activity = 'eat'; spot = { ...foods[eatI++] }; }
           else if (sofaI < sofa.length) { activity = 'nap'; spot = { ...sofa[sofaI++] }; }
-          else if (pingI < ping.length) { activity = 'pingpong'; spot = { ...ping[pingI++] }; }
+          else if (pingI < ping.length && !fighting.size) { activity = 'pingpong'; spot = { ...ping[pingI++] }; }
           else if (drinkI < drinks.length) { activity = 'drink'; spot = { ...drinks[drinkI++] }; }
-          else { activity = 'eat'; spot = { ...foods[eatI++ % foods.length] }; }
+          else if (eatI < foods.length) { activity = 'eat'; spot = { ...foods[eatI++] }; }
+          // lounge full: leave this minion unassigned so it stays idle at its
+          // own desk rather than piling onto an occupied spot
+          if (!spot) continue;
           plan.set(key, { activity, spot, b });
         }
       }
@@ -1047,12 +1242,36 @@
       return TA.townLookFor(name || 'you');
     }
 
-    // The astronauts are painted at 12×18 (plus a 1px outline). Render each
-    // unique sprite once at 2× (crisp nearest upscale) so the per-frame
-    // bilinear draw has more source pixels to work with — sharper, not blurry.
-    char2x(c) {
-      if (!this._char2x) this._char2x = new Map();
-      let big = this._char2x.get(c);
+    // HiDPI bake scale for the static layers: 2 on dpr>1 screens while the bake
+    // stays inside the per-layer memory budget, else 1 (identical to before).
+    bakeSFor(Wp, Hp) {
+      return (window.devicePixelRatio || 1) > 1 && Wp * Hp * 4 <= MAX_BAKE_PX ? 2 : 1;
+    }
+
+    // Nearest-neighbour pixel-duplicate a baked 1x canvas to S (S=1 → as-is), so
+    // vendor pixel art maps 1:1 onto HiDPI device pixels instead of blurring.
+    pixelScale(c, S) {
+      if (S <= 1) return c;
+      const big = document.createElement('canvas');
+      big.width = c.width * S;
+      big.height = c.height * S;
+      const bctx = big.getContext('2d');
+      bctx.imageSmoothingEnabled = false;
+      bctx.drawImage(c, 0, 0, big.width, big.height);
+      return big;
+    }
+
+    // The vendor pixel art (astronauts 12×18, desks, monitors, bubbles, ships)
+    // is baked at 1x. Render each unique sprite once at 2x (crisp nearest
+    // upscale, cached by canvas identity — townCharacter/townScreen/the sprite
+    // set are memoized, so the cache is bounded) so every per-frame bilinear
+    // draw under a HiDPI transform has real source pixels — sharper, not blurry.
+    sprite2x(c) {
+      // Already-hi-res sources (e.g. 32× minions at 1280px) don't need doubling —
+      // skip to avoid a wasteful memory blow-up; they're crisp as-is.
+      if (c.width >= 320) return c;
+      if (!this._sprite2x) this._sprite2x = new Map();
+      let big = this._sprite2x.get(c);
       if (big) return big;
       big = document.createElement('canvas');
       big.width = c.width * 2;
@@ -1060,8 +1279,137 @@
       const bctx = big.getContext('2d');
       bctx.imageSmoothingEnabled = false;
       bctx.drawImage(c, 0, 0, big.width, big.height);
-      this._char2x.set(c, big);
+      this._sprite2x.set(c, big);
       return big;
+    }
+
+    // The command citadel (town center): the vendor pixel-art body plus a
+    // night-time treatment, all baked into the ground layer (free per frame):
+    //   1. a warm shape-following glow behind the building
+    //   2. a lit forecourt light pool on the plaza in front
+    //   3. the body itself
+    //   4. a subtle vertical depth gradient (masked to the silhouette)
+    //   5. a faint mirrored reflection on the plaza below the base
+    //   6. a warm bloom over the lit entrance + main windows
+    // The clock hands move, so they're drawn live (drawCitadelClock).
+    bakeCitadel(gg, center) {
+      const body = TA.paintTownCenter(center.w); // memoized by the vendor
+      const bw = body.width, bh = body.height;   // center.w*16 x 240
+      const x = center.x * TT, y = center.y * TT; // body top-left (tile units)
+      const cx = x + bw / 2;
+      const baseY = y + 228; // bottom of the forecourt steps (the ground line)
+
+      // 1) Warm shape-following glow behind the building (blurred + brightened).
+      const glow = document.createElement('canvas');
+      glow.width = bw + 28; glow.height = bh + 28;
+      const gc = glow.getContext('2d');
+      const canFilter = typeof gc.filter === 'string';
+      if (canFilter) gc.filter = 'blur(7px) brightness(1.5) saturate(1.15)';
+      gc.drawImage(body, 14, 14);
+      gg.save();
+      gg.globalCompositeOperation = 'lighter';
+      gg.globalAlpha = canFilter ? 0.5 : 0.22;
+      gg.drawImage(glow, x - 14, y - 14);
+      gg.restore();
+
+      // 2) Lit forecourt light pool on the plaza in front of the base.
+      gg.save();
+      gg.globalCompositeOperation = 'lighter';
+      const pool = gg.createRadialGradient(cx, baseY, 4, cx, baseY, bw * 0.6);
+      pool.addColorStop(0, 'rgba(255, 214, 130, 0.30)');
+      pool.addColorStop(0.5, 'rgba(255, 190, 100, 0.12)');
+      pool.addColorStop(1, 'rgba(255, 170, 80, 0)');
+      gg.fillStyle = pool;
+      gg.beginPath();
+      gg.ellipse(cx, baseY, bw * 0.6, 24, 0, 0, Math.PI * 2);
+      gg.fill();
+      gg.restore();
+
+      // 3) The body.
+      gg.drawImage(body, x, y);
+
+      // 4) Subtle vertical depth, masked to the silhouette (darker toward the base).
+      const dc = document.createElement('canvas');
+      dc.width = bw; dc.height = bh;
+      const dctx = dc.getContext('2d');
+      dctx.drawImage(body, 0, 0);
+      dctx.globalCompositeOperation = 'source-in';
+      const depth = dctx.createLinearGradient(0, 60, 0, 228);
+      depth.addColorStop(0, 'rgba(0,0,0,0)');
+      depth.addColorStop(1, 'rgba(12, 10, 24, 0.30)');
+      dctx.fillStyle = depth;
+      dctx.fillRect(0, 0, bw, bh);
+      gg.drawImage(dc, x, y);
+
+      // 5) Faint mirrored reflection on the plaza below the base (temp-canvas fade).
+      const reflH = 72;
+      const refl = document.createElement('canvas');
+      refl.width = bw; refl.height = reflH;
+      const rc = refl.getContext('2d');
+      rc.imageSmoothingEnabled = false;
+      rc.save(); rc.translate(0, 228); rc.scale(1, -1);
+      rc.drawImage(body, 0, 0, bw, 228, 0, 0, bw, 228);
+      rc.restore();
+      rc.globalCompositeOperation = 'destination-in';
+      const fg = rc.createLinearGradient(0, 0, 0, reflH);
+      fg.addColorStop(0, 'rgba(255,255,255,0.5)');
+      fg.addColorStop(1, 'rgba(255,255,255,0)');
+      rc.fillStyle = fg; rc.fillRect(0, 0, bw, reflH);
+      gg.save();
+      gg.globalCompositeOperation = 'lighter';
+      gg.globalAlpha = 0.5;
+      gg.drawImage(refl, x, baseY);
+      gg.restore();
+
+      // 6) Warm bloom over the lit entrance + main windows (lower centre).
+      gg.save();
+      gg.globalCompositeOperation = 'lighter';
+      const bloom = gg.createRadialGradient(cx, y + 175, 4, cx, y + 175, 62);
+      bloom.addColorStop(0, 'rgba(255, 200, 110, 0.20)');
+      bloom.addColorStop(1, 'rgba(255, 180, 90, 0)');
+      gg.fillStyle = bloom;
+      gg.fillRect(cx - 62, y + 113, 124, 124);
+      gg.restore();
+    }
+
+    // The citadel's clock runs on live time: a fresh face + hands drawn over
+    // the galaxy core each frame (the body is baked, but the hands move).
+    // The face is centred on the galaxy so it reads as the galaxy's heart.
+    // Hour + minute only — calm, and fine under reduced motion.
+    drawCitadelClock(ctx) {
+      const c = this.town.layout.center;
+      const cx = (c.x + c.w / 2) * TT; // clock centre x (world)
+      const cy = c.y * TT + 100;       // clock centre y (world) — centred on the galaxy core (body-y ~100), so the face sits inside the glow
+      const R = 18;                    // rim radius — a bigger face, still clear of the tower's cornice and inside the 56px tower
+      const now = new Date();
+      const min = now.getMinutes() + now.getSeconds() / 60;
+      const hr = (now.getHours() % 12) + min / 60;
+
+      // Face + rim (opaque, covers the galaxy core and a bit of the glow).
+      ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.fillStyle = '#a8862e'; ctx.fill();
+      ctx.beginPath(); ctx.arc(cx, cy, R - 3.5, 0, Math.PI * 2); ctx.fillStyle = '#fbf6e8'; ctx.fill();
+      // Ticks (12, the quarters longer).
+      ctx.strokeStyle = '#1c1722'; ctx.lineCap = 'round';
+      for (let i = 0; i < 12; i++) {
+        const a = i / 12 * Math.PI * 2, r1 = R - 3.5, r2 = i % 3 === 0 ? R - 7.5 : R - 5.5;
+        ctx.lineWidth = i % 3 === 0 ? 2 : 1.2;
+        ctx.beginPath();
+        ctx.moveTo(cx + Math.cos(a) * r1, cy + Math.sin(a) * r1);
+        ctx.lineTo(cx + Math.cos(a) * r2, cy + Math.sin(a) * r2);
+        ctx.stroke();
+      }
+      // Hands: 12 o'clock at the top (angle -PI/2).
+      const hand = (ang, len, w) => {
+        ctx.strokeStyle = '#1c1722'; ctx.lineWidth = w;
+        ctx.beginPath();
+        ctx.moveTo(cx, cy);
+        ctx.lineTo(cx + Math.cos(ang) * len, cy + Math.sin(ang) * len);
+        ctx.stroke();
+      };
+      hand(hr / 12 * Math.PI * 2 - Math.PI / 2, R - 9, 2.8); // hour
+      hand(min / 60 * Math.PI * 2 - Math.PI / 2, R - 5, 2);   // minute
+      // Center pin.
+      ctx.beginPath(); ctx.arc(cx, cy, 2.4, 0, Math.PI * 2); ctx.fillStyle = '#a8862e'; ctx.fill();
     }
 
     buildWalk(b, waypoints) {
@@ -1253,8 +1601,9 @@
         const bxs = L.buildings.map((b) => b.x * TT);
         const bx2 = L.buildings.map((b) => (b.x + b.w) * TT);
         const shp = this.town.storageShip;
+        const net = this.town.netPanel;
         const minX = Math.min(...bxs, c.x * TT, shp ? shp.x : Infinity);
-        const maxX = Math.max(...bx2, (c.x + c.w) * TT, shp ? shp.x + shp.w : -Infinity);
+        const maxX = Math.max(...bx2, (c.x + c.w) * TT, shp ? shp.x + shp.w : -Infinity, net ? net.x + net.w : -Infinity);
         const cx = (minX + maxX) / 2;
         const top = Math.min(c.y * TT, ...L.buildings.map((b) => b.y * TT));
         const bottom = Math.max(...L.buildings.map((b) => (b.y + b.h) * TT), c.y * TT + 500);
@@ -1340,7 +1689,7 @@
       const { cell } = info;
       const X = (cell.x + 1) * TT, Y = cell.y * TT;
       const cx = X + TA.townDeskSlots(cell.seats)[0].chairX + 7;
-      const aw = 12 * AS, ah = 18 * AS; // character sprite is 12×18, scaled by AS
+      const aw = 20 * AS, ah = 24 * AS; // crew footprint (20×24 logical × AS) — charScale normalises every resolution to this box
       return {
         agent: { x: cx - aw / 2, y: Y + 25 - ah, w: aw, h: ah },
         screen: { x: cx - 54, y: Y + 40, w: 108, h: 54 }, // drawPreview's projX/projY
@@ -1504,6 +1853,14 @@
       // Check storage ship manifest session pills or host items or starship hull
       if (this.town && this.town.storageShip) {
         const s = this.town.storageShip;
+        if (s.visItems) {
+          for (const item of s.visItems) {
+            if (wx >= item.x && wx <= item.x + item.w && wy >= item.y && wy <= item.y + item.h) {
+              this.toggleHostVisible(item.host);
+              return;
+            }
+          }
+        }
         if (s.items) {
           for (const item of s.items) {
             if (wx >= item.x && wx <= item.x + item.w && wy >= item.y && wy <= item.y + item.h) {
@@ -1551,6 +1908,14 @@
       // Check storage ship manifest session pills or starship hull
       if (this.town && this.town.storageShip) {
         const s = this.town.storageShip;
+        if (s.visItems) {
+          for (const item of s.visItems) {
+            if (wx >= item.x && wx <= item.x + item.w && wy >= item.y && wy <= item.y + item.h) {
+              this.setHover({ type: 'host-vis', host: item.host }, e);
+              return;
+            }
+          }
+        }
         if (s.items) {
           for (const item of s.items) {
             if (wx >= item.x && wx <= item.x + item.w && wy >= item.y && wy <= item.y + item.h) {
@@ -1606,6 +1971,14 @@
           const st = s ? (s.activity ? 'active' : 'idle') : '—';
           tip.innerHTML = '<b></b><span class="dim"> · ' + hover.host + ' · ' + st + ' · click to attach</span>';
           tip.firstChild.textContent = hover.key.split(':').pop();
+        } else if (hover.type === 'host-vis') {
+          const hid = this.isHostHidden(hover.host);
+          tip.innerHTML = '<b></b><span class="dim"> · ' + (hid ? 'hidden — click to show it on the map' : 'shown on the map — click to hide it') + '</span>';
+          tip.firstChild.textContent = hover.host;
+        } else if (hover.type === 'host-sign') {
+          // (also fixes a stale fall-through: host-sign hovers have no .b)
+          tip.innerHTML = '<b></b><span class="dim"> · click to toggle polling</span>';
+          tip.firstChild.textContent = hover.host;
         } else if (hover.type === 'storage-ship') {
           tip.innerHTML = '<b>📦 Orbital Sessions</b><span class="dim"> · click to zoom & focus</span>';
         } else if (hover.type === 'plus') {
@@ -1632,6 +2005,8 @@
       if (hover.type === 'pod') return 'pod:' + hover.key;
       if (hover.type === 'agent') return 'agent:' + hover.key;
       if (hover.type === 'manifest-session') return 'ms:' + hover.key;
+      if (hover.type === 'host-vis') return 'vis:' + hover.host;
+      if (hover.type === 'host-sign') return 'hs:' + hover.host;
       if (hover.type === 'storage-ship') return 'storage-ship';
       if (hover.type === 'plus') return 'plus:' + hover.host;
       if (hover.type === 'center') return 'center';
@@ -1763,20 +2138,24 @@
       // Clip T.base to only the visible viewport rect (avoids copying ~4.5 million offscreen pixels)
       const halfW = (w / 2) / z + 20;
       const halfH = (h / 2) / z + 20;
+      const S = T.S || 1; // HiDPI bake factor: source rects are in bake pixels
       const worldLeft = Math.max(0, Math.floor(camx - halfW + T.M));
       const worldTop = Math.max(0, Math.floor(camy - halfH + T.M));
-      const worldRight = Math.min(T.base.width, Math.ceil(camx + halfW + T.M));
-      const worldBottom = Math.min(T.base.height, Math.ceil(camy + halfH + T.M));
+      const worldRight = Math.min(T.Wp, Math.ceil(camx + halfW + T.M));
+      const worldBottom = Math.min(T.Hp, Math.ceil(camy + halfH + T.M));
       const sw = Math.max(0, worldRight - worldLeft);
       const sh = Math.max(0, worldBottom - worldTop);
       if (sw > 0 && sh > 0) {
-        ctx.drawImage(T.ground, worldLeft, worldTop, sw, sh, worldLeft - T.M, worldTop - T.M, sw, sh);
+        ctx.drawImage(T.ground, worldLeft * S, worldTop * S, sw * S, sh * S, worldLeft - T.M, worldTop - T.M, sw, sh);
         // EVA repair astronauts fly *behind* the offices (over the street,
         // occluded by the modules) — like the starships, not over them.
         if (this.repairCrew && this.repairCrew.state !== 'waiting-arrival') {
           this.drawRepairCrew(ctx, t);
         }
-        ctx.drawImage(T.base, worldLeft, worldTop, sw, sh, worldLeft - T.M, worldTop - T.M, sw, sh);
+        ctx.drawImage(T.base, worldLeft * S, worldTop * S, sw * S, sh * S, worldLeft - T.M, worldTop - T.M, sw, sh);
+        // The citadel's clock runs on live time — its face + hands are drawn
+        // over the baked galaxy core each frame (the body itself is baked).
+        this.drawCitadelClock(ctx);
       }
 
       // dynamic desk layer, depth-sorted (pods and the moving agents together)
@@ -1807,9 +2186,11 @@
           if (nap.phase === 'checking' || nap.phase === 'activity' || nap.phase === 'waiting-bus') {
             const pos = nap.phase === 'checking' ? this.frontPos(nap.b) : (nap.p && nap.p.spot);
             if (pos) {
-              // naps lie down on the sofa; everything else stands
+              // naps lie down on the sofa; fighters brawl; everything else stands
               if (nap.phase === 'activity' && nap.p && nap.p.activity === 'nap')
                 list.push([pos.y + 8, () => this.drawNapper(key, nap, bubbles)]);
+              else if (nap.phase === 'activity' && nap.p && nap.p.activity === 'fight')
+                list.push([pos.y + 8, () => this.drawFighter(key, nap, pos, bubbles, t)]);
               else
                 list.push([pos.y + 8, () => this.drawAgentAt(key, nap, pos, bubbles)]);
             }
@@ -1839,10 +2220,10 @@
       for (const r of T.roofs) {
         const lift = this.hostLift(r.host);
         if (lift <= 0.01) continue;
-        const w = r.c.width * (0.25 + 0.75 * lift);
-        const h = r.c.height * lift;
+        const w = r.lw * (0.25 + 0.75 * lift);
+        const h = r.lh * lift;
         ctx.globalAlpha = ra * (0.3 + 0.7 * lift);
-        ctx.drawImage(r.c, r.x + (r.c.width - w) / 2, r.y + (r.c.height - h), w, h);
+        ctx.drawImage(r.c, r.x + (r.lw - w) / 2, r.y + (r.lh - h), w, h);
       }
       ctx.globalAlpha = 1;
       for (const r of T.roofs) {
@@ -1861,6 +2242,9 @@
       // Orbital Storage Starship with live host/session manifest
       this.drawStorageShip(ctx, t);
 
+      // Network traffic console right of the Town Hall (same language as the manifest)
+      this.drawNetPanel(ctx, t);
+
       // hover / active highlights — the clickable "square" follows the target:
       // the projected screen for attach, the seated astronaut for rename.
       if (this.hover && (this.hover.type === 'pod' || this.hover.type === 'agent')) {
@@ -1878,10 +2262,11 @@
       for (const [x, y, kind] of bubbles) {
         const img = T.sp.bubble[kind];
         if (!img) continue;
+        const img2 = this.sprite2x(img);
         const sx = ox + (x - camx) * z, sy = oy + (y - camy) * z;
         const near = z >= 1.4;
         const bs = near ? clamp(Math.round(z * 1.5), 2, 4) : z < 0.7 ? 1 : 2;
-        ctx.drawImage(img, Math.round(sx - img.width * bs / 2), Math.round(sy - 2 - img.height * bs), img.width * bs, img.height * bs);
+        ctx.drawImage(img2, Math.round(sx - img.width * bs / 2), Math.round(sy - 2 - img.height * bs), img.width * bs, img.height * bs);
       }
     }
 
@@ -1891,8 +2276,8 @@
       if (!spot) return;
       const { ctx } = this;
       const c = TA.townCharacter(look, 'down', 0, 'stand', true); // eyes closed
-      const sprite = this.char2x(c);
-      const w = c.width * AS, h = c.height * AS;
+      const sprite = this.sprite2x(c);
+      const w = c.width * charScale(c), h = c.height * charScale(c);
       const x = spot.x, y = spot.y;
       ctx.fillStyle = 'rgba(0,0,0,.18)';
       ctx.fillRect(x - 14, y + 8, 28, 3);
@@ -1903,6 +2288,11 @@
       ctx.drawImage(sprite, -w / 2, -h / 2, w, h);
       ctx.restore();
       bubbles.push([x + (spot.side || 0) * 16, y - 12, 'sleep']);
+      // even a sleeping minion lets one rip now and then
+      if (minionMode()) {
+        const a = this.mischiefAt(key, performance.now() / 1000);
+        if (a && a.kind === 'fart') this.drawGas(x + 12, y + 4, a.p);
+      }
     }
 
     // an agent standing still at a spot: checking in at the front desk (✓),
@@ -1912,12 +2302,41 @@
       const { ctx } = this;
       const x = pos.x, y = pos.y;
       const dir = (pos && pos.dir) ? pos.dir : 'down';
-      const c = TA.townCharacter(look, dir, 0, 'stand', false);
-      const w = c.width * AS, h = c.height * AS;
+      const t = performance.now() / 1000;
+      // solo minion mischief (never while checking in at the front desk)
+      const antic = nap.phase === 'activity' ? this.mischiefAt(key, t) : null;
+      const frame = antic && antic.kind === 'dance' ? Math.floor(antic.p * 8) % 4 : antic && antic.kind === 'panic' ? Math.floor(t * 18) % 4 : 0;
+      const c = TA.townCharacter(look, dir, frame, 'stand', false);
+      const w = c.width * charScale(c), h = c.height * charScale(c);
       ctx.fillStyle = 'rgba(0,0,0,.2)';
       ctx.fillRect(Math.round(x) - 5, Math.round(y) - 1, 10, 3);
-      ctx.drawImage(this.char2x(c), Math.round(x) - w / 2, Math.round(y) - h + 1, w, h);
-      if (nap.phase === 'checking') bubbles.push([x, y - h - 4, 'done']);
+
+      let dx = 0, dy = 0, rot = 0;
+      if (antic) {
+        const p = antic.p;
+        if (antic.kind === 'fart') { rot = 0.12; this.drawGas(x - 6, y - 6, p); }
+        else if (antic.kind === 'burp') { rot = -0.1; dy = -1; this.drawGas(x + 2, y - h - 2, p, true); }
+        else if (antic.kind === 'giggle') { dy = -Math.abs(Math.sin(p * Math.PI * 4)) * 3; }
+        else if (antic.kind === 'dance') { rot = Math.sin(p * Math.PI * 6) * 0.12; dy = -Math.abs(Math.sin(p * Math.PI * 6)) * 2; }
+        else if (antic.kind === 'banana') {
+          if (p > 0.55) rot = Math.sin((p - 0.55) / 0.45 * Math.PI) * 1.1; // slip on the peel, then recover
+          else dy = -Math.abs(Math.sin(p * Math.PI * 3));
+          if (p > 0.5) { ctx.fillStyle = '#fde047'; ctx.fillRect(Math.round(x) + 5, Math.round(y) - 2, 4, 2); ctx.fillStyle = '#a16207'; ctx.fillRect(Math.round(x) + 8, Math.round(y) - 3, 1, 1); }
+        }
+        else if (antic.kind === 'sneeze') { rot = p < 0.5 ? -0.14 : 0.24; if (p > 0.5) this.drawSpray(x, y - h + 6, p); }
+        else if (antic.kind === 'spin') { rot = p * Math.PI * 4; }
+        else if (antic.kind === 'panic') { dx = Math.sin(t * 40) * 2; dy = -Math.abs(Math.sin(p * Math.PI * 8)) * 2; }
+      }
+      ctx.save();
+      ctx.translate(Math.round(x) + dx, Math.round(y) + dy);
+      if (rot) ctx.rotate(rot);
+      ctx.drawImage(this.sprite2x(c), -w / 2, -h + 1, w, h);
+      ctx.restore();
+
+      if (antic) {
+        const bk = antic.kind === 'dance' ? 'giggle' : antic.kind === 'spin' ? 'dizzy' : antic.kind;
+        bubbles.push([x, y - h - 4, bk]);
+      } else if (nap.phase === 'checking') bubbles.push([x, y - h - 4, 'done']);
       else if (nap.p) {
         const act = nap.p.activity;
         if (act === 'water' || act === 'drink') bubbles.push([x, y - h - 4, 'drink']);
@@ -1928,17 +2347,160 @@
       }
     }
 
+    // expanding, fading gas puffs — green for minions, purple for the evil ones.
+    // `rise` drifts them upward (a burp) instead of hanging low (a fart).
+    drawGas(x, y, p, rise) {
+      const { ctx } = this;
+      const col = evilMode() ? '168,85,247' : '132,204,22';
+      for (let i = 0; i < 3; i++) {
+        const q = clamp(p * 1.4 - i * 0.18, 0, 1);
+        if (q <= 0 || q >= 1) continue;
+        const r = 2 + q * 5;
+        const gx = x + Math.sin(i * 2.1 + p * 3) * 3 - q * 4;
+        const gy = y + (rise ? -q * 10 : q * 2) + i * 2;
+        ctx.fillStyle = `rgba(${col},${(0.5 * (1 - q)).toFixed(3)})`;
+        ctx.beginPath(); ctx.arc(gx, gy, r, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+
+    // sneeze spray: a fan of droplets shooting forward
+    drawSpray(x, y, p) {
+      const { ctx } = this;
+      const q = clamp((p - 0.5) * 2, 0, 1);
+      if (q <= 0) return;
+      ctx.fillStyle = `rgba(56,189,248,${(0.8 * (1 - q)).toFixed(3)})`;
+      for (let i = 0; i < 6; i++) {
+        const a = -0.5 + i * 0.2;
+        const d = q * 18;
+        ctx.fillRect(x + Math.cos(a) * d, y + Math.sin(a) * d * 0.5 - 4, 2, 2);
+      }
+    }
+
+    // confetti burst for a rocket jump / party
+    drawConfetti(x, y, p) {
+      const { ctx } = this;
+      const cols = ['#ef4444', '#fde047', '#38bdf8', '#50fa7b', '#f472b6'];
+      for (let i = 0; i < 10; i++) {
+        const a = i * 0.63 + p * 2;
+        const d = 6 + p * 20;
+        const fx = x + Math.cos(a) * d, fy = y - p * 16 + Math.sin(a) * d * 0.4 + p * p * 14;
+        ctx.fillStyle = cols[i % cols.length];
+        ctx.globalAlpha = clamp(1 - p * 0.7, 0, 1);
+        ctx.fillRect(fx, fy, 2, 2);
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    // one half of a minion brawl: the minion shakes and faces its rival; the
+    // lead fighter also draws the shared cartoon dust cloud between them. Each
+    // fighter draws itself, so neither can vanish if the other is interrupted.
+    drawFighter(key, nap, pos, bubbles, t) {
+      const { ctx } = this;
+      const look = this.agentLook(key);
+      const x = pos.x, y = pos.y;
+      const dir = (pos && pos.dir) ? pos.dir : 'down';
+      const fight = nap.p && nap.p.fight;
+      const pnap = fight && this.naps.get(fight.partner);
+      const partnerHere = !!(pnap && pnap.phase === 'activity' && pnap.p && pnap.p.activity === 'fight');
+      const shake = minionMode() && !REDUCED ? Math.sin(t * 30 + hash(key)) * 1.5 : 0;
+      const c = TA.townCharacter(look, dir, Math.floor(t * 10) % 4, 'stand', false);
+      const w = c.width * charScale(c), h = c.height * charScale(c);
+      ctx.fillStyle = 'rgba(0,0,0,.2)';
+      ctx.fillRect(Math.round(x) - 5, Math.round(y) - 1, 10, 3);
+      ctx.drawImage(this.sprite2x(c), Math.round(x) - w / 2 + shake, Math.round(y) - h + 1, w, h);
+      if (fight && fight.lead && partnerHere && minionMode()) {
+        const fs = this.fightSpots(nap.b);
+        this.drawBrawlCloud((fs[0].x + fs[1].x) / 2, (fs[0].y + fs[1].y) / 2 - 8, t, bubbles, fight.weapon);
+      }
+    }
+
+    // the classic cartoon fight: a lumpy dust ball with limbs and stars flying
+    // out, and a POW! bubble popping over it. Deterministic wiggle (no RNG) so
+    // it animates smoothly and identically every frame.
+    drawBrawlCloud(mx, my, t, bubbles, weapon) {
+      const { ctx } = this;
+      const wob = Math.sin(t * 18) * 1.5;
+      // dust ball — overlapping tan/grey puffs
+      const puffs = [[0, 0, 13], [-9, 3, 8], [9, 2, 8], [-5, -7, 7], [6, -6, 7], [0, 7, 8]];
+      for (const [ox, oy, r] of puffs) {
+        ctx.fillStyle = 'rgba(214,203,178,0.95)';
+        ctx.beginPath(); ctx.arc(mx + ox + Math.sin(t * 22 + ox) * 1.2, my + oy + wob * 0.4, r, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.fillStyle = 'rgba(168,152,124,0.9)';
+      for (const [ox, oy, r] of [[-6, 4, 4], [7, -3, 4], [0, -6, 3]]) {
+        ctx.beginPath(); ctx.arc(mx + ox, my + oy + wob * 0.3, r, 0, Math.PI * 2); ctx.fill();
+      }
+      // a flailing arm and leg poking out
+      ctx.strokeStyle = '#fdd835'; ctx.lineWidth = 3; ctx.lineCap = 'round';
+      const aa = Math.sin(t * 16) * 0.9;
+      ctx.beginPath(); ctx.moveTo(mx - 10, my - 2); ctx.lineTo(mx - 16 - Math.cos(aa) * 4, my - 8 + Math.sin(aa) * 5); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(mx + 10, my + 4); ctx.lineTo(mx + 17 + Math.sin(aa) * 3, my + 9 + Math.cos(aa) * 4); ctx.stroke();
+      ctx.lineCap = 'butt';
+      // flying stars
+      ctx.fillStyle = '#fde047';
+      for (let i = 0; i < 3; i++) {
+        const a = t * 6 + i * 2.1;
+        const sx = mx + Math.cos(a) * 16, sy = my - 10 + Math.sin(a * 1.3) * 6;
+        ctx.fillRect(sx - 1, sy - 2, 2, 4); ctx.fillRect(sx - 2, sy - 1, 4, 2);
+      }
+      // a crazy weapon poking out of the dust cloud
+      this.drawWeapon(mx, my, t, weapon);
+      const wb = weapon === 'gun' ? 'bang' : weapon === 'banana' ? 'banana' : 'pow';
+      if (Math.floor(t * 2.5) % 2 === 0) bubbles.push([mx, my - 20, wb]);
+    }
+
+    // a minion's improvised weapon thrusting out of the brawl cloud — gun,
+    // banana, sword, plunger, fish or bat. Deterministic wiggle, gun gets a
+    // muzzle flash. Drawn in world space over the dust ball.
+    drawWeapon(mx, my, t, weapon) {
+      const { ctx } = this;
+      const thrust = Math.sin(t * 12) * 4, ang = Math.sin(t * 8) * 0.3;
+      ctx.save();
+      ctx.translate(mx + 12 + thrust, my - 2);
+      ctx.rotate(ang);
+      switch (weapon) {
+        case 'gun':
+          ctx.fillStyle = '#1f2937'; ctx.fillRect(0, -2, 10, 4); ctx.fillRect(2, 2, 3, 4);
+          ctx.fillStyle = '#374151'; ctx.fillRect(8, -1, 3, 2);
+          if (Math.floor(t * 8) % 2 === 0) { ctx.fillStyle = '#fde047'; ctx.fillRect(11, -3, 4, 6); ctx.fillStyle = '#f59e0b'; ctx.fillRect(12, -2, 2, 4); }
+          break;
+        case 'banana':
+          ctx.fillStyle = '#fde047'; ctx.fillRect(0, -3, 3, 6); ctx.fillRect(3, -4, 5, 3); ctx.fillRect(8, -3, 3, 3);
+          ctx.fillStyle = '#a16207'; ctx.fillRect(0, -4, 1, 1); ctx.fillRect(10, -3, 1, 1);
+          break;
+        case 'sword':
+          ctx.fillStyle = '#cbd5e1'; ctx.fillRect(0, -1, 14, 2);
+          ctx.fillStyle = '#e5e7eb'; ctx.fillRect(0, -1, 14, 1);
+          ctx.fillStyle = '#7c4a12'; ctx.fillRect(-3, -2, 3, 4);
+          ctx.fillStyle = '#f59e0b'; ctx.fillRect(-1, -3, 1, 6);
+          break;
+        case 'plunger':
+          ctx.fillStyle = '#7c4a12'; ctx.fillRect(0, -1, 10, 2);
+          ctx.fillStyle = '#ef4444'; ctx.fillRect(10, -3, 4, 6);
+          break;
+        case 'fish':
+          ctx.fillStyle = '#93c5fd'; ctx.fillRect(0, -2, 10, 4); ctx.fillRect(10, -3, 3, 6);
+          ctx.fillStyle = '#1f2937'; ctx.fillRect(2, -1, 1, 1);
+          break;
+        case 'bat':
+          ctx.fillStyle = '#a16207'; ctx.fillRect(0, -1, 4, 2);
+          ctx.fillStyle = '#7c4a12'; ctx.fillRect(4, -2, 10, 4);
+          break;
+      }
+      ctx.restore();
+    }
+
     drawWalker(key, nap, r, t) {
       const look = this.agentLook(key);
       const { ctx } = this;
       const [x, y, dir] = r;
       const wf = Math.floor(t * 9) % 4; // the film's 4-frame walk cycle at 9 fps
       const c = TA.townCharacter(look, dir, wf, 'stand', false);
-      const w = c.width * AS, h = c.height * AS;
+      const w = c.width * charScale(c), h = c.height * charScale(c);
       const bob = wf % 2 ? -1 : 0;
       ctx.fillStyle = 'rgba(0,0,0,.22)';
       ctx.fillRect(Math.round(x) - 5, Math.round(y) - 1, 10, 3);
-      ctx.drawImage(this.char2x(c), Math.round(x) - w / 2, Math.round(y) - h + 1 + bob, w, h);
+      ctx.drawImage(this.sprite2x(c), Math.round(x) - w / 2, Math.round(y) - h + 1 + bob, w, h);
     }
 
     drawPod(info, name, state, t, key, frame, seated, bubbles) {
@@ -1954,20 +2516,49 @@
       // person first, then the table over the lower body, then the device).
       // Absent (seated=false) while the agent is walking or napping on the sofa.
       if (seated && state !== 'off') {
-        const typing = state === 'working' && !REDUCED ? Math.floor(t * 7 + hash(name)) % 2 : 0;
-        const c = TA.townCharacter(TA.townLookFor(name), 'down', typing, 'sit', state === 'idle');
-        const cw = c.width * AS, ch = c.height * AS;
-        ctx.drawImage(this.char2x(c), cx - cw / 2, Y + 25 - ch, cw, ch);
-        if (state === 'idle' && bubbles) bubbles.push([cx, Y - 12, 'sleep']); // Zzz above chair
+        // Minions can't sit still — they goof off even while WORKING (panic,
+        // caffeine jitter, headbang, sneeze, spin, rocket jump); idle ones do
+        // the full antic repertoire. Pure overlay: the session state is untouched.
+        const antic = state === 'working' ? this.workAntic(key, t) : state === 'idle' ? this.mischiefAt(key, t) : null;
+        let frame = state === 'working' && !REDUCED ? Math.floor(t * 7 + hash(name)) % 2 : 0;
+        let dx = 0, dy = 0, rot = 0, bk = null;
+        if (antic) {
+          const p = antic.p;
+          switch (antic.kind) {
+            case 'panic': frame = Math.floor(t * 18) % 4; dx = Math.sin(t * 40) * 1.5; bk = 'panic'; break;
+            case 'coffee': dx = Math.sin(t * 50) * 1.2; dy = Math.cos(t * 47) * 0.8; bk = 'coffee'; break;
+            case 'headbang': rot = Math.sin(t * 12) * 0.18; frame = Math.floor(t * 12) % 2; bk = 'music'; break;
+            case 'sneeze': rot = p < 0.5 ? -0.14 : 0.24; if (p > 0.5) this.drawSpray(cx, Y + 6, p); bk = 'sneeze'; break;
+            case 'spin': rot = p * Math.PI * 4; bk = 'dizzy'; break;
+            case 'rocket': dy = -Math.sin(p * Math.PI) * 22; this.drawConfetti(cx, Y + 8, p); bk = 'party'; break;
+            case 'fart': rot = 0.1; this.drawGas(cx - 8, Y + 12, p); bk = 'fart'; break;
+            case 'burp': rot = -0.08; this.drawGas(cx + 2, Y - 18, p, true); bk = 'burp'; break;
+            case 'giggle': dy = -Math.abs(Math.sin(p * Math.PI * 4)) * 2; bk = 'giggle'; break;
+            case 'banana': bk = 'banana'; if (p > 0.55) rot = Math.sin((p - 0.55) / 0.45 * Math.PI) * 0.8; break;
+            case 'dance': rot = Math.sin(p * Math.PI * 6) * 0.1; dy = -Math.abs(Math.sin(p * Math.PI * 6)) * 1.5; frame = Math.floor(p * 8) % 4; bk = 'giggle'; break;
+          }
+        }
+        const c = TA.townCharacter(TA.townLookFor(name), 'down', frame, 'sit', state === 'idle' && !antic);
+        const cw = c.width * charScale(c), ch = c.height * charScale(c);
+        ctx.save();
+        ctx.translate(cx + dx, Y + 25 - ch / 2 + dy);
+        if (rot) ctx.rotate(rot);
+        ctx.drawImage(this.sprite2x(c), -cw / 2, -ch / 2, cw, ch);
+        ctx.restore();
+        if (bubbles) {
+          if (bk) bubbles.push([cx, Y - 12, bk]);
+          else if (state === 'idle') bubbles.push([cx, Y - 12, 'sleep']); // Zzz above chair
+        }
       }
 
       // table over the agent's lower body (also baked in the base canvas)
       const table = sp.tableSmall[this.deskColor(name)];
-      if (table) ctx.drawImage(table, X + 14, Y + 17);
+      if (table) ctx.drawImage(this.sprite2x(table), X + 14, Y + 17, table.width, table.height);
 
       // monitor on the desk — the session state is readable on it
       const screenFrame = state === 'working' ? frame % 7 : state === 'idle' ? frame % 2 : 0;
-      ctx.drawImage(TA.townScreen(state, screenFrame), X + slot.chairX, Y + 13);
+      const scr = TA.townScreen(state, screenFrame);
+      ctx.drawImage(this.sprite2x(scr), X + slot.chairX, Y + 13, scr.width, scr.height);
 
       // holographic live preview: floating tactical projection after the desktop (lower) with radiant light beam
       const isActive = key === this.activeKey;
@@ -2001,7 +2592,7 @@
     // with a glowing radiant light cone shooting down from the console table.
     drawPreview(mx, Y, preview, cacheKey, sessionName, active = false, t = performance.now() / 1000) {
       const { ctx } = this;
-      const W = 108, H = 54, pad = 4.0, fs = 6.6, lh = 7.4;
+      const W = 108, H = 54, pad = 3.0, fs = 5.2, lh = 5.8;
       // Supersample the cached card so the terminal text stays crisp once the
       // town zoom and HiDPI factor (devicePixelRatio × zoom) scale it up. The
       // factor is quantized to ½-steps so smooth zooming re-rasterizes rarely.
@@ -2021,7 +2612,7 @@
 
       // Blit pre-baked holographic projection light beam
       ctx.globalAlpha = holoAlpha;
-      ctx.drawImage(active ? this.holoBeamActive : this.holoBeamWorking, projX, emitY);
+      ctx.drawImage(active ? this.holoBeamActive : this.holoBeamWorking, projX, emitY, 104, 6);
       ctx.globalAlpha = 1;
 
       // Console emitter lens / projector head with pulsing flare
@@ -2064,25 +2655,26 @@
         }
 
         // Header bar with session name: ensures every preview card clearly shows its identity
-        octx.font = '700 7px "JetBrains Mono", ui-monospace, Menlo, monospace';
+        octx.font = '700 6px "JetBrains Mono", ui-monospace, Menlo, monospace';
         octx.textBaseline = 'top';
         octx.fillStyle = active ? '#00e5ff' : '#38bdf8';
         octx.fillText('▶ ' + (sessionName || cacheKey.split(':').pop()), pad, pad);
 
         octx.strokeStyle = 'rgba(0, 229, 255, 0.25)';
         octx.beginPath();
-        octx.moveTo(pad, pad + 8.5);
-        octx.lineTo(W - pad, pad + 8.5);
+        octx.moveTo(pad, pad + 7.5);
+        octx.lineTo(W - pad, pad + 7.5);
         octx.stroke();
 
-        // Terminal text lines (last 5 lines below the header)
+        // Terminal text lines (the last 7 lines below the header — a denser
+        // 5.2px face fits ~80% more console context in the same card size)
         octx.font = '600 ' + fs + 'px "JetBrains Mono", ui-monospace, Menlo, monospace';
-        const shown = lines.slice(-5);
+        const shown = lines.slice(-7);
         shown.forEach((l, i) => {
           let txt = l.length > maxChars ? '…' + l.slice(-(maxChars - 1)) : l;
           const isPrompt = /^[$>\u276f#%]/.test(l.trim()) || /\$\s/.test(l);
           octx.fillStyle = isPrompt ? '#4ade80' : '#e0f2fe';
-          octx.fillText(txt, pad, pad + 10.5 + i * lh);
+          octx.fillText(txt, pad, pad + 9 + i * lh);
         });
 
         cached = { raw: preview, s, canvas: off };
@@ -2139,17 +2731,19 @@
       const hover = this.hover && this.hover.type === 'center';
       const cx = (c.x + c.w / 2) * TT, cy = c.y * TT + 12;
       const badge = hover ? this.centerBadgeHover : this.centerBadgeNormal;
-      if (badge) ctx.drawImage(badge, cx - 13, cy - 13);
+      if (badge) ctx.drawImage(badge, cx - 13, cy - 13, 26, 26);
     }
 
     // Pre-bake static cargo carrier hull for Orbital Sessions (saves ~40 drawing ops per frame)
-    bakeStorageShipHull(ship) {
+    bakeShipHull(ship) {
       const { w, h } = ship;
       const padL = 14, padR = 14;
+      const S = this.bakeS || 1; // HiDPI: bake the hull at 2x for crisp edges
       const c = document.createElement('canvas');
-      c.width = w + padL + padR;
-      c.height = h + 10;
+      c.width = (w + padL + padR) * S;
+      c.height = (h + 10) * S;
       const ctx = c.getContext('2d');
+      ctx.scale(S, S);
       const x = padL, y = 0;
 
       // Heavy Industrial Cargo / Data-Vault Freighter Hull
@@ -2212,6 +2806,8 @@
 
       ship.hullCanvas = c;
       ship.hullOffsetX = padL;
+      ship.hullW = w + padL + padR; // logical (world-px) size of the bake
+      ship.hullH = h + 10;
     }
 
     // Pre-calculate Orbital Sessions manifest positions & text measurements (runs in update(), not in render loop)
@@ -2219,7 +2815,9 @@
       if (!this.town || !this.town.storageShip) return;
       const ship = this.town.storageShip;
       const { x, y, w, h } = ship;
-      const hosts = this.town.layout.buildings.map((b) => b.hostKey);
+      // Every configured host gets a manifest row — including the ones hidden
+      // from the map by the eye toggle (dimmed, but still the way back).
+      const hosts = (this.hosts || []).map((hh) => hh.name);
       const rowH = Math.floor((h - 44) / Math.max(1, hosts.length));
 
       const measureCtx = (this._measureCtx ||= document.createElement('canvas').getContext('2d'));
@@ -2228,11 +2826,24 @@
       const hostRows = [];
       const items = [];
       const hostItems = [];
+      const visItems = [];
 
       hosts.forEach((hKey, idx) => {
         const rowY = 36 + idx * rowH;
-        const hostItem = { host: hKey, x: x + 12, y: y + rowY + 2, w: 126, h: rowH - 6 };
+        // eye + slide switch, left of the status dot
+        const visItem = { host: hKey, x: x + 14, y: y + rowY + Math.round((rowH - 16) / 2), w: 42, h: 16 };
+        visItems.push(visItem);
+        // status dot + host name (click = toggle polling), right of the switch
+        const hostItem = { host: hKey, x: x + 58, y: y + rowY + 2, w: 88, h: rowH - 6 };
         hostItems.push(hostItem);
+
+        // ellipsise the callsign so it never runs into the session pills
+        let label = hKey.toUpperCase();
+        measureCtx.font = '700 13px "JetBrains Mono", monospace';
+        if (measureCtx.measureText(label).width > 68) {
+          while (label.length > 1 && measureCtx.measureText(label + '…').width > 68) label = label.slice(0, -1);
+          label += '…';
+        }
 
         const prefix = hKey + ':';
         const hostSessions = [];
@@ -2242,15 +2853,16 @@
 
         const pills = [];
         let pillX = 148;
+        measureCtx.font = '600 11.5px "JetBrains Mono", monospace'; // pill face
         if (hostSessions.length > 0) {
           for (const s of hostSessions) {
-            const label = s.name;
-            const tw = measureCtx.measureText(label).width;
+            const label2 = s.name;
+            const tw = measureCtx.measureText(label2).width;
             const pw = Math.round(tw + 18), ph = 20;
             const py = rowY + Math.round((rowH - ph) / 2) - 1;
             if (pillX + pw > w - 16) break;
 
-            const pill = { key: s.key, name: label, x: x + pillX, y: y + py, w: pw, h: ph, host: hKey };
+            const pill = { key: s.key, name: label2, x: x + pillX, y: y + py, w: pw, h: ph, host: hKey };
             pills.push(pill);
             items.push(pill);
             pillX += pw + 8;
@@ -2259,9 +2871,11 @@
 
         hostRows.push({
           hostKey: hKey,
+          nameLabel: label,
           rowY: y + rowY,
           rowH,
           hostItem,
+          visItem,
           pills,
           hasSessions: hostSessions.length > 0,
         });
@@ -2270,6 +2884,7 @@
       ship.hostRows = hostRows;
       ship.items = items;
       ship.hostItems = hostItems;
+      ship.visItems = visItems;
       ship.totalSessions = this.sessions.size;
     }
 
@@ -2281,7 +2896,8 @@
 
       // 1. Blit pre-baked cargo freighter hull
       if (ship.hullCanvas) {
-        ctx.drawImage(ship.hullCanvas, x - (ship.hullOffsetX || 14), y);
+        ctx.drawImage(ship.hullCanvas, x - (ship.hullOffsetX || 14), y,
+          ship.hullW || ship.hullCanvas.width, ship.hullH || ship.hullCanvas.height);
       }
 
       // 2. Title Banner Header Text (crisp vector font at native screen resolution)
@@ -2303,11 +2919,19 @@
         const row = rows[idx];
         const rowY = row.rowY, rowH = row.rowH, hKey = row.hostKey;
         const off = this.hostOff(hKey);
+        const hidden = this.isHostHidden(hKey);
         const isHostHover = this.hover && this.hover.type === 'host-sign' && this.hover.host === hKey;
+        const isVisHover = this.hover && this.hover.type === 'host-vis' && this.hover.host === hKey;
 
         // Row background strip
         ctx.fillStyle = idx % 2 === 0 ? 'rgba(15, 23, 42, 0.65)' : 'rgba(10, 16, 28, 0.65)';
         ctx.fillRect(x + 10, rowY, w - 20, rowH - 2);
+
+        // hosts hidden from the map render dimmed (the eye toggle stays legible)
+        if (hidden) ctx.globalAlpha = 0.55;
+
+        // visibility slide switch + eye, left of the status dot
+        this.drawVisSwitch(row.visItem, hidden, isVisHover);
 
         // Host name hover highlight
         if (isHostHover) {
@@ -2321,12 +2945,12 @@
         // Host status dot & name
         ctx.fillStyle = off ? '#ef4444' : '#10b981';
         ctx.beginPath();
-        ctx.arc(x + 24, rowY + rowH / 2 - 1, 4.5, 0, Math.PI * 2);
+        ctx.arc(x + 64, rowY + rowH / 2 - 1, 4.5, 0, Math.PI * 2);
         ctx.fill();
 
         ctx.font = '700 13px "JetBrains Mono", monospace';
         ctx.fillStyle = off ? '#64748b' : isHostHover ? '#00e5ff' : '#38bdf8';
-        ctx.fillText(hKey.toUpperCase(), x + 36, rowY + rowH / 2 - 1);
+        ctx.fillText(row.nameLabel, x + 76, rowY + rowH / 2 - 1);
 
         if (!row.hasSessions) {
           ctx.font = 'italic 11px "JetBrains Mono", monospace';
@@ -2356,7 +2980,149 @@
             ctx.fillText(p.name, p.x + 13, p.y + p.h / 2);
           }
         }
+        ctx.globalAlpha = 1;
       }
+    }
+
+    // Network traffic console right of the Town Hall — the same freighter hull
+    // and banner layout as the Orbital Sessions ship (Space-view successor to
+    // the old floating DOM box). Drawn as canvas art under the camera
+    // transform, so it keeps the town's aspect at every zoom. Data: app.js's
+    // poll via setNetData.
+    drawNetPanel(ctx, t) {
+      if (!this.town || !this.town.netPanel || !this.netData) return;
+      const { x, y, w, h } = this.town.netPanel;
+      const n = this.netData;
+
+      // 1. Blit pre-baked freighter hull (same bake as the manifest ship)
+      const hull = this.town.netPanel;
+      if (hull.hullCanvas) {
+        ctx.drawImage(hull.hullCanvas, x - (hull.hullOffsetX || 14), y,
+          hull.hullW || hull.hullCanvas.width, hull.hullH || hull.hullCanvas.height);
+      }
+
+      // 2. Title banner text — crisp vector font, like the manifest's header
+      ctx.font = '700 13px "JetBrains Mono", monospace';
+      ctx.fillStyle = '#00e5ff';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('📡 NETWORK // TRAFFIC', x + 18, y + 20);
+
+      // current rates (5 s average), right of the title — cyan in / magenta out
+      ctx.font = '700 12px "JetBrains Mono", monospace';
+      const outTxt = '↑ ' + fmtBps(n.outBps);
+      const inTxt = '↓ ' + fmtBps(n.inBps);
+      const ow = ctx.measureText(outTxt).width;
+      ctx.textAlign = 'right';
+      ctx.fillStyle = '#ff5fd2';
+      ctx.fillText(outTxt, x + w - 18, y + 20);
+      ctx.fillStyle = '#00e5ff';
+      ctx.fillText(inTxt, x + w - 18 - ow - 14, y + 20);
+      ctx.textAlign = 'left';
+
+      // 3. Sparkline: last 60 s (1 s samples), newest at the right. Terminal
+      // traffic is bursty by nature — one spike (e.g. the page load itself) can
+      // be 1000× the idle poll rate, and a LINEAR scale then flattens every
+      // other sample to a fraction of a pixel ("no graph visible"). So the
+      // value axis is log-compressed: zeros stay on the floor, small values
+      // form a readable band, spikes tower. Each series is a filled area +
+      // stroke, drawn on a dark pill inset (the manifest's own pill styling)
+      // so the plot contrasts with the hull plating.
+      const sx = x + 22, sw = w - 44, sy = y + 40, sh = h - 70, floor = sy + sh;
+      // plot inset: dark pill with a faint cyan border
+      ctx.fillStyle = 'rgba(8, 12, 22, 0.88)';
+      ctx.fillRect(sx, sy - 4, sw, sh + 8);
+      ctx.strokeStyle = 'rgba(0, 229, 255, 0.3)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(sx + 0.5, sy - 3.5, sw - 1, sh + 7);
+      const histIn = Array.isArray(n.histIn) ? n.histIn : [];
+      const histOut = Array.isArray(n.histOut) ? n.histOut : [];
+      let max = 1;
+      for (const v of histIn) if (v > max) max = v;
+      for (const v of histOut) if (v > max) max = v;
+      const N = 60;
+      const xAt = (i, off) => sx + sw - ((N - 1 - (i + off)) * sw) / (N - 1);
+      const lmax = Math.log1p(max);
+      const yAt = (v) => v > 0 ? floor - 3 - Math.max(3, (Math.log1p(v) / lmax) * (sh - 10)) : floor;
+      ctx.fillStyle = 'rgba(167, 181, 218, 0.28)'; // baseline: plot area stays defined when idle
+      ctx.fillRect(sx + 2, floor, sw - 4, 1);
+      const series = (hist, stroke, fill) => {
+        if (!hist.length) return;
+        const off = N - hist.length; // right-aligned: grows from the right edge
+        if (hist.length === 1) { // a lone sample: a dot with a sliver to the floor
+          const px2 = xAt(0, off), py2 = yAt(hist[0]);
+          ctx.fillStyle = fill;
+          ctx.fillRect(px2 - 2, py2, 4, floor - py2 + 1);
+          ctx.fillStyle = stroke;
+          ctx.fillRect(px2 - 3, py2 - 1.5, 6, 3);
+          return;
+        }
+        ctx.beginPath();
+        ctx.moveTo(xAt(0, off), floor);
+        for (let i = 0; i < hist.length; i++) ctx.lineTo(xAt(i, off), yAt(hist[i]));
+        ctx.lineTo(xAt(hist.length - 1, off), floor);
+        ctx.closePath();
+        ctx.fillStyle = fill;
+        ctx.fill();
+        ctx.beginPath();
+        for (let i = 0; i < hist.length; i++) {
+          const px2 = xAt(i, off), py2 = yAt(hist[i]);
+          i ? ctx.lineTo(px2, py2) : ctx.moveTo(px2, py2);
+        }
+        ctx.strokeStyle = stroke;
+        ctx.lineWidth = 2;
+        ctx.lineJoin = 'round';
+        ctx.stroke();
+      };
+      series(histIn, 'rgba(0, 229, 255, 0.9)', 'rgba(0, 229, 255, 0.22)');   // ↓ cyan
+      series(histOut, 'rgba(255, 95, 210, 0.9)', 'rgba(255, 95, 210, 0.22)'); // ↑ magenta
+
+      // totals since server start
+      ctx.font = '600 11px "JetBrains Mono", monospace';
+      ctx.fillStyle = '#64748b';
+      ctx.fillText('since start ↓ ' + fmtB(n.inTotal) + ' · ↑ ' + fmtB(n.outTotal), x + 18, y + h - 14);
+    }
+
+    // The per-host visibility control in an ORBITAL SESSIONS row: an eye icon
+    // plus a slide switch (knob right = shown on the map, knob left = hidden).
+    // Vector under the camera transform — crisp at any dpr/zoom, ~15 ops/row.
+    drawVisSwitch(v, hidden, hover) {
+      const { ctx } = this;
+      const cy = v.y + v.h / 2;
+
+      // eye icon (almond outline + pupil; slashed through when hidden)
+      const ex = v.x + 9;
+      ctx.strokeStyle = hidden ? '#64748b' : hover ? '#7dd3fc' : '#00e5ff';
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.moveTo(ex - 6, cy);
+      ctx.quadraticCurveTo(ex, cy - 5.5, ex + 6, cy);
+      ctx.quadraticCurveTo(ex, cy + 5.5, ex - 6, cy);
+      ctx.stroke();
+      ctx.fillStyle = hidden ? '#64748b' : '#00e5ff';
+      ctx.beginPath();
+      ctx.arc(ex, cy, 1.8, 0, Math.PI * 2);
+      ctx.fill();
+      if (hidden) {
+        ctx.beginPath();
+        ctx.moveTo(ex - 6.5, cy - 5);
+        ctx.lineTo(ex + 6.5, cy + 5);
+        ctx.stroke();
+      }
+
+      // slide track + knob
+      const tx = v.x + 19, tw = 22, th = 10, ty = cy - th / 2;
+      this.rr(tx, ty, tw, th, th / 2);
+      ctx.fillStyle = hidden ? 'rgba(100, 116, 139, 0.25)' : 'rgba(0, 229, 255, 0.25)';
+      ctx.fill();
+      ctx.strokeStyle = hidden ? 'rgba(100, 116, 139, 0.6)' : hover ? '#7dd3fc' : 'rgba(0, 229, 255, 0.7)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      const kx = hidden ? tx + th / 2 + 0.5 : tx + tw - th / 2 - 0.5;
+      ctx.fillStyle = hidden ? '#94a3b8' : '#00e5ff';
+      ctx.beginPath();
+      ctx.arc(kx, cy, th / 2 - 1.5, 0, Math.PI * 2);
+      ctx.fill();
     }
 
     // rounded-rect path (single radius or [tl, tr, br, bl])
@@ -2430,7 +3196,11 @@
         ctx.save(); ctx.beginPath(); ctx.rect(x0, y0, ww, 10); ctx.clip();
         list.forEach((p, i) => {
           const look = typeof p === 'string' ? TA.townLookFor(p) : p;
-          ctx.drawImage(TA.townCharacter(look, 'right', 0, 'stand', false), x0 + 1 + i * 12, y0);
+          const pc = TA.townCharacter(look, 'right', 0, 'stand', false);
+          // fixed display width so the strip looks the same whether the sprite
+          // is a 20×24 astronaut or a 40×48 high-res minion
+          const ds = 12 / pc.width;
+          ctx.drawImage(this.sprite2x(pc), x0 + 1 + i * 12, y0, 12, pc.height * ds);
         });
         ctx.restore();
         ctx.strokeStyle = 'rgba(0, 229, 255, 0.6)';
@@ -2509,7 +3279,7 @@
         ctx.rotate(g.angle); // fixed tilt angle
         ctx.scale(1, g.tilt); // 3D inclination
         ctx.rotate(rot); // slow continuous cosmic rotation!
-        ctx.drawImage(g.canvas, -g.offset, -g.offset);
+        ctx.drawImage(g.canvas, -g.offset, -g.offset, g.size, g.size);
         ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
       }
     }
@@ -2617,7 +3387,7 @@
         }
 
         // Draw the spaceship sprite centered
-        ctx.drawImage(sprite, -sprite.width / 2, -sprite.height / 2);
+        ctx.drawImage(this.sprite2x(sprite), -sprite.width / 2, -sprite.height / 2, sprite.width, sprite.height);
         ctx.restore();
       }
     }
@@ -2688,11 +3458,13 @@
       const w = Math.round(tw + padX * 2 + 18);
 
       const pad = 12; // margin for shadow blur
+      const S = this.bakeS || 1; // HiDPI: bake the sign at 2x for razor-sharp text
       const renderSign = (off) => {
         const c = document.createElement('canvas');
-        c.width = w + pad * 2;
-        c.height = h + pad * 2;
+        c.width = (w + pad * 2) * S;
+        c.height = (h + pad * 2) * S;
         const sctx = c.getContext('2d');
+        sctx.scale(S, S);
         const bx = pad, by = pad;
 
         sctx.save();
@@ -2745,7 +3517,7 @@
       if (!canvas) return;
       const x = Math.round(b.x * TT + (b.w * TT) / 2), y = Math.round(b.y * TT - 34);
       const bx = Math.round(x - b.signW / 2), by = y - 28;
-      ctx.drawImage(canvas, bx - b.signPad, by - b.signPad);
+      ctx.drawImage(canvas, bx - b.signPad, by - b.signPad, b.signW + b.signPad * 2, b.signH + b.signPad * 2);
     }
   }
 

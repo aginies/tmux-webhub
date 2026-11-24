@@ -15,7 +15,7 @@ running in them — pi, bash, a build, anything.
   session a desk with a live holographic projection of its output. Click the
   projection to attach, the astronaut to rename, a building to zoom in;
   wheel/pinch to zoom, drag to pan. Imperial guards stand at the entrances and
-  wave on each poll, an EVA repair crew shuttles in to patch hulls, idle agents
+  blink their visors on each poll, an EVA repair crew shuttles in to patch hulls, idle agents
   take breaks, and a host that goes offline retracts its office canopy.
 - **Two-factor + token auth** — TLS by default; one access token gates the
   page, the API and the WebSocket; optional TOTP two-factor (scan a QR at first
@@ -56,18 +56,31 @@ session list; both show the same live data.
   output) and a floating terminal opens on it. Type, resize, scroll the
   scrollback — it's a full terminal. Close the window and the session keeps
   running in tmux.
-- **Rename** — click the astronaut seated at a desk to rename that session
-  (tmux `rename-session`).
+- **Rename** — click the crew member seated at a desk (astronaut or minion,
+  per ⚙ → *Crew*) to rename that session (tmux `rename-session`).
+- **Hide offices** — each 📦 *Orbital Sessions* manifest row carries an eye +
+  slide switch that shows/hides that host's starship office on the map. Purely
+  visual: polling and sessions keep running, the row stays (dimmed) and its
+  session pills stay clickable — the choice persists in `localStorage`.
 - **Navigate** — click a building to zoom into it, wheel or pinch to zoom, drag
   to pan. The **+ / − / All** controls zoom about the view and fit the whole
   fleet.
+- **Network traffic** — with *Network display* on (⚙, default), a freighter
+  console in the same hull style as *Orbital Sessions* is drawn to the right of
+  the Town Hall: ↓/↑ rates (5 s average), a 60 s sparkline (1 s samples) and
+  totals since server start. It's canvas art in world space, so it keeps the
+  town's aspect at every zoom and pans/zooms in lockstep with the hall. In List
+  view the header keeps a plain `↓ …/s · ↑ …/s` readout.
 - **Floating terminal** — drag the title bar to move it, the corner handle to
   resize, double-click the title bar (or **⛶**) for fullscreen. **⤢ Split**
   attaches a second session side by side in the same window.
 - **It's alive** — imperial security guards stand at each office entrance and
-  give a wave on every poll (their visor colour cycles); an EVA repair crew
+  blink their visors three times on every poll (gold ↔ cyan, then back to
+  gold); an EVA repair crew
   arrives by shuttle and welds patches onto a hull; idle agents leave their
-  desks to nap, drink, eat, or play ping-pong; a killed session walks out to
+  desks to nap, drink, eat, or play ping-pong in the lounge — spots are spread
+  out so nobody stands on anyone, and once the lounge is full the extra idle
+  crew just stay at their desks; a killed session walks out to
   the shuttle and departs. When a host goes offline its office canopy retracts
   and it redeploys on reconnect. Distant starship traffic (Falcon, X-Wing,
   Enterprise) crosses the sky.
@@ -217,6 +230,51 @@ Everything works on a phone, no hardware keyboard needed:
   journalctl --user -u tmux-webhub -f   # logs
   ```
 
+## Debugging
+
+The server logs to stderr (the systemd journal picks it up). Default level is
+`info` — logins, host add/remove/toggle, offline/online transitions, attach
+failures and crashes. `debug` adds every ssh/local command (with duration and
+exit status), per-host poll results, and an HTTP/WS access line.
+
+```sh
+journalctl --user -u tmux-webhub -f                # follow the log
+PC_LOG_LEVEL=debug systemctl --user restart tmux-webhub   # verbose, via unit
+PC_LOG_LEVEL=debug node server.js                  # verbose, foreground
+node server.js --debug                             # same, as a flag
+```
+
+Log level precedence: `PC_LOG_LEVEL` env > `"logLevel"` in `config.json`
+(`debug`/`info`/`warn`/`error`) > `--debug` flag > `info`. A restart is needed
+for a level change (the config editor's restart note applies).
+
+What to look for when something misbehaves:
+
+- **host shows offline** — `[poll] host offline` / `[ssh] cmd failed` carry the
+  actual ssh/tmux error (auth failure, timeout, "no server running").
+- **attach fails** — `[ws] attach failed: no such tmux session` includes the
+  stderr the client never sees (e.g. `Permission denied`, a dead ControlMaster).
+- **phone / pitux can't connect** — every rejected WebSocket close is logged
+  (`unauthorized`, `cross-origin`, `rate limited`, `unknown host`) with the IP.
+- **500s / crashes** — `[http] unhandled error` and `[process] uncaught
+  exception` log the full stack.
+
+Secrets are never logged: token / TOTP / cookie values are masked, and the WS
+`?token=` query string is deliberately kept out of the log lines.
+
+**From the browser / phone** — `GET /api/debug` (authed) shows what the server
+sees right now: version, uptime, log level, WS client count, and per-host
+`state` / `lastPollAt` / `lastError` / session count — no shell on the box
+needed to see why a host is offline or a poll is stale:
+
+```sh
+curl -k -b 'pc_token=…' https://host:8787/api/debug | jq
+```
+
+**File log** — set `"logFile"` in `config.json` (e.g. `"logFile":
+"tmux-webhub.log"`, relative to the install dir) to also append JSON lines to a
+file, size-rotated 5 MB × 3. Off by default; the journal is the primary sink.
+
 ## Uninstall
 
 ```sh
@@ -250,7 +308,7 @@ atomic and JSON-validated, so a broken file can never be saved.
 ![Config editor](images/settings.png)
 
 - **Hosts** — "+ Add host" appends a row; each row has `name`, `ssh`
-  (`user@host`, empty = local), `cmd`, and an on/off switch; ↑/↓ reorder, ✕
+  (`user@host[:port]`, empty = local), `cmd`, and an on/off switch; ↑/↓ reorder, ✕
   removes. The host list is **live-reloaded** — a new host starts being polled
   immediately, no restart.
 - **Bind address** — the `host` field offers `0.0.0.0` plus every real address
@@ -262,11 +320,20 @@ atomic and JSON-validated, so a broken file can never be saved.
 - **Theme** — Space (default), classic dark, light, or high contrast. Browser
   only (stored in `localStorage`), applies to the terminal palette and the scene
   skin.
+- **Crew** — who mans the Space view: **Minions** (default — Kevin, Stuart,
+  Bob & Otto, each with its own height, eye count and hair, assigned per
+  session), **Evil minions** (the diabolic purple variant) or **Astronauts**.
+  Minions are drawn at 2× resolution with a bold outline, metal goggle rims,
+  stitching and rosy cheeks so they read crisply at any zoom.
+  Browser only, applies live; the imperial guards stay on duty either way.
+  Idle minions goof off: they fart, burp, giggle, slip on banana peels, dance,
+  and occasionally pick a fight with another minion (cartoon dust-cloud brawl,
+  POW! and all). Astronauts just rest.
 - **Log out** — ends this browser's session (with 2FA: deleted server-side).
 
 The host list and per-host `cmd` apply immediately; server settings (`port`,
-`token`, `tls`, `cert`, `key`, `pollMs`, `netDisplay`, `twoFA`) need a
-restart.
+`token`, `tls`, `cert`, `key`, `pollMs`, `netDisplay`, `twoFA`, `logLevel`,
+`logFile`) need a restart.
 
 ## Environment variables
 
@@ -278,6 +345,7 @@ Override the config file for deployment-time settings:
 | `PC_HOST` | bind address |
 | `PC_TOKEN` | access token (empty = auth disabled, dev mode) |
 | `PC_TLS` | only the literal value `false` disables TLS (anything else = https) |
+| `PC_LOG_LEVEL` | log level: `debug`, `info` (default), `warn`, `error` |
 | `PI_CMD` | command started in new sessions (default `pi`) |
 | `PC_CONFIG_FILE` | config file path (default `./config.json`) |
 
