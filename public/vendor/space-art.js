@@ -1427,15 +1427,16 @@
       }
 
       // Minion crew mode: replaces the EVA astronauts (guards stay imperial).
-      // Drawn on a fine 40×48 logical grid at 32× (1280×1536) so it stays crisp
-      // even at the deeper zoom limit (Z_MAX 8) on HiDPI; town.js charScale()
-      // scales it back to the desk footprint; sprite2x skips sources this large.
+      // Drawn on a fine 40×48 logical grid at 16× (640×768) — the sweet spot:
+      // 1:1 pixel-perfect at the deep zoom limit (Z_MAX 8) on a 2× HiDPI screen
+      // (640 device px), ~356 MB for a large fleet. town.js charScale() scales
+      // it to the desk footprint; sprite2x skips sources this large.
       const mode = crewMode();
       if (mode === 'minions' || mode === 'evil') {
         const mc = document.createElement('canvas');
-        mc.width = 1280; mc.height = 1536;
+        mc.width = 640; mc.height = 768;
         const mctx = mc.getContext('2d');
-        mctx.scale(32, 32);
+        mctx.scale(16, 16);
         renderMinion(mctx, look, dir, frame, pose, eyesClosed, mode === 'evil');
         return mc;
       }
