@@ -19,7 +19,7 @@ let activeTab = -1;   // index into tabs, -1 = no tabs open
 // each) or as a LEGACY single-session swap (detach + attach). Browser-only pref,
 // persisted like the theme. Default ON (current behavior). Toggling OFF while tabs
 // are open collapses them to the selected tab (see setTabsEnabled).
-let tabsEnabled = localStorage.getItem('pc.tabs') !== '0';
+let tabsEnabled = localStorage.getItem('pc.tabs') === '1';
 // host → sessions lookup, rebuilt once per renderChips so displayName is O(1)/chip instead
 // of an O(#hosts) hosts.find per chip (render is O(sessions × hosts) otherwise).
 let hostSessionsLookup = null;

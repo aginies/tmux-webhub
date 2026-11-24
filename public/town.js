@@ -579,7 +579,7 @@
       const phase = blinking ? Math.floor((this.guardBlinkUntil - t) / GUARD_BLINK_STEP) % 2 : 0;
       this.guardLook.visor = phase ? GUARD_VISOR_BLINK : GUARD_VISOR_GOLD;
       const c = TA.townCharacter(this.guardLook, 'down', 0, 'stand', false);
-      const gs = 1.6; // taller guard (matches the previous seated scale)
+      const gs = 1.9; // taller guard — stays a head above the (now larger) crew
       const w = c.width * gs, h = c.height * gs;
       ctx.fillStyle = 'rgba(0,0,0,.22)';
       ctx.fillRect(Math.round(g.x) - 5, Math.round(g.y) - 1, 10, 3);
@@ -1592,7 +1592,7 @@
       const { cell } = info;
       const X = (cell.x + 1) * TT, Y = cell.y * TT;
       const cx = X + TA.townDeskSlots(cell.seats)[0].chairX + 7;
-      const aw = 12 * AS, ah = 18 * AS; // character sprite is 12×18, scaled by AS
+      const aw = 20 * AS, ah = 24 * AS; // space-art character sprite is 20×24, scaled by AS
       return {
         agent: { x: cx - aw / 2, y: Y + 25 - ah, w: aw, h: ah },
         screen: { x: cx - 54, y: Y + 40, w: 108, h: 54 }, // drawPreview's projX/projY

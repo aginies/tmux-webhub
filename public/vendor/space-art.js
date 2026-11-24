@@ -567,6 +567,11 @@
   window.HerdrTownArt = Object.assign({}, original, {
     buildTownSprites: createSpaceSprites,
 
+    // Bigger crew than the vendor town default (1.4): the 20×24 astronaut /
+    // minion sprites read too small at fleet-fit zoom. 1.8 keeps seated
+    // agents clear of the previous desk row's chairs.
+    TOWN_AGENT_SCALE: 1.8,
+
     // Deep space background with twinkling stars and energy roads
     // Space Background (pure transparent, allowing full-viewport animated cosmic sky & galaxies to shine through without any rectangular boundaries)
     paintTownGround: () => document.createElement('canvas'),

@@ -125,6 +125,10 @@ check('same session name → same sprite', n1 === n2);
 // wiring sanity: settings select + browser-only pref
 const html = fs.readFileSync(path.join(ROOT, 'public/index.html'), 'utf8');
 const app = fs.readFileSync(path.join(ROOT, 'public/app.js'), 'utf8');
+const town = fs.readFileSync(path.join(ROOT, 'public/town.js'), 'utf8');
+check('space theme enlarges the crew (TOWN_AGENT_SCALE > vendor 1.4)', TA.TOWN_AGENT_SCALE > 1.4);
+check('rename hit box matches the 20×24 sprite', town.includes('const aw = 20 * AS, ah = 24 * AS;'));
+check('session tabs default OFF', app.includes("localStorage.getItem('pc.tabs') === '1'"));
 check('index.html has the cfg-crew select with 3 options',
   /id="cfg-crew"/.test(html) && ['astronauts', 'minions', 'evil'].every((v) => html.includes(`value="${v}"`)));
 check('app.js persists the pref (pc.crew) and applies it live',

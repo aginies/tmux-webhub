@@ -113,7 +113,7 @@ console.log('# session tabs toggle');
   if (dupes.length) console.log('  duplicate ids: ' + [...new Set(dupes)].join(', '));
 }
 
-check('default tabsEnabled is ON', call('tabsEnabled') === true);
+check('default tabsEnabled is OFF', call('tabsEnabled') === false);
 
 call('setTabsEnabled(false)');
 check('setTabsEnabled(false) flips the flag', call('tabsEnabled') === false);
