@@ -321,6 +321,8 @@ atomic and JSON-validated, so a broken file can never be saved.
 - **Crew** — who mans the Space view: **Minions** (default — Kevin, Stuart,
   Bob & Otto, each with its own height, eye count and hair, assigned per
   session), **Evil minions** (the diabolic purple variant) or **Astronauts**.
+  Minions are drawn at 2× resolution with a bold outline, metal goggle rims,
+  stitching and rosy cheeks so they read crisply at any zoom.
   Browser only, applies live; the imperial guards stay on duty either way.
   Idle minions goof off: they fart, burp, giggle, slip on banana peels, dance,
   and occasionally pick a fight with another minion (cartoon dust-cloud brawl,

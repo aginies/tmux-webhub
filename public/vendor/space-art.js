@@ -618,10 +618,10 @@
   window.HerdrTownArt = Object.assign({}, original, {
     buildTownSprites: createSpaceSprites,
 
-    // Bigger crew than the vendor town default (1.4): the 20×24 astronaut /
-    // minion sprites read too small at fleet-fit zoom. 1.8 keeps seated
-    // agents clear of the previous desk row's chairs.
-    TOWN_AGENT_SCALE: 1.8,
+    // Bigger crew than the vendor town default (1.4): the astronaut / minion
+    // sprites read too small at fleet-fit zoom. Minions are drawn at 2× internal
+    // resolution and scaled back by charScale in town.js to keep their footprint.
+    TOWN_AGENT_SCALE: 2.0,
 
     // Deep space background with twinkling stars and energy roads
     // Space Background (pure transparent, allowing full-viewport animated cosmic sky & galaxies to shine through without any rectangular boundaries)
@@ -1128,11 +1128,14 @@
         const mouthY = eyeY + 3;
         const ovTop = Math.min(bodyBot - 2, mouthY + 3);
         const skin = evil ? '#a855f7' : '#fdd835';
+        const skinHi = evil ? '#c084fc' : '#fde68a';
         const skinShade = evil ? '#7e22ce' : '#eab308';
         const denim = isRepair ? '#0284c7' : evil ? '#312e81' : '#3b5ba5';
+        const denimHi = isRepair ? '#38bdf8' : evil ? '#4338ca' : '#5b7cc9';
         const denimDark = isRepair ? '#0369a1' : evil ? '#1e1b4b' : '#2c4a8a';
         const hairC = evil ? '#581c87' : '#3a2a1a';
         const glove = '#111827';
+        const outline = evil ? '#2a0a4a' : '#1f2430';
 
         // crisp pixel disc (integer rows, like the vendor's sprite helpers) —
         // arc() would antialias into muddy blends at this scale
@@ -1144,17 +1147,25 @@
           }
         };
 
+        // 0. Bold cartoon outline: a dark silhouette one pixel proud of the body,
+        //    drawn first so the colour layers leave a crisp rim (the single biggest
+        //    readability win against the busy station background).
+        disc(cx, domeCy, domeR + 1, outline);
+        ctx.fillStyle = outline;
+        ctx.fillRect(x0 - 1, domeCy, w + 2, bodyBot - domeCy + 1);
+
         // 1. Capsule body: pixel-disc head dome + rect torso
         disc(cx, domeCy, domeR, skin);
         ctx.fillStyle = skin;
         ctx.fillRect(x0, domeCy, w, bodyBot - domeCy);
         ctx.fillStyle = skinShade;                // right-side shading
         ctx.fillRect(x0 + w - 1, domeCy, 1, bodyBot - domeCy);
+        ctx.fillStyle = skinHi;                   // left-side highlight
+        ctx.fillRect(x0, domeCy, 1, bodyBot - domeCy);
 
         // 2. Hair
         ctx.fillStyle = hairC;
         if (evil) {
-          // wild purple frizz: jagged spikes on top + side fuzz
           for (let i = -3; i <= 3; i++) {
             const hh = 2 + (Math.abs(i) % 2);
             ctx.fillRect(cx + i * 2, top - hh + 1, 1, hh);
@@ -1179,7 +1190,7 @@
           ctx.fillRect(cx + 2, top - 1, 1, 2);
         }
 
-        // 3. Denim overalls: waist block, bib, shoulder straps, pocket
+        // 3. Denim overalls: waist block, bib, shoulder straps, pocket + stitching
         ctx.fillStyle = denim;
         ctx.fillRect(x0, ovTop, w, bodyBot - ovTop);
         ctx.fillRect(cx - 3, ovTop - 2, 6, 2);
@@ -1187,10 +1198,16 @@
         ctx.fillRect(x0, ovTop - 3, 2, 3);
         ctx.fillRect(x0 + w - 2, ovTop - 3, 2, 3);
         ctx.fillRect(x0, ovTop, w, 1);
+        ctx.fillStyle = denimHi;                  // seam highlight + stitch dashes
+        ctx.fillRect(x0 + 1, ovTop + 1, w - 2, 0.5);
+        for (let sx = x0 + 1; sx < x0 + w - 1; sx += 2) ctx.fillRect(sx, bodyBot - 1.5, 1, 0.5);
         if (dir !== 'up') {
+          ctx.fillStyle = denimDark;
           ctx.fillRect(cx - 2, ovTop - 2, 4, 2);  // pocket
-          ctx.fillStyle = '#0f172a';
-          ctx.fillRect(cx - 1, ovTop - 1, 2, 1);  // Gru logo
+          ctx.fillStyle = '#0f172a';              // Gru logo (dark disc + light G)
+          ctx.fillRect(cx - 1, ovTop - 1.5, 2, 1.5);
+          ctx.fillStyle = '#e2e8f0';
+          ctx.fillRect(cx - 0.5, ovTop - 1, 1, 0.5);
         }
 
         // 4. Goggle strap + eyes (back view: strap only)
@@ -1199,7 +1216,10 @@
         const irisFor = (side) => evil ? '#b91c1c'
           : (type.hetero && side < 0) ? '#3f8f4f' : '#7a4a21';
         const goggle = (gx, r, side) => {
-          disc(gx, eyeY, r, '#6b7280');
+          disc(gx, eyeY, r, '#4b5563');           // dark metal rim
+          disc(gx, eyeY, r - 0.5, '#9ca3af');     // bright metal ring
+          ctx.fillStyle = '#e5e7eb';              // specular glint on the rim
+          ctx.fillRect(gx - r + 1, eyeY - r + 1, 1.5, 0.5);
           if (eyesClosed) {
             disc(gx, eyeY, r - 1, skin);          // eyelid covers the eyeball
             ctx.fillStyle = evil ? '#3b0764' : '#7c4a12';
@@ -1223,6 +1243,10 @@
             const sgn = dir === 'right' ? 1 : -1;
             goggle(cx + sgn * (type.eyes === 1 ? 1 : 2), type.eyes === 1 ? 4 : 3, sgn);
           }
+          // rosy cheeks just under the goggles
+          ctx.fillStyle = evil ? 'rgba(126,34,206,0.55)' : 'rgba(244,114,182,0.5)';
+          if (type.eyes === 1) ctx.fillRect(cx - 2, eyeY + 3, 4, 1);
+          else { ctx.fillRect(cx - 4, eyeY + 2.5, 1.5, 1); ctx.fillRect(cx + 2.5, eyeY + 2.5, 1.5, 1); }
         }
 
         // 5. Mouth: smile (otto: braces), evil: open maw with buck teeth
@@ -1262,12 +1286,18 @@
           ctx.fillStyle = glove;
           ctx.fillRect(cx - 5, 21, 4, 3);
           ctx.fillRect(cx + 1, 21, 4, 3);
+          ctx.fillStyle = '#475569';              // shoe soles
+          ctx.fillRect(cx - 5, 23, 4, 0.5);
+          ctx.fillRect(cx + 1, 23, 4, 0.5);
         } else {
           ctx.fillRect(cx - 4, 19, 3, 2 + legShift);
           ctx.fillRect(cx + 1, 19, 3, 2 - legShift);
           ctx.fillStyle = glove;
           ctx.fillRect(cx - 5, 21 + legShift, 4, 3);
           ctx.fillRect(cx + 1, 21 - legShift, 4, 3);
+          ctx.fillStyle = '#475569';
+          ctx.fillRect(cx - 5, 23 + legShift, 4, 0.5);
+          ctx.fillRect(cx + 1, 23 - legShift, 4, 0.5);
         }
 
         // 7. Arms & gloves (evil minions have longer arms; sit = typing)
@@ -1416,10 +1446,17 @@
       }
 
       // Minion crew mode: replaces the EVA astronauts (guards stay imperial).
+      // Rendered at 2× internal resolution (40×48) for finer detail + a bold
+      // outline; town.js scales it back down (charScale) so its on-screen
+      // footprint still matches the desk / hit box.
       const mode = crewMode();
       if (mode === 'minions' || mode === 'evil') {
-        renderMinion(ctx, look, dir, frame, pose, eyesClosed, mode === 'evil');
-        return canvas;
+        const mc = document.createElement('canvas');
+        mc.width = 40; mc.height = 48;
+        const mctx = mc.getContext('2d');
+        mctx.scale(2, 2);
+        renderMinion(mctx, look, dir, frame, pose, eyesClosed, mode === 'evil');
+        return mc;
       }
 
       // Suit color theme: light blue combination for EVA repair crew, crisp white for standard crew

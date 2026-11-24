@@ -115,8 +115,12 @@ check('imperial guard untouched by crew mode', gEvil === gMin && gMin === gAst);
 // cache stability across mode switches
 call("window.WhCrew.mode = 'minions'");
 check('switching back to minions reuses the cached sprite', render(look(3)) === min);
+// definition upgrade: minions rasterise at 2× resolution with a bold outline
+check('minion rendered at 2× resolution (40×48)', min.width === 40 && min.height === 48);
+check('minion has a bold cartoon outline', fills(min).includes('#1f2430'));
 call("window.WhCrew.mode = 'astronauts'");
 check('switching back to astronauts reuses the cached sprite', render(look(3)) === astro);
+check('astronaut stays 20×24', astro.width === 20 && astro.height === 24);
 
 // determinism per session name
 const n1 = render(TA.townLookFor('alice'));
@@ -136,6 +140,7 @@ const space = fs.readFileSync(path.join(ROOT, 'public/vendor/space-art.js'), 'ut
 check('mischief bubbles defined', ['fart', 'burp', 'giggle', 'banana', 'pow', 'dizzy'].every((k) => space.includes('sp.bubble.' + k + ' =')));
 check('town.js wires the idle mischief (antics + brawl)',
   town.includes('mischiefAt') && town.includes('drawFighter') && town.includes('drawBrawlCloud') && town.includes("activity === 'fight'"));
+check('town.js scales high-res minions back to the crew footprint', town.includes('const charScale ='));
 check('default crew is minions', app.includes("localStorage.getItem('pc.crew') || 'minions'"));
 check('index.html has the cfg-crew select with 3 options',
   /id="cfg-crew"/.test(html) && ['astronauts', 'minions', 'evil'].every((v) => html.includes(`value="${v}"`)));

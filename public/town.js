@@ -23,6 +23,10 @@
   if (!TA) return; // no art bundle → list view only
   const TT = TA.TOWN_TILE;
   const AS = TA.TOWN_AGENT_SCALE;
+  // Minions are rasterised at 2× internal resolution (40×48) for detail, then
+  // scaled back to the astronaut footprint (20×24 × AS) so desks, hit boxes and
+  // depth stay consistent. Astronauts (20×24) use AS directly.
+  const charScale = (c) => (c.width >= 40 ? AS * 0.5 : AS);
   const DESK_COLORS = Object.keys(TA.TOWN_DESK_COLORS);
   const REDUCED = matchMedia('(prefers-reduced-motion: reduce)').matches;
   const Z_MIN = 0.35, Z_MAX = 4;
@@ -587,7 +591,7 @@
       const phase = blinking ? Math.floor((this.guardBlinkUntil - t) / GUARD_BLINK_STEP) % 2 : 0;
       this.guardLook.visor = phase ? GUARD_VISOR_BLINK : GUARD_VISOR_GOLD;
       const c = TA.townCharacter(this.guardLook, 'down', 0, 'stand', false);
-      const gs = 1.9; // taller guard — stays a head above the (now larger) crew
+      const gs = 2.1; // taller guard — stays a head above the (now larger) crew
       const w = c.width * gs, h = c.height * gs;
       ctx.fillStyle = 'rgba(0,0,0,.22)';
       ctx.fillRect(Math.round(g.x) - 5, Math.round(g.y) - 1, 10, 3);
@@ -939,7 +943,7 @@
       const drawWorker = (a, weldPoint) => {
         const wf = Math.floor(t * 8) % 4;
         const c = TA.townCharacter(a.look, a.dir, wf, 'stand', false);
-        const w = c.width * AS, h = c.height * AS;
+        const w = c.width * charScale(c), h = c.height * charScale(c);
         const ax = Math.round(a.x), ay = Math.round(a.y);
 
         // Zero-g thruster puffs when floating
@@ -1643,7 +1647,7 @@
       const { cell } = info;
       const X = (cell.x + 1) * TT, Y = cell.y * TT;
       const cx = X + TA.townDeskSlots(cell.seats)[0].chairX + 7;
-      const aw = 20 * AS, ah = 24 * AS; // space-art character sprite is 20×24, scaled by AS
+      const aw = 20 * AS, ah = 24 * AS; // crew footprint: astronaut 20×24×AS; minion 40×48×(AS/2) — same box
       return {
         agent: { x: cx - aw / 2, y: Y + 25 - ah, w: aw, h: ah },
         screen: { x: cx - 54, y: Y + 40, w: 108, h: 54 }, // drawPreview's projX/projY
@@ -2231,7 +2235,7 @@
       const { ctx } = this;
       const c = TA.townCharacter(look, 'down', 0, 'stand', true); // eyes closed
       const sprite = this.sprite2x(c);
-      const w = c.width * AS, h = c.height * AS;
+      const w = c.width * charScale(c), h = c.height * charScale(c);
       const x = spot.x, y = spot.y;
       ctx.fillStyle = 'rgba(0,0,0,.18)';
       ctx.fillRect(x - 14, y + 8, 28, 3);
@@ -2261,7 +2265,7 @@
       const antic = nap.phase === 'activity' ? this.mischiefAt(key, t) : null;
       const frame = antic && antic.kind === 'dance' ? Math.floor(antic.p * 8) % 4 : 0;
       const c = TA.townCharacter(look, dir, frame, 'stand', false);
-      const w = c.width * AS, h = c.height * AS;
+      const w = c.width * charScale(c), h = c.height * charScale(c);
       ctx.fillStyle = 'rgba(0,0,0,.2)';
       ctx.fillRect(Math.round(x) - 5, Math.round(y) - 1, 10, 3);
 
@@ -2327,7 +2331,7 @@
       const partnerHere = !!(pnap && pnap.phase === 'activity' && pnap.p && pnap.p.activity === 'fight');
       const shake = minionMode() && !REDUCED ? Math.sin(t * 30 + hash(key)) * 1.5 : 0;
       const c = TA.townCharacter(look, dir, Math.floor(t * 10) % 4, 'stand', false);
-      const w = c.width * AS, h = c.height * AS;
+      const w = c.width * charScale(c), h = c.height * charScale(c);
       ctx.fillStyle = 'rgba(0,0,0,.2)';
       ctx.fillRect(Math.round(x) - 5, Math.round(y) - 1, 10, 3);
       ctx.drawImage(this.sprite2x(c), Math.round(x) - w / 2 + shake, Math.round(y) - h + 1, w, h);
@@ -2375,7 +2379,7 @@
       const [x, y, dir] = r;
       const wf = Math.floor(t * 9) % 4; // the film's 4-frame walk cycle at 9 fps
       const c = TA.townCharacter(look, dir, wf, 'stand', false);
-      const w = c.width * AS, h = c.height * AS;
+      const w = c.width * charScale(c), h = c.height * charScale(c);
       const bob = wf % 2 ? -1 : 0;
       ctx.fillStyle = 'rgba(0,0,0,.22)';
       ctx.fillRect(Math.round(x) - 5, Math.round(y) - 1, 10, 3);
@@ -2397,7 +2401,7 @@
       if (seated && state !== 'off') {
         const typing = state === 'working' && !REDUCED ? Math.floor(t * 7 + hash(name)) % 2 : 0;
         const c = TA.townCharacter(TA.townLookFor(name), 'down', typing, 'sit', state === 'idle');
-        const cw = c.width * AS, ch = c.height * AS;
+        const cw = c.width * charScale(c), ch = c.height * charScale(c);
         ctx.drawImage(this.sprite2x(c), cx - cw / 2, Y + 25 - ch, cw, ch);
         if (state === 'idle' && bubbles) {
           // an idle minion at its desk still goofs off (fart / burp / giggle)
@@ -3055,7 +3059,10 @@
         list.forEach((p, i) => {
           const look = typeof p === 'string' ? TA.townLookFor(p) : p;
           const pc = TA.townCharacter(look, 'right', 0, 'stand', false);
-          ctx.drawImage(this.sprite2x(pc), x0 + 1 + i * 12, y0, pc.width, pc.height);
+          // fixed display width so the strip looks the same whether the sprite
+          // is a 20×24 astronaut or a 40×48 high-res minion
+          const ds = 12 / pc.width;
+          ctx.drawImage(this.sprite2x(pc), x0 + 1 + i * 12, y0, 12, pc.height * ds);
         });
         ctx.restore();
         ctx.strokeStyle = 'rgba(0, 229, 255, 0.6)';
