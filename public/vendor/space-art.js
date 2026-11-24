@@ -1454,16 +1454,15 @@
       }
 
       // Minion crew mode: replaces the EVA astronauts (guards stay imperial).
-      // Rendered at 16× internal resolution (320×384) for ultra-crisp detail at
-      // max zoom / HiDPI; town.js scales it back down (charScale) so its
-      // on-screen footprint still matches the desk / hit box. sprite2x skips
-      // canvases this large (no need to double an already-hi-res source).
+      // Rendered at 32× internal resolution (640×768) — memory is no object, so
+      // maximise crispness at max zoom / HiDPI. town.js charScale() scales it
+      // back to the desk footprint; sprite2x skips sources this large.
       const mode = crewMode();
       if (mode === 'minions' || mode === 'evil') {
         const mc = document.createElement('canvas');
-        mc.width = 320; mc.height = 384;
+        mc.width = 640; mc.height = 768;
         const mctx = mc.getContext('2d');
-        mctx.scale(16, 16);
+        mctx.scale(32, 32);
         renderMinion(mctx, look, dir, frame, pose, eyesClosed, mode === 'evil');
         return mc;
       }
