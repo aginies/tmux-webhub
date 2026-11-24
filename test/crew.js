@@ -116,11 +116,11 @@ check('imperial guard untouched by crew mode', gEvil === gMin && gMin === gAst);
 call("window.WhCrew.mode = 'minions'");
 check('switching back to minions reuses the cached sprite', render(look(3)) === min);
 // definition upgrade: minions rasterise at 2× resolution with a bold outline
-check('minion rendered at 2× resolution (40×48)', min.width === 40 && min.height === 48);
+check('minion rendered at 4× resolution (80×96)', min.width === 80 && min.height === 96);
 check('minion has a bold cartoon outline', fills(min).includes('#1f2430'));
 call("window.WhCrew.mode = 'astronauts'");
 check('switching back to astronauts reuses the cached sprite', render(look(3)) === astro);
-check('astronaut stays 20×24', astro.width === 20 && astro.height === 24);
+check('astronaut rendered at 2× resolution (40×48)', astro.width === 40 && astro.height === 48);
 
 // eye count is a property of the minion TYPE, never of the pose: a one-eyed
 // minion (Stuart) keeps exactly one eye seated at the desk, typing, standing,

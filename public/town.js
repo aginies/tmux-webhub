@@ -23,10 +23,11 @@
   if (!TA) return; // no art bundle → list view only
   const TT = TA.TOWN_TILE;
   const AS = TA.TOWN_AGENT_SCALE;
-  // Minions are rasterised at 2× internal resolution (40×48) for detail, then
-  // scaled back to the astronaut footprint (20×24 × AS) so desks, hit boxes and
-  // depth stay consistent. Astronauts (20×24) use AS directly.
-  const charScale = (c) => (c.width >= 40 ? AS * 0.5 : AS);
+  // Crew sprites rasterise at various internal resolutions (astronauts 2×,
+  // minions 4×) for crispness; charScale normalises every canvas to the same
+  // on-screen footprint (20×24 logical × AS) so desks, depth and the rename
+  // hit box are independent of the sprite's pixel density.
+  const charScale = (c) => AS * 20 / c.width;
   const DESK_COLORS = Object.keys(TA.TOWN_DESK_COLORS);
   const REDUCED = matchMedia('(prefers-reduced-motion: reduce)').matches;
   const Z_MIN = 0.35, Z_MAX = 4;
@@ -591,7 +592,7 @@
       const phase = blinking ? Math.floor((this.guardBlinkUntil - t) / GUARD_BLINK_STEP) % 2 : 0;
       this.guardLook.visor = phase ? GUARD_VISOR_BLINK : GUARD_VISOR_GOLD;
       const c = TA.townCharacter(this.guardLook, 'down', 0, 'stand', false);
-      const gs = 2.1; // taller guard — stays a head above the (now larger) crew
+      const gs = charScale(c) * 1.05; // a head above the crew, resolution-independent
       const w = c.width * gs, h = c.height * gs;
       ctx.fillStyle = 'rgba(0,0,0,.22)';
       ctx.fillRect(Math.round(g.x) - 5, Math.round(g.y) - 1, 10, 3);
@@ -1651,7 +1652,7 @@
       const { cell } = info;
       const X = (cell.x + 1) * TT, Y = cell.y * TT;
       const cx = X + TA.townDeskSlots(cell.seats)[0].chairX + 7;
-      const aw = 20 * AS, ah = 24 * AS; // crew footprint: astronaut 20×24×AS; minion 40×48×(AS/2) — same box
+      const aw = 20 * AS, ah = 24 * AS; // crew footprint (20×24 logical × AS) — charScale normalises every resolution to this box
       return {
         agent: { x: cx - aw / 2, y: Y + 25 - ah, w: aw, h: ah },
         screen: { x: cx - 54, y: Y + 40, w: 108, h: 54 }, // drawPreview's projX/projY

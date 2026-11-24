@@ -1332,9 +1332,13 @@
       };
 
       const render = (look, dir, frame, pose, eyesClosed) => {
+      // Astronauts + guards rasterise at 2× (40×48) for crisper edges at zoom;
+      // town.js charScale() normalises every crew canvas to the same on-screen
+      // footprint, so resolution is independent of desk / hit-box geometry.
       const canvas = document.createElement('canvas');
-      canvas.width = 20; canvas.height = 24;
+      canvas.width = 40; canvas.height = 48;
       const ctx = canvas.getContext('2d');
+      ctx.scale(2, 2);
 
       const isSit = pose === 'sit';
       const legFrame = frame % 4;
@@ -1450,15 +1454,15 @@
       }
 
       // Minion crew mode: replaces the EVA astronauts (guards stay imperial).
-      // Rendered at 2× internal resolution (40×48) for finer detail + a bold
+      // Rendered at 4× internal resolution (80×96) for fine detail + a bold
       // outline; town.js scales it back down (charScale) so its on-screen
       // footprint still matches the desk / hit box.
       const mode = crewMode();
       if (mode === 'minions' || mode === 'evil') {
         const mc = document.createElement('canvas');
-        mc.width = 40; mc.height = 48;
+        mc.width = 80; mc.height = 96;
         const mctx = mc.getContext('2d');
-        mctx.scale(2, 2);
+        mctx.scale(4, 4);
         renderMinion(mctx, look, dir, frame, pose, eyesClosed, mode === 'evil');
         return mc;
       }
