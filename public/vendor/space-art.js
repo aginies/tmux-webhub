@@ -1101,10 +1101,10 @@
       // Same 20×24 canvas as the astronaut, feet planted at the bottom edge,
       // so desk placement, click targets and scales are untouched.
       const MINIONS = {
-        kevin:  { top: 1, w: 10, eyes: 2, hair: 'sprout' },
-        stuart: { top: 4, w: 10, eyes: 1, hair: 'flat' },
-        bob:    { top: 6, w: 12, eyes: 2, hair: 'bald', hetero: true },
-        otto:   { top: 3, w: 12, eyes: 2, hair: 'strands', braces: true },
+        kevin:  { top: 2, w: 20, eyes: 2, hair: 'sprout' },
+        stuart: { top: 8, w: 20, eyes: 1, hair: 'flat' },
+        bob:    { top: 12, w: 24, eyes: 2, hair: 'bald', hetero: true },
+        otto:   { top: 6, w: 24, eyes: 2, hair: 'strands', braces: true },
       };
       const MINION_NAMES = Object.keys(MINIONS);
       const minionFor = (look) => {
@@ -1120,13 +1120,13 @@
         const isRepair = !!(look && look.isRepair);
         const isSit = pose === 'sit';
         const legFrame = frame % 4;
-        const cx = 10;
+        const cx = 20;
         const w = type.w, x0 = cx - w / 2;
         const top = type.top, domeR = w / 2, domeCy = top + domeR;
-        const bodyBot = 19;                       // overalls end / legs start
+        const bodyBot = 38;                       // overalls end / legs start
         const eyeY = domeCy;                      // goggles on the dome centre
-        const mouthY = eyeY + 3;
-        const ovTop = Math.min(bodyBot - 2, mouthY + 3);
+        const mouthY = eyeY + 6;
+        const ovTop = Math.min(bodyBot - 4, mouthY + 6);
         const skin = evil ? '#a855f7' : '#fdd835';
         const skinHi = evil ? '#c084fc' : '#fde68a';
         const skinShade = evil ? '#7e22ce' : '#eab308';
@@ -1134,11 +1134,12 @@
         const denimHi = isRepair ? '#38bdf8' : evil ? '#4338ca' : '#5b7cc9';
         const denimDark = isRepair ? '#0369a1' : evil ? '#1e1b4b' : '#2c4a8a';
         const hairC = evil ? '#581c87' : '#3a2a1a';
+        const hairHi = evil ? '#7c3aed' : '#5a4632';
         const glove = '#111827';
         const outline = evil ? '#2a0a4a' : '#1f2430';
+        const brass = '#f59e0b';
 
-        // crisp pixel disc (integer rows, like the vendor's sprite helpers) —
-        // arc() would antialias into muddy blends at this scale
+        // crisp pixel disc (integer rows) — smooth at this logical resolution
         const disc = (gx, gy, r, color) => {
           ctx.fillStyle = color;
           for (let dy = -r; dy <= r; dy++) {
@@ -1147,188 +1148,160 @@
           }
         };
 
-        // 0. Bold cartoon outline: a dark silhouette one pixel proud of the body,
-        //    drawn first so the colour layers leave a crisp rim (the single biggest
-        //    readability win against the busy station background).
-        disc(cx, domeCy, domeR + 1, outline);
+        // 0. Bold cartoon outline (silhouette two px proud of the body)
+        disc(cx, domeCy, domeR + 2, outline);
         ctx.fillStyle = outline;
-        ctx.fillRect(x0 - 1, domeCy, w + 2, bodyBot - domeCy + 1);
+        ctx.fillRect(x0 - 2, domeCy, w + 4, bodyBot - domeCy + 2);
 
-        // 1. Capsule body: pixel-disc head dome + rect torso
+        // 1. Capsule body + soft shading
         disc(cx, domeCy, domeR, skin);
         ctx.fillStyle = skin;
         ctx.fillRect(x0, domeCy, w, bodyBot - domeCy);
-        ctx.fillStyle = skinShade;                // right-side shading
-        ctx.fillRect(x0 + w - 1, domeCy, 1, bodyBot - domeCy);
-        ctx.fillStyle = skinHi;                   // left-side highlight
-        ctx.fillRect(x0, domeCy, 1, bodyBot - domeCy);
+        ctx.fillStyle = skinShade;
+        ctx.fillRect(x0 + w - 2, domeCy, 2, bodyBot - domeCy);
+        ctx.fillStyle = skinHi;
+        ctx.fillRect(x0, domeCy, 2, bodyBot - domeCy);
+        ctx.fillRect(x0 + 2, domeCy + 2, 1, bodyBot - domeCy - 4); // soft inner highlight
 
-        // 2. Hair
+        // 2. Hair (individual strands with a highlight)
         ctx.fillStyle = hairC;
         if (evil) {
-          for (let i = -3; i <= 3; i++) {
-            const hh = 2 + (Math.abs(i) % 2);
-            ctx.fillRect(cx + i * 2, top - hh + 1, 1, hh);
+          for (let i = -4; i <= 4; i++) {
+            const hh = 3 + (Math.abs(i) % 2) * 2;
+            ctx.fillRect(cx + i * 2, top - hh + 2, 1, hh);
           }
-          ctx.fillRect(x0 - 1, domeCy - 2, 1, 3);
-          ctx.fillRect(x0 + w, domeCy - 2, 1, 3);
+          ctx.fillRect(x0 - 2, domeCy - 4, 1, 6);
+          ctx.fillRect(x0 + w + 1, domeCy - 4, 1, 6);
         } else if (type.hair === 'sprout') {
-          ctx.fillRect(cx - 2, top - 2, 1, 3);
-          ctx.fillRect(cx, top - 3, 1, 3);
-          ctx.fillRect(cx + 2, top - 2, 1, 3);
+          for (const [ox, hh] of [[-4, 4], [-2, 6], [0, 7], [2, 6], [4, 4]])
+            ctx.fillRect(cx + ox, top - hh + 2, 1, hh);
+          ctx.fillStyle = hairHi; ctx.fillRect(cx, top - 4, 1, 2);
         } else if (type.hair === 'flat') {
-          ctx.fillRect(cx - 3, top, 3, 1);
-          ctx.fillRect(cx + 1, top, 3, 1);
-          ctx.fillRect(cx - 4, top + 1, 1, 2);
-          ctx.fillRect(cx + 3, top + 1, 1, 2);
+          ctx.fillRect(cx - 6, top, 6, 2); ctx.fillRect(cx + 1, top, 6, 2);
+          ctx.fillRect(cx - 7, top + 2, 2, 4); ctx.fillRect(cx + 6, top + 2, 2, 4);
+          ctx.fillStyle = hairHi; ctx.fillRect(cx - 5, top, 4, 1); ctx.fillRect(cx + 2, top, 4, 1);
         } else if (type.hair === 'bald') {
-          ctx.fillRect(cx - 1, top - 1, 1, 2);
-          ctx.fillRect(cx + 2, top - 1, 1, 1);
+          ctx.fillRect(cx - 2, top - 2, 1, 3); ctx.fillRect(cx + 1, top - 1, 1, 2); ctx.fillRect(cx + 4, top - 2, 1, 2);
         } else { // strands
-          ctx.fillRect(cx - 3, top - 1, 1, 2);
-          ctx.fillRect(cx, top - 2, 1, 3);
-          ctx.fillRect(cx + 2, top - 1, 1, 2);
+          for (const [ox, hh] of [[-5, 3], [-2, 5], [1, 6], [4, 4]])
+            ctx.fillRect(cx + ox, top - hh + 2, 1, hh);
+          ctx.fillStyle = hairHi; ctx.fillRect(cx + 1, top - 3, 1, 2);
         }
 
-        // 3. Denim overalls: waist block, bib, shoulder straps, pocket + stitching
+        // 3. Denim overalls: waist, bib, straps, stitching, pocket, brass buttons, Gru logo
         ctx.fillStyle = denim;
         ctx.fillRect(x0, ovTop, w, bodyBot - ovTop);
-        ctx.fillRect(cx - 3, ovTop - 2, 6, 2);
+        ctx.fillRect(cx - 6, ovTop - 4, 12, 4);
         ctx.fillStyle = denimDark;
-        ctx.fillRect(x0, ovTop - 3, 2, 3);
-        ctx.fillRect(x0 + w - 2, ovTop - 3, 2, 3);
-        ctx.fillRect(x0, ovTop, w, 1);
-        ctx.fillStyle = denimHi;                  // seam highlight + stitch dashes
-        ctx.fillRect(x0 + 1, ovTop + 1, w - 2, 0.5);
-        for (let sx = x0 + 1; sx < x0 + w - 1; sx += 2) ctx.fillRect(sx, bodyBot - 1.5, 1, 0.5);
+        ctx.fillRect(x0, ovTop - 6, 4, 6); ctx.fillRect(x0 + w - 4, ovTop - 6, 4, 6); // straps
+        ctx.fillRect(x0, ovTop, w, 2);                       // waist seam
+        ctx.fillStyle = denimHi;                             // stitch dashes
+        for (let sx = x0 + 1; sx < x0 + w - 1; sx += 3) { ctx.fillRect(sx, ovTop + 3, 2, 1); ctx.fillRect(sx, bodyBot - 3, 2, 1); }
+        ctx.fillRect(x0 + 1, ovTop + 5, 1, bodyBot - ovTop - 8); ctx.fillRect(x0 + w - 2, ovTop + 5, 1, bodyBot - ovTop - 8);
+        ctx.fillStyle = brass;                               // strap buttons
+        ctx.fillRect(x0 + 1, ovTop - 5, 2, 2); ctx.fillRect(x0 + w - 3, ovTop - 5, 2, 2);
         if (dir !== 'up') {
-          ctx.fillStyle = denimDark;
-          ctx.fillRect(cx - 2, ovTop - 2, 4, 2);  // pocket
-          ctx.fillStyle = '#0f172a';              // Gru logo (dark disc + light G)
-          ctx.fillRect(cx - 1, ovTop - 1.5, 2, 1.5);
-          ctx.fillStyle = '#e2e8f0';
-          ctx.fillRect(cx - 0.5, ovTop - 1, 1, 0.5);
+          ctx.fillStyle = denimDark; ctx.fillRect(cx - 4, ovTop - 4, 8, 4);   // bib pocket
+          ctx.fillStyle = brass; ctx.fillRect(cx - 1, ovTop - 3, 2, 1);       // pocket button
+          disc(cx, ovTop + 6, 3, '#0f172a');                                  // Gru logo
+          ctx.fillStyle = '#e2e8f0'; ctx.fillRect(cx - 1, ovTop + 5, 3, 1); ctx.fillRect(cx - 1, ovTop + 5, 1, 3); ctx.fillRect(cx - 1, ovTop + 7, 2, 1);
         }
 
         // 4. Goggle strap + eyes (back view: strap only)
         ctx.fillStyle = '#374151';
-        ctx.fillRect(x0, eyeY - 1, w, 2);
-        const irisFor = (side) => evil ? '#b91c1c'
-          : (type.hetero && side < 0) ? '#3f8f4f' : '#7a4a21';
+        ctx.fillRect(x0, eyeY - 2, w, 4);
+        ctx.fillStyle = '#9ca3af'; ctx.fillRect(x0 + w - 3, eyeY - 1, 2, 2);  // strap buckle
+        const irisFor = (side) => evil ? '#b91c1c' : (type.hetero && side < 0) ? '#3f8f4f' : '#7a4a21';
         const goggle = (gx, r, side) => {
-          disc(gx, eyeY, r, '#4b5563');           // dark metal rim
-          disc(gx, eyeY, r - 0.5, '#9ca3af');     // bright metal ring
-          ctx.fillStyle = '#e5e7eb';              // specular glint on the rim
-          ctx.fillRect(gx - r + 1, eyeY - r + 1, 1.5, 0.5);
+          disc(gx, eyeY, r, '#4b5563');            // dark metal rim
+          disc(gx, eyeY, r - 1, '#9ca3af');        // bright metal ring
+          ctx.fillStyle = '#e5e7eb'; ctx.fillRect(gx - r + 2, eyeY - r + 2, 3, 1); // rim glint
+          ctx.fillStyle = '#374151';               // rim screws
+          ctx.fillRect(gx - 1, eyeY - r + 1, 2, 1); ctx.fillRect(gx - 1, eyeY + r - 2, 2, 1);
+          ctx.fillRect(gx - r + 1, eyeY - 1, 1, 2); ctx.fillRect(gx + r - 2, eyeY - 1, 1, 2);
           if (eyesClosed) {
-            disc(gx, eyeY, r - 1, skin);          // eyelid covers the eyeball
+            disc(gx, eyeY, r - 2, skin);           // eyelid
             ctx.fillStyle = evil ? '#3b0764' : '#7c4a12';
-            ctx.fillRect(gx - r + 1, eyeY, (r - 1) * 2, 1); // lash line
+            ctx.fillRect(gx - r + 2, eyeY, (r - 2) * 2, 2); // lash line
             return;
           }
-          disc(gx, eyeY, r - 1, '#f9fafb');
-          const lx = dir === 'right' ? 1 : dir === 'left' ? -1 : 0;
-          // iris scales with the goggle: the single big eye (r=4) gets a bigger
-          // iris so the white reads as ONE eyeball with a rim, not two white
-          // crescents that look like two eyes at desk zoom.
-          const ir = r >= 4 ? 3 : 2;
+          disc(gx, eyeY, r - 2, '#f9fafb');        // eyeball
+          ctx.fillStyle = '#e0f2fe'; ctx.fillRect(gx - r + 3, eyeY - r + 3, 2, 2); // glass glint
+          const lx = dir === 'right' ? 2 : dir === 'left' ? -2 : 0;
+          const ir = r >= 8 ? 6 : 4;               // iris scales with the goggle (one eyeball)
           ctx.fillStyle = irisFor(side);
           ctx.fillRect(gx - ir / 2 + lx, eyeY - ir / 2, ir, ir);
-          ctx.fillStyle = '#1f2937';
-          ctx.fillRect(gx + lx, eyeY, 1, 1);
+          ctx.fillStyle = '#1f2937';               // pupil (one per eye)
+          ctx.fillRect(gx - 1 + lx, eyeY - 1, 2, 2);
           ctx.fillStyle = '#ffffff';
-          ctx.fillRect(gx - ir / 2 + lx, eyeY - ir / 2, 1, 1);
+          ctx.fillRect(gx - 1 + lx, eyeY - 1, 1, 1);
         };
         if (dir !== 'up') {
           if (dir === 'down') {
-            if (type.eyes === 1) goggle(cx, 4, 0);
-            else { goggle(cx - 3, 3, -1); goggle(cx + 3, 3, 1); }
+            if (type.eyes === 1) goggle(cx, 8, 0);
+            else { goggle(cx - 6, 6, -1); goggle(cx + 6, 6, 1); }
           } else {
             const sgn = dir === 'right' ? 1 : -1;
-            goggle(cx + sgn * (type.eyes === 1 ? 1 : 2), type.eyes === 1 ? 4 : 3, sgn);
+            goggle(cx + sgn * (type.eyes === 1 ? 2 : 4), type.eyes === 1 ? 8 : 6, sgn);
           }
-          // rosy cheeks just under the goggles
-          ctx.fillStyle = evil ? 'rgba(126,34,206,0.55)' : 'rgba(244,114,182,0.5)';
-          if (type.eyes === 1) ctx.fillRect(cx - 2, eyeY + 3, 4, 1);
-          else { ctx.fillRect(cx - 4, eyeY + 2.5, 1.5, 1); ctx.fillRect(cx + 2.5, eyeY + 2.5, 1.5, 1); }
+          ctx.fillStyle = evil ? 'rgba(126,34,206,0.5)' : 'rgba(244,114,182,0.45)'; // rosy cheeks
+          if (type.eyes === 1) ctx.fillRect(cx - 4, eyeY + 6, 8, 2);
+          else { ctx.fillRect(cx - 9, eyeY + 5, 3, 2); ctx.fillRect(cx + 6, eyeY + 5, 3, 2); }
         }
 
-        // 5. Mouth: smile (otto: braces), evil: open maw with buck teeth
+        // 5. Mouth: smile with teeth (otto: braces), evil: buck-toothed maw
         if (dir !== 'up') {
-          const mx = dir === 'down' ? cx : cx + (dir === 'right' ? 2 : -2);
+          const mx = dir === 'down' ? cx : cx + (dir === 'right' ? 4 : -4);
           if (evil) {
-            ctx.fillStyle = '#3b0764';
-            ctx.fillRect(mx - 3, mouthY - 1, 6, 3);
-            ctx.fillStyle = '#f9fafb';
-            ctx.fillRect(mx - 2, mouthY - 1, 1, 2);
-            ctx.fillRect(mx, mouthY - 1, 1, 2);
-            ctx.fillRect(mx + 2, mouthY - 1, 1, 2);
-            ctx.fillRect(mx - 3, mouthY + 1, 1, 1);
-            ctx.fillRect(mx + 2, mouthY + 1, 1, 1);
+            ctx.fillStyle = '#3b0764'; ctx.fillRect(mx - 6, mouthY - 2, 12, 5);
+            ctx.fillStyle = '#f1f5f9';
+            ctx.fillRect(mx - 4, mouthY - 2, 2, 3); ctx.fillRect(mx - 1, mouthY - 2, 2, 3); ctx.fillRect(mx + 2, mouthY - 2, 2, 3);
+            ctx.fillRect(mx - 6, mouthY + 1, 2, 2); ctx.fillRect(mx + 4, mouthY + 1, 2, 2);
           } else if (type.braces) {
-            ctx.fillStyle = '#f9fafb';
-            ctx.fillRect(mx - 2, mouthY, 4, 1);
-            ctx.fillStyle = '#9ca3af';
-            ctx.fillRect(mx - 1, mouthY, 1, 1);
-            ctx.fillRect(mx + 1, mouthY, 1, 1);
-            ctx.fillStyle = '#7c4a12';
-            ctx.fillRect(mx - 3, mouthY - 1, 1, 1);
-            ctx.fillRect(mx + 2, mouthY - 1, 1, 1);
+            ctx.fillStyle = '#f1f5f9'; ctx.fillRect(mx - 4, mouthY, 8, 2);
+            ctx.fillStyle = '#9ca3af'; ctx.fillRect(mx - 4, mouthY + 1, 8, 1);
+            ctx.fillRect(mx - 2, mouthY, 1, 2); ctx.fillRect(mx + 1, mouthY, 1, 2);
+            ctx.fillStyle = '#7c4a12'; ctx.fillRect(mx - 5, mouthY - 1, 1, 2); ctx.fillRect(mx + 4, mouthY - 1, 1, 2);
           } else {
-            ctx.fillStyle = '#7c4a12';
-            ctx.fillRect(mx - 2, mouthY, 4, 1);
-            ctx.fillRect(mx - 3, mouthY - 1, 1, 1);
-            ctx.fillRect(mx + 2, mouthY - 1, 1, 1);
+            ctx.fillStyle = '#7c4a12'; ctx.fillRect(mx - 4, mouthY, 8, 2);
+            ctx.fillRect(mx - 5, mouthY - 1, 1, 2); ctx.fillRect(mx + 4, mouthY - 1, 1, 2);
+            ctx.fillStyle = '#f1f5f9'; ctx.fillRect(mx - 2, mouthY, 2, 1); ctx.fillRect(mx + 1, mouthY, 2, 1); // teeth
           }
         }
 
-        // 6. Legs & shoes (walk cycle shifts them like the astronaut's)
-        const legShift = isSit ? 0 : (legFrame === 1 ? 1 : legFrame === 3 ? -1 : 0);
+        // 6. Legs & shoes (walk cycle; soles + a lace dot)
+        const legShift = isSit ? 0 : (legFrame === 1 ? 2 : legFrame === 3 ? -2 : 0);
         ctx.fillStyle = denimDark;
         if (isSit) {
-          ctx.fillRect(cx - 4, 19, 8, 2);         // thighs bent forward
-          ctx.fillStyle = glove;
-          ctx.fillRect(cx - 5, 21, 4, 3);
-          ctx.fillRect(cx + 1, 21, 4, 3);
-          ctx.fillStyle = '#475569';              // shoe soles
-          ctx.fillRect(cx - 5, 23, 4, 0.5);
-          ctx.fillRect(cx + 1, 23, 4, 0.5);
+          ctx.fillRect(cx - 8, 38, 16, 4);
+          ctx.fillStyle = glove; ctx.fillRect(cx - 10, 42, 8, 6); ctx.fillRect(cx + 2, 42, 8, 6);
+          ctx.fillStyle = '#475569'; ctx.fillRect(cx - 10, 46, 8, 1); ctx.fillRect(cx + 2, 46, 8, 1);
         } else {
-          ctx.fillRect(cx - 4, 19, 3, 2 + legShift);
-          ctx.fillRect(cx + 1, 19, 3, 2 - legShift);
-          ctx.fillStyle = glove;
-          ctx.fillRect(cx - 5, 21 + legShift, 4, 3);
-          ctx.fillRect(cx + 1, 21 - legShift, 4, 3);
-          ctx.fillStyle = '#475569';
-          ctx.fillRect(cx - 5, 23 + legShift, 4, 0.5);
-          ctx.fillRect(cx + 1, 23 - legShift, 4, 0.5);
+          ctx.fillRect(cx - 8, 38, 6, 4 + legShift); ctx.fillRect(cx + 2, 38, 6, 4 - legShift);
+          ctx.fillStyle = glove; ctx.fillRect(cx - 10, 42 + legShift, 8, 6); ctx.fillRect(cx + 2, 42 - legShift, 8, 6);
+          ctx.fillStyle = '#475569'; ctx.fillRect(cx - 10, 46 + legShift, 8, 1); ctx.fillRect(cx + 2, 46 - legShift, 8, 1);
+          ctx.fillStyle = '#e5e7eb'; ctx.fillRect(cx - 7, 43 + legShift, 2, 1); ctx.fillRect(cx + 5, 43 - legShift, 2, 1);
         }
 
-        // 7. Arms & gloves (evil minions have longer arms; sit = typing)
-        const shoulderY = ovTop - 3;
-        const armLen = evil ? 6 : 4;
+        // 7. Arms & gloves with finger lines (evil: longer arms; sit = typing)
+        const shoulderY = ovTop - 6;
+        const armLen = evil ? 12 : 8;
         ctx.fillStyle = skin;
+        const fingers = (fx, fy) => { ctx.fillStyle = '#0f172a'; ctx.fillRect(fx + 1, fy + 1, 1, 2); ctx.fillRect(fx + 2, fy + 1, 1, 2); };
         if (isSit) {
-          const ty = frame % 2 ? 1 : 0;
-          ctx.fillRect(x0 - 2, shoulderY, 2, armLen);
-          ctx.fillRect(x0 + w, shoulderY, 2, armLen);
-          ctx.fillStyle = glove;
-          ctx.fillRect(x0 - 2, shoulderY + armLen - ty, 2, 2);
-          ctx.fillRect(x0 + w, shoulderY + armLen - (1 - ty), 2, 2);
+          const ty = frame % 2 ? 2 : 0;
+          ctx.fillStyle = skin; ctx.fillRect(x0 - 4, shoulderY, 4, armLen); ctx.fillRect(x0 + w, shoulderY, 4, armLen);
+          ctx.fillStyle = glove; ctx.fillRect(x0 - 4, shoulderY + armLen - ty, 4, 4); ctx.fillRect(x0 + w, shoulderY + armLen - (2 - ty), 4, 4);
+          fingers(x0 - 4, shoulderY + armLen - ty); fingers(x0 + w, shoulderY + armLen - (2 - ty));
         } else {
-          const swing = legFrame === 1 ? 1 : legFrame === 3 ? -1 : 0;
-          ctx.fillRect(x0 - 2, shoulderY, 2, armLen + swing);
-          ctx.fillRect(x0 + w, shoulderY, 2, armLen - swing);
-          ctx.fillStyle = glove;
-          ctx.fillRect(x0 - 2, shoulderY + armLen + swing, 2, 2);
-          ctx.fillRect(x0 + w, shoulderY + armLen - swing, 2, 2);
+          const swing = legFrame === 1 ? 2 : legFrame === 3 ? -2 : 0;
+          ctx.fillStyle = skin; ctx.fillRect(x0 - 4, shoulderY, 4, armLen + swing); ctx.fillRect(x0 + w, shoulderY, 4, armLen - swing);
+          ctx.fillStyle = glove; ctx.fillRect(x0 - 4, shoulderY + armLen + swing, 4, 4); ctx.fillRect(x0 + w, shoulderY + armLen - swing, 4, 4);
+          fingers(x0 - 4, shoulderY + armLen + swing); fingers(x0 + w, shoulderY + armLen - swing);
         }
 
-        // 8. EVA repair crew keeps a beacon antenna (cyan overalls above)
-        if (isRepair) {
-          ctx.fillStyle = '#00e5ff';
-          ctx.fillRect(cx + domeR - 2, top - 2, 1, 3);
-        }
+        // 8. EVA repair crew beacon antenna
+        if (isRepair) { ctx.fillStyle = '#00e5ff'; ctx.fillRect(cx + domeR - 4, top - 4, 2, 6); }
       };
 
       const render = (look, dir, frame, pose, eyesClosed) => {
@@ -1454,15 +1427,15 @@
       }
 
       // Minion crew mode: replaces the EVA astronauts (guards stay imperial).
-      // Rendered at 32× internal resolution (640×768) — memory is no object, so
-      // maximise crispness at max zoom / HiDPI. town.js charScale() scales it
-      // back to the desk footprint; sprite2x skips sources this large.
+      // Drawn on a fine 40×48 logical grid at 16× (640×768) for rich detail;
+      // town.js charScale() scales it back to the desk footprint; sprite2x
+      // skips sources this large.
       const mode = crewMode();
       if (mode === 'minions' || mode === 'evil') {
         const mc = document.createElement('canvas');
         mc.width = 640; mc.height = 768;
         const mctx = mc.getContext('2d');
-        mctx.scale(32, 32);
+        mctx.scale(16, 16);
         renderMinion(mctx, look, dir, frame, pose, eyesClosed, mode === 'evil');
         return mc;
       }
