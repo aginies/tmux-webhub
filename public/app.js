@@ -1570,6 +1570,19 @@ if (window.TownView) {
   });
   view = localStorage.getItem('pc.view') || (innerWidth < 640 ? 'list' : 'town');
 }
+
+// ---------- crew style (Space view) ----------
+// astronauts (default) | minions | evil (diabolic purple minions). Browser-only
+// pref read by space-art.js's townCharacter; the sprite cache is keyed by mode,
+// so the change applies live on the next frame.
+function setCrew(mode) {
+  if (mode !== 'minions' && mode !== 'evil') mode = 'astronauts';
+  window.WhCrew = window.WhCrew || {};
+  window.WhCrew.mode = mode;
+  localStorage.setItem('pc.crew', mode);
+  if (townView) townView.needsRedraw = true; // reduced-motion: force one redraw
+}
+setCrew(localStorage.getItem('pc.crew') || 'astronauts');
 function setView(v) {
   if (v === 'town' && !townView) v = 'list'; // no art bundle → list only
   // The town floating window carries inline left/top/width/height from
@@ -1810,6 +1823,7 @@ function fillForm(cfg) {
   $('cfg-pollMs').value = cfg.pollMs != null ? cfg.pollMs : '';
   $('cfg-netDisplay').checked = !!cfg.netDisplay;
   $('cfg-theme').value = getTheme();
+  $('cfg-crew').value = (window.WhCrew && window.WhCrew.mode) || 'astronauts';
   $('cfg-tabs').checked = tabsEnabled;
   $('cfg-tls').checked = !!cfg.tls;
   toggleTlsPaths();
@@ -1925,6 +1939,8 @@ $('cfg-save').onclick = async () => {
 // one-time form bindings
 $('cfg-tls').addEventListener('change', toggleTlsPaths);
 $('cfg-theme').addEventListener('change', () => setTheme($('cfg-theme').value));
+// Crew style: browser-only pref — applies immediately, no server round-trip.
+$('cfg-crew').addEventListener('change', () => setCrew($('cfg-crew').value));
 // Session tabs: browser-only pref — applies immediately, no server round-trip.
 $('cfg-tabs').addEventListener('change', () => setTabsEnabled($('cfg-tabs').checked));
 $('cfg-token-toggle').onclick = () => {

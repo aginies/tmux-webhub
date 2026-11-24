@@ -56,8 +56,8 @@ session list; both show the same live data.
   output) and a floating terminal opens on it. Type, resize, scroll the
   scrollback — it's a full terminal. Close the window and the session keeps
   running in tmux.
-- **Rename** — click the astronaut seated at a desk to rename that session
-  (tmux `rename-session`).
+- **Rename** — click the crew member seated at a desk (astronaut or minion,
+  per ⚙ → *Crew*) to rename that session (tmux `rename-session`).
 - **Hide offices** — each 📦 *Orbital Sessions* manifest row carries an eye +
   slide switch that shows/hides that host's starship office on the map. Purely
   visual: polling and sessions keep running, the row stays (dimmed) and its
@@ -318,6 +318,10 @@ atomic and JSON-validated, so a broken file can never be saved.
 - **Theme** — Space (default), classic dark, light, or high contrast. Browser
   only (stored in `localStorage`), applies to the terminal palette and the scene
   skin.
+- **Crew** — who mans the Space view: **Astronauts** (default), **Minions**
+  (Kevin, Stuart, Bob & Otto — each with its own height, eye count and hair,
+  assigned per session) or **Evil minions** (the diabolic purple variant).
+  Browser only, applies live; the imperial guards stay on duty either way.
 - **Log out** — ends this browser's session (with 2FA: deleted server-side).
 
 The host list and per-host `cmd` apply immediately; server settings (`port`,
