@@ -120,7 +120,7 @@ check('minion rendered at 4× resolution (80×96)', min.width === 80 && min.heig
 check('minion has a bold cartoon outline', fills(min).includes('#1f2430'));
 call("window.WhCrew.mode = 'astronauts'");
 check('switching back to astronauts reuses the cached sprite', render(look(3)) === astro);
-check('astronaut rendered at 2× resolution (40×48)', astro.width === 40 && astro.height === 48);
+check('astronaut rendered at 4× resolution (80×96)', astro.width === 80 && astro.height === 96);
 
 // eye count is a property of the minion TYPE, never of the pose: a one-eyed
 // minion (Stuart) keeps exactly one eye seated at the desk, typing, standing,

@@ -23,10 +23,10 @@
   if (!TA) return; // no art bundle → list view only
   const TT = TA.TOWN_TILE;
   const AS = TA.TOWN_AGENT_SCALE;
-  // Crew sprites rasterise at various internal resolutions (astronauts 2×,
-  // minions 4×) for crispness; charScale normalises every canvas to the same
-  // on-screen footprint (20×24 logical × AS) so desks, depth and the rename
-  // hit box are independent of the sprite's pixel density.
+  // Crew sprites rasterise at 4× internal resolution (80×96) for crispness;
+  // charScale normalises every canvas to the same on-screen footprint
+  // (20×24 logical × AS) so desks, depth and the rename hit box are independent
+  // of the sprite's pixel density.
   const charScale = (c) => AS * 20 / c.width;
   const DESK_COLORS = Object.keys(TA.TOWN_DESK_COLORS);
   const REDUCED = matchMedia('(prefers-reduced-motion: reduce)').matches;

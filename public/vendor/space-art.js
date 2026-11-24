@@ -1332,13 +1332,13 @@
       };
 
       const render = (look, dir, frame, pose, eyesClosed) => {
-      // Astronauts + guards rasterise at 2× (40×48) for crisper edges at zoom;
+      // Astronauts + guards rasterise at 4× (80×96) for crisper edges at zoom;
       // town.js charScale() normalises every crew canvas to the same on-screen
       // footprint, so resolution is independent of desk / hit-box geometry.
       const canvas = document.createElement('canvas');
-      canvas.width = 40; canvas.height = 48;
+      canvas.width = 80; canvas.height = 96;
       const ctx = canvas.getContext('2d');
-      ctx.scale(2, 2);
+      ctx.scale(4, 4);
 
       const isSit = pose === 'sit';
       const legFrame = frame % 4;
