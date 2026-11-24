@@ -374,6 +374,45 @@
       ctx.fillStyle = '#f59e0b';
       ctx.fillRect(4, 4, 1, 1); ctx.fillRect(9, 6, 1, 1);
     });
+    // Crazy-activity bubbles (minions goof off even while working at the desk)
+    sp.bubble.panic = makeBubble((ctx) => {
+      // !! alarm
+      ctx.fillStyle = '#ef4444';
+      ctx.fillRect(4, 2, 2, 5); ctx.fillRect(4, 8, 2, 1);
+      ctx.fillRect(8, 2, 2, 5); ctx.fillRect(8, 8, 2, 1);
+    });
+    sp.bubble.coffee = makeBubble((ctx) => {
+      // steaming coffee cup (caffeine jitter)
+      ctx.fillStyle = '#7c4a12'; ctx.fillRect(4, 5, 5, 4);
+      ctx.fillStyle = '#f1f5f9'; ctx.fillRect(3, 4, 7, 1);
+      ctx.fillStyle = '#9ca3af'; ctx.fillRect(5, 2, 1, 2); ctx.fillRect(7, 1, 1, 2);
+    });
+    sp.bubble.music = makeBubble((ctx) => {
+      // music notes (headbanging / air guitar)
+      ctx.fillStyle = '#38bdf8';
+      ctx.fillRect(4, 3, 1, 5); ctx.fillRect(3, 7, 2, 2);
+      ctx.fillRect(9, 2, 1, 5); ctx.fillRect(8, 6, 2, 2);
+      ctx.fillRect(4, 2, 6, 1);
+    });
+    sp.bubble.sneeze = makeBubble((ctx) => {
+      // spray droplets (achoo!)
+      ctx.fillStyle = '#38bdf8';
+      ctx.fillRect(3, 4, 2, 2); ctx.fillRect(6, 2, 2, 2); ctx.fillRect(9, 4, 2, 2);
+      ctx.fillRect(5, 7, 2, 2); ctx.fillRect(8, 7, 1, 1);
+    });
+    sp.bubble.party = makeBubble((ctx) => {
+      // confetti burst (rocket jump)
+      ctx.fillStyle = '#fde047'; ctx.fillRect(5, 3, 3, 5); ctx.fillRect(4, 4, 5, 3);
+      ctx.fillStyle = '#ef4444'; ctx.fillRect(2, 2, 1, 1); ctx.fillRect(10, 6, 1, 1);
+      ctx.fillStyle = '#38bdf8'; ctx.fillRect(9, 2, 1, 1); ctx.fillRect(3, 7, 1, 1);
+      ctx.fillStyle = '#50fa7b'; ctx.fillRect(6, 1, 1, 1); ctx.fillRect(7, 8, 1, 1);
+    });
+    sp.bubble.bang = makeBubble((ctx) => {
+      // gunshot burst (brawl weapon)
+      ctx.fillStyle = '#f59e0b'; ctx.fillRect(5, 2, 3, 7); ctx.fillRect(3, 4, 7, 3);
+      ctx.fillStyle = '#ef4444'; ctx.fillRect(5, 4, 3, 3);
+      ctx.fillStyle = '#fde047'; ctx.fillRect(2, 2, 1, 1); ctx.fillRect(10, 2, 1, 1); ctx.fillRect(2, 7, 1, 1); ctx.fillRect(10, 7, 1, 1);
+    });
 
     // Millennium Falcon (Star Wars YT-1300 light freighter)
     const createFalcon = () => {

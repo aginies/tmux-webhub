@@ -152,6 +152,11 @@ check('session tabs default OFF', app.includes("localStorage.getItem('pc.tabs') 
 // minion mischief bubble art exists (fart / burp / giggle / banana / pow / dizzy)
 const space = fs.readFileSync(path.join(ROOT, 'public/vendor/space-art.js'), 'utf8');
 check('mischief bubbles defined', ['fart', 'burp', 'giggle', 'banana', 'pow', 'dizzy'].every((k) => space.includes('sp.bubble.' + k + ' =')));
+check('crazy-activity bubbles defined', ['panic', 'coffee', 'music', 'sneeze', 'party'].every((k) => space.includes('sp.bubble.' + k + ' =')));
+check('minions goof off while working (workAntic + particles)',
+  town.includes('workAntic') && town.includes('WORK_ANTICS') && town.includes('drawConfetti') && town.includes('drawSpray'));
+check('crazy brawl weapons wired', town.includes('const WEAPONS') && town.includes('drawWeapon') && town.includes('fight.weapon') && space.includes('sp.bubble.bang ='));
+check('lounge spots clamped inside narrow hulls', town.includes('loungeX') && town.includes('keep the pair (and brawl) inside narrow ships'));
 check('town.js wires the idle mischief (antics + brawl)',
   town.includes('mischiefAt') && town.includes('drawFighter') && town.includes('drawBrawlCloud') && town.includes("activity === 'fight'"));
 check('town.js scales high-res minions back to the crew footprint', town.includes('const charScale ='));
