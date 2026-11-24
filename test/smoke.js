@@ -201,6 +201,17 @@ test('GET / with cookie → index.html', async () => {
   assert.match(await r.text(), /tmux-webhub/);
 });
 
+test('static cache: our space-art revalidates, vendored libs immutable', async () => {
+  // space-art.js is actively edited → must NOT be immutable-cached, or browsers
+  // keep a stale copy for a year and never see art fixes (minion eye count!)
+  const art = await fetch(base + '/vendor/space-art.js', { headers: { Cookie: cookie } });
+  assert.equal(art.status, 200);
+  assert.match(art.headers.get('cache-control'), /no-cache/);
+  const lib = await fetch(base + '/vendor/town-art.js', { headers: { Cookie: cookie } });
+  assert.equal(lib.status, 200);
+  assert.match(lib.headers.get('cache-control'), /immutable/);
+});
+
 test('GET /api/config with cookie → 200 + raw file', async () => {
   const r = await fetch(base + '/api/config', { headers: { Cookie: cookie } });
   assert.equal(r.status, 200);

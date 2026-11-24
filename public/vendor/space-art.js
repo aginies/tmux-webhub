@@ -1228,22 +1228,16 @@
           }
           disc(gx, eyeY, r - 1, '#f9fafb');
           const lx = dir === 'right' ? 1 : dir === 'left' ? -1 : 0;
-          if (r >= 4) {
-            // single big eye (Stuart): one centred pupil in a continuous white
-            // disc. A centred brown iris would split the white into two
-            // crescents and read as TWO eyes at desk zoom — keep it one.
-            ctx.fillStyle = evil ? '#7f1d1d' : '#1f2937';
-            ctx.fillRect(gx - 1 + lx, eyeY - 1, 2, 2);
-            ctx.fillStyle = '#ffffff';
-            ctx.fillRect(gx - 1 + lx, eyeY - 1, 1, 1);
-          } else {
-            ctx.fillStyle = irisFor(side);
-            ctx.fillRect(gx - 1 + lx, eyeY - 1, 2, 2);
-            ctx.fillStyle = '#1f2937';
-            ctx.fillRect(gx + lx, eyeY, 1, 1);
-            ctx.fillStyle = '#ffffff';
-            ctx.fillRect(gx - 1 + lx, eyeY - 1, 1, 1);
-          }
+          // iris scales with the goggle: the single big eye (r=4) gets a bigger
+          // iris so the white reads as ONE eyeball with a rim, not two white
+          // crescents that look like two eyes at desk zoom.
+          const ir = r >= 4 ? 3 : 2;
+          ctx.fillStyle = irisFor(side);
+          ctx.fillRect(gx - ir / 2 + lx, eyeY - ir / 2, ir, ir);
+          ctx.fillStyle = '#1f2937';
+          ctx.fillRect(gx + lx, eyeY, 1, 1);
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(gx - ir / 2 + lx, eyeY - ir / 2, 1, 1);
         };
         if (dir !== 'up') {
           if (dir === 'down') {

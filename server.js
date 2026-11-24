@@ -1513,7 +1513,13 @@ function serveStatic(req, res, url) {
   }
   fs.stat(full, (err, st) => {
     if (err || !st.isFile()) { res.writeHead(404, SEC_HEADERS); return res.end('not found'); }
-    const cc = full.startsWith(PUBLIC_DIR + path.sep + 'vendor' + path.sep)
+    // Truly vendored libs (xterm, qrcode, the herdr-world town-art bundle) are
+    // immutable. space-art.js is OUR space-theme override and changes often, so
+    // it revalidates (no-cache + ETag) — otherwise a browser would keep a stale
+    // copy for a year and never see art fixes (e.g. the minion eye count).
+    const isVendored = full.startsWith(PUBLIC_DIR + path.sep + 'vendor' + path.sep);
+    const isOurArt = full === path.join(PUBLIC_DIR, 'vendor', 'space-art.js');
+    const cc = (isVendored && !isOurArt)
       ? 'public, max-age=31536000, immutable'
       : 'no-cache';
     const respond = (c) => {
