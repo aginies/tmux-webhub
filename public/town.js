@@ -30,7 +30,7 @@
   const charScale = (c) => AS * 20 / c.width;
   const DESK_COLORS = Object.keys(TA.TOWN_DESK_COLORS);
   const REDUCED = matchMedia('(prefers-reduced-motion: reduce)').matches;
-  const Z_MIN = 0.35, Z_MAX = 4;
+  const Z_MIN = 0.35, Z_MAX = 8;
   // Memory budget per baked static layer, in source pixels. On HiDPI screens the
   // ground/base layers bake at 2x; past this budget they fall back to 1x
   // (16 Mpx ≈ 64 MB per layer at 4 bytes/px; a 4-host town at 2x is ~13 Mpx).
@@ -1233,9 +1233,9 @@
     // set are memoized, so the cache is bounded) so every per-frame bilinear
     // draw under a HiDPI transform has real source pixels — sharper, not blurry.
     sprite2x(c) {
-      // Already-hi-res sources (e.g. 16× minions at 320px) don't need doubling —
-      // skip to avoid a wasteful 4× memory blow-up; they're crisp as-is.
-      if (c.width >= 160) return c;
+      // Already-hi-res sources (e.g. 32× minions at 1280px) don't need doubling —
+      // skip to avoid a wasteful memory blow-up; they're crisp as-is.
+      if (c.width >= 320) return c;
       if (!this._sprite2x) this._sprite2x = new Map();
       let big = this._sprite2x.get(c);
       if (big) return big;
