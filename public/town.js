@@ -695,9 +695,9 @@
         const L = b.lounge;
         g.drawImage(sp.sofa, (L.x + 1) * TT - 1, (L.y + 1) * TT - 8);
         g.drawImage(sp.sofa, (L.x + 1) * TT - 1, (L.y + 3) * TT - 8); // second sofa, one below the other
-        g.drawImage(sp.coffee, (L.x + 4) * TT + 1, (L.y + 1) * TT - 10);
-        g.drawImage(sp.cooler, (L.x + 5) * TT + 2, (L.y + 1) * TT - 12);
-        if (sp.pingpong) g.drawImage(sp.pingpong, (L.x + 7) * TT, (L.y + 1) * TT - 8);
+        g.drawImage(sp.coffee, (L.x + 5) * TT + 1, (L.y + 1) * TT - 10);
+        g.drawImage(sp.cooler, (L.x + 10) * TT + 2, (L.y + 1) * TT - 12);
+        if (sp.pingpong) g.drawImage(sp.pingpong, (L.x + 16) * TT, (L.y + 4) * TT - 8);
         const cx = b.doorX * TT, cy = (b.counter.y + 1) * TT - 8;
         // The imperial guard patrols the office entrance, left ↔ right.
         this.guards.push({ x: cx, y: cy + 9, hostKey: b.hostKey });
@@ -1044,46 +1044,47 @@
       return from ? [from, spot] : [at.feet, at.entry, spot];
     }
 
-    // the water / nutrient synthesizer spots in the lounge
+    // Idle spots are spread along a single roomy row at the bottom of the
+    // lounge (the furniture lines the top wall). 40px gaps keep the larger
+    // crew from standing on top of each other; overflow agents stay at their
+    // desks instead (see idlePlan), so the room never gets crowded.
+    // the water / nutrient synthesizer spots (below the cooler)
     coolerSpots(b) {
-      const L = b.lounge;
+      const L = b.lounge, ry = (L.y + 4) * TT + 6;
       return [
-        { x: (L.x + 5) * TT + 2, y: (L.y + 1) * TT + 4, dir: 'up' },
-        { x: (L.x + 5) * TT + 18, y: (L.y + 1) * TT + 4, dir: 'left' },
-        { x: (L.x + 5) * TT - 14, y: (L.y + 1) * TT + 4, dir: 'right' },
+        { x: (L.x + 10) * TT, y: ry, dir: 'up' },
+        { x: (L.x + 10) * TT + 40, y: ry, dir: 'up' },
       ];
     }
 
-    // eating spots around the existing lounge table (fits inside lounge without extra width)
+    // eating spots below the coffee/snack table
     foodSpots(b) {
-      const L = b.lounge;
+      const L = b.lounge, ry = (L.y + 4) * TT + 6;
       return [
-        { x: (L.x + 4) * TT - 6, y: (L.y + 1) * TT + 4, dir: 'right' },
-        { x: (L.x + 4) * TT + 18, y: (L.y + 1) * TT + 4, dir: 'left' },
+        { x: (L.x + 5) * TT, y: ry, dir: 'up' },
+        { x: (L.x + 5) * TT + 40, y: ry, dir: 'up' },
       ];
     }
 
     sofaSpots(b) {
-      // two nappers per sofa — one sofa above, the second below
+      // one napper per sofa, centred — two sofas, one above the other
       const L = b.lounge;
       const sx = (L.x + 1) * TT - 1;
       const sy1 = (L.y + 1) * TT - 8;
       const sy2 = (L.y + 3) * TT - 8;
       return [
-        { x: sx + 14, y: sy1 + 9, side: -1 },
-        { x: sx + 34, y: sy1 + 9, side: 1 },
-        { x: sx + 14, y: sy2 + 9, side: -1 },
-        { x: sx + 34, y: sy2 + 9, side: 1 },
+        { x: sx + 24, y: sy1 + 9, side: -1 },
+        { x: sx + 24, y: sy2 + 9, side: 1 },
       ];
     }
 
-    // two idle workers square off at a ping-pong table in the lounge
+    // two idle workers square off at the ping-pong table (bottom-right of the
+    // lounge, below the bar); also the minion brawl arena
     pingpongSpots(b) {
-      const L = b.lounge;
-      const px = (L.x + 7) * TT, py = (L.y + 1) * TT + 4;
+      const L = b.lounge, ry = (L.y + 4) * TT + 6;
       return [
-        { x: px - 8, y: py, dir: 'right' },
-        { x: px + 8, y: py, dir: 'left' },
+        { x: (L.x + 15) * TT, y: ry, dir: 'right' },
+        { x: (L.x + 15) * TT + 40, y: ry, dir: 'left' },
       ];
     }
 
@@ -1170,7 +1171,10 @@
           else if (sofaI < sofa.length) { activity = 'nap'; spot = { ...sofa[sofaI++] }; }
           else if (pingI < ping.length && !fighting.size) { activity = 'pingpong'; spot = { ...ping[pingI++] }; }
           else if (drinkI < drinks.length) { activity = 'drink'; spot = { ...drinks[drinkI++] }; }
-          else { activity = 'eat'; spot = { ...foods[eatI++ % foods.length] }; }
+          else if (eatI < foods.length) { activity = 'eat'; spot = { ...foods[eatI++] }; }
+          // lounge full: leave this minion unassigned so it stays idle at its
+          // own desk rather than piling onto an occupied spot
+          if (!spot) continue;
           plan.set(key, { activity, spot, b });
         }
       }

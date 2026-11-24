@@ -78,7 +78,9 @@ session list; both show the same live data.
   blink their visors three times on every poll (gold ↔ cyan, then back to
   gold); an EVA repair crew
   arrives by shuttle and welds patches onto a hull; idle agents leave their
-  desks to nap, drink, eat, or play ping-pong; a killed session walks out to
+  desks to nap, drink, eat, or play ping-pong in the lounge — spots are spread
+  out so nobody stands on anyone, and once the lounge is full the extra idle
+  crew just stay at their desks; a killed session walks out to
   the shuttle and departs. When a host goes offline its office canopy retracts
   and it redeploys on reconnect. Distant starship traffic (Falcon, X-Wing,
   Enterprise) crosses the sky.

@@ -141,6 +141,8 @@ check('mischief bubbles defined', ['fart', 'burp', 'giggle', 'banana', 'pow', 'd
 check('town.js wires the idle mischief (antics + brawl)',
   town.includes('mischiefAt') && town.includes('drawFighter') && town.includes('drawBrawlCloud') && town.includes("activity === 'fight'"));
 check('town.js scales high-res minions back to the crew footprint', town.includes('const charScale ='));
+check('lounge spots spread on a roomy row + occupancy capped',
+  town.includes('(L.y + 4) * TT + 6') && town.includes('if (!spot) continue;'));
 check('default crew is minions', app.includes("localStorage.getItem('pc.crew') || 'minions'"));
 check('index.html has the cfg-crew select with 3 options',
   /id="cfg-crew"/.test(html) && ['astronauts', 'minions', 'evil'].every((v) => html.includes(`value="${v}"`)));
