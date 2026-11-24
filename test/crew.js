@@ -122,6 +122,20 @@ call("window.WhCrew.mode = 'astronauts'");
 check('switching back to astronauts reuses the cached sprite', render(look(3)) === astro);
 check('astronaut stays 20×24', astro.width === 20 && astro.height === 24);
 
+// eye count is a property of the minion TYPE, never of the pose: a one-eyed
+// minion (Stuart) keeps exactly one eye seated at the desk, typing, standing,
+// and in profile. Pupils are drawn as '#1f2937' fillRects (one per open eye).
+call("window.WhCrew.mode = 'minions'");
+const pupils = (c) => c.ops.filter((o) => o[0] === 'fillRect' && o[1] === '#1f2937').length;
+const stuart = look(0), kevin = look(3);
+check('Stuart keeps ONE eye seated at the desk', pupils(render(stuart, 'down', 0, 'sit', false)) === 1);
+check('Stuart keeps ONE eye while typing', pupils(render(stuart, 'down', 1, 'sit', false)) === 1);
+check('Stuart keeps ONE eye standing', pupils(render(stuart, 'down', 0, 'stand', false)) === 1);
+check('Stuart keeps ONE eye in profile', pupils(render(stuart, 'left', 0, 'stand', false)) === 1);
+check('Kevin has TWO eyes seated at the desk', pupils(render(kevin, 'down', 0, 'sit', false)) === 2);
+check('Kevin has TWO eyes standing', pupils(render(kevin, 'down', 0, 'stand', false)) === 2);
+check('profile shows a single eye (Kevin)', pupils(render(kevin, 'right', 0, 'stand', false)) === 1);
+
 // determinism per session name
 const n1 = render(TA.townLookFor('alice'));
 const n2 = render(TA.townLookFor('alice'));
