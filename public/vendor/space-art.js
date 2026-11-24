@@ -5,13 +5,13 @@
 
   const TT = 16;
 
-  // Crew style preference (browser-only, ⚙ → Crew): 'astronauts' (default),
-  // 'minions' or 'evil' (diabolic purple minions). app.js updates window.WhCrew
+  // Crew style preference (browser-only, ⚙ → Crew): 'minions' (default),
+  // 'evil' (diabolic purple minions) or 'astronauts'. app.js updates window.WhCrew
   // on change; townCharacter reads it per call and keys its cache by it, so the
   // switch applies live on the next frame.
   try {
-    window.WhCrew = window.WhCrew || { mode: localStorage.getItem('pc.crew') || 'astronauts' };
-  } catch { window.WhCrew = window.WhCrew || { mode: 'astronauts' }; }
+    window.WhCrew = window.WhCrew || { mode: localStorage.getItem('pc.crew') || 'minions' };
+  } catch { window.WhCrew = window.WhCrew || { mode: 'minions' }; }
 
   // Custom Space Sprites
   function createSpaceSprites() {
@@ -322,6 +322,57 @@
       ctx.fillStyle = '#fef08a';
       ctx.fillRect(5, 4, 1, 1);
       ctx.fillRect(7, 4, 1, 1);
+    });
+
+    // ---- Minion mischief bubbles (idle antics: fart / burp / giggle / banana,
+    //      plus POW + dizzy for the lounge brawls). Same 13×14 speech-bubble
+    //      shell as the other idle activities; only minions ever show these.
+    sp.bubble.fart = makeBubble((ctx) => {
+      // green gas cloud with stink squiggles
+      ctx.fillStyle = '#84cc16';
+      ctx.fillRect(3, 5, 4, 3);
+      ctx.fillRect(6, 4, 4, 4);
+      ctx.fillRect(4, 4, 2, 1);
+      ctx.fillStyle = '#4d7c0f';
+      ctx.fillRect(4, 2, 1, 2); ctx.fillRect(6, 1, 1, 2); ctx.fillRect(8, 2, 1, 2);
+    });
+    sp.bubble.burp = makeBubble((ctx) => {
+      // rising belch waves
+      ctx.fillStyle = '#65a30d';
+      ctx.fillRect(3, 7, 7, 2);
+      ctx.fillStyle = '#84cc16';
+      ctx.fillRect(4, 5, 5, 1); ctx.fillRect(5, 3, 3, 1); ctx.fillRect(6, 1, 2, 1);
+    });
+    sp.bubble.giggle = makeBubble((ctx) => {
+      // "hee hee" — three ascending laugh dots + a grin
+      ctx.fillStyle = '#f59e0b';
+      ctx.fillRect(3, 6, 1, 1); ctx.fillRect(5, 4, 1, 1); ctx.fillRect(7, 2, 1, 1);
+      ctx.fillStyle = '#1e293b';
+      ctx.fillRect(4, 8, 5, 1); ctx.fillRect(3, 7, 1, 1); ctx.fillRect(9, 7, 1, 1);
+    });
+    sp.bubble.banana = makeBubble((ctx) => {
+      // yellow banana crescent
+      ctx.fillStyle = '#fde047';
+      ctx.fillRect(3, 3, 2, 4);
+      ctx.fillRect(4, 6, 4, 2);
+      ctx.fillRect(8, 5, 2, 2);
+      ctx.fillStyle = '#a16207';
+      ctx.fillRect(3, 2, 1, 1); ctx.fillRect(9, 4, 1, 1);
+    });
+    sp.bubble.pow = makeBubble((ctx) => {
+      // comic impact starburst
+      ctx.fillStyle = '#ef4444';
+      ctx.fillRect(5, 2, 3, 7); ctx.fillRect(3, 4, 7, 3);
+      ctx.fillStyle = '#fde047';
+      ctx.fillRect(5, 4, 3, 3);
+      ctx.fillRect(4, 3, 1, 1); ctx.fillRect(8, 6, 1, 1);
+    });
+    sp.bubble.dizzy = makeBubble((ctx) => {
+      // circling stars (post-brawl)
+      ctx.fillStyle = '#fde047';
+      ctx.fillRect(3, 3, 2, 2); ctx.fillRect(8, 5, 2, 2); ctx.fillRect(5, 7, 2, 2);
+      ctx.fillStyle = '#f59e0b';
+      ctx.fillRect(4, 4, 1, 1); ctx.fillRect(9, 6, 1, 1);
     });
 
     // Millennium Falcon (Star Wars YT-1300 light freighter)

@@ -36,6 +36,14 @@
 
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
   const hash = (s) => { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return Math.abs(h); };
+  // Minion crew on duty? (⚙ → Crew). Read live so a mid-scene switch applies.
+  const minionMode = () => { const m = window.WhCrew && window.WhCrew.mode; return m === 'minions' || m === 'evil'; };
+  const evilMode = () => (window.WhCrew && window.WhCrew.mode) === 'evil';
+  // Idle minion mischief: solo antics fire on a slow per-agent schedule, and
+  // pairs occasionally square off for a cartoon brawl (see idlePlan/drawFighter).
+  const ANTICS = ['fart', 'burp', 'giggle', 'banana', 'dance'];
+  const ANTIC_DUR = 2.6;      // s an antic lasts
+  const FIGHT_WINDOW = 16;    // s bucket a brawl assignment lives in
   // byte formatting for the network console (the header readout has its own copy in app.js)
   const fmtB = (b) => b >= 1048576 ? (b / 1048576).toFixed(1) + ' MB' : b >= 1024 ? (b / 1024).toFixed(1) + ' KB' : Math.round(b) + ' B';
   const fmtBps = (b) => fmtB(b) + '/s';
@@ -1075,6 +1083,31 @@
       ];
     }
 
+    // two minions brawl INSIDE the office, on the lounge floor (the ping-pong
+    // arena — a known walkable spot where two agents already face off). Reusing
+    // it keeps the brawl indoors and pathable; idlePlan reserves the table so
+    // no one plays ping-pong on top of the fight.
+    fightSpots(b) {
+      return this.pingpongSpots(b);
+    }
+
+    // Solo idle antic for a minion at time t, or null. Deterministic per agent
+    // (hash of its key) so it is stable across frames and polls: each minion
+    // goofily does something every ~40–70 s for ANTIC_DUR seconds. Pure overlay —
+    // it never touches the nap state machine.
+    mischiefAt(key, t) {
+      if (!minionMode() || REDUCED) return null;
+      const h = hash(key);
+      const period = 14 + (h % 9);             // 14–22 s base cycle
+      const stagger = (h % 1000) / 1000 * period;
+      const u = t + stagger;
+      const cycle = Math.floor(u / period);
+      if ((h + cycle) % 3 !== 0) return null;  // only ~1 cycle in 3 → an antic every ~40–70 s
+      const p = (u - cycle * period) / ANTIC_DUR;
+      if (p < 0 || p >= 1) return null;
+      return { kind: ANTICS[(h + cycle) % ANTICS.length], p };
+    }
+
     // deterministic idle activity for an agent (by name): sleep on sofa, drink water, or eat food
     activityFor(name) {
       // idle workers only rest — they never take the shuttle; only killed
@@ -1104,8 +1137,26 @@
           if (s && !s.activity) idle.push(key);
         }
         idle.sort();
+        // Minion mode: occasionally (≈1 window in 4) pair two idle minions for a
+        // cartoon brawl on the street outside. Stable within a FIGHT_WINDOW bucket
+        // so they walk over, fight, then wander back when the window rolls over.
+        const fighting = new Set();
+        if (minionMode() && !REDUCED && idle.length >= 2) {
+          const bucket = Math.floor(performance.now() / 1000 / FIGHT_WINDOW);
+          if (hash(b.hostKey + ':' + bucket) % 4 === 0) {
+            const fs = this.fightSpots(b);
+            const i = hash(b.hostKey + 'a' + bucket) % idle.length;
+            let j = hash(b.hostKey + 'b' + bucket) % idle.length;
+            if (j === i) j = (j + 1) % idle.length;
+            const ka = idle[i], kb = idle[j];
+            plan.set(ka, { activity: 'fight', spot: fs[0], b, fight: { partner: kb, lead: true } });
+            plan.set(kb, { activity: 'fight', spot: fs[1], b, fight: { partner: ka, lead: false } });
+            fighting.add(ka); fighting.add(kb);
+          }
+        }
         let sofaI = 0, pingI = 0, drinkI = 0, eatI = 0;
         for (const key of idle) {
+          if (fighting.has(key)) continue; // already paired off for a brawl
           const name = key.slice(b.hostKey.length + 1);
           const want = this.activityFor(name); // 'nap' | 'drink' | 'eat'
           let activity, spot;
@@ -1113,7 +1164,7 @@
           else if (want === 'drink' && drinkI < drinks.length) { activity = 'drink'; spot = { ...drinks[drinkI++] }; }
           else if (want === 'eat' && eatI < foods.length) { activity = 'eat'; spot = { ...foods[eatI++] }; }
           else if (sofaI < sofa.length) { activity = 'nap'; spot = { ...sofa[sofaI++] }; }
-          else if (pingI < ping.length) { activity = 'pingpong'; spot = { ...ping[pingI++] }; }
+          else if (pingI < ping.length && !fighting.size) { activity = 'pingpong'; spot = { ...ping[pingI++] }; }
           else if (drinkI < drinks.length) { activity = 'drink'; spot = { ...drinks[drinkI++] }; }
           else { activity = 'eat'; spot = { ...foods[eatI++ % foods.length] }; }
           plan.set(key, { activity, spot, b });
@@ -2089,9 +2140,11 @@
           if (nap.phase === 'checking' || nap.phase === 'activity' || nap.phase === 'waiting-bus') {
             const pos = nap.phase === 'checking' ? this.frontPos(nap.b) : (nap.p && nap.p.spot);
             if (pos) {
-              // naps lie down on the sofa; everything else stands
+              // naps lie down on the sofa; fighters brawl; everything else stands
               if (nap.phase === 'activity' && nap.p && nap.p.activity === 'nap')
                 list.push([pos.y + 8, () => this.drawNapper(key, nap, bubbles)]);
+              else if (nap.phase === 'activity' && nap.p && nap.p.activity === 'fight')
+                list.push([pos.y + 8, () => this.drawFighter(key, nap, pos, bubbles, t)]);
               else
                 list.push([pos.y + 8, () => this.drawAgentAt(key, nap, pos, bubbles)]);
             }
@@ -2189,6 +2242,11 @@
       ctx.drawImage(sprite, -w / 2, -h / 2, w, h);
       ctx.restore();
       bubbles.push([x + (spot.side || 0) * 16, y - 12, 'sleep']);
+      // even a sleeping minion lets one rip now and then
+      if (minionMode()) {
+        const a = this.mischiefAt(key, performance.now() / 1000);
+        if (a && a.kind === 'fart') this.drawGas(x + 12, y + 4, a.p);
+      }
     }
 
     // an agent standing still at a spot: checking in at the front desk (✓),
@@ -2198,12 +2256,38 @@
       const { ctx } = this;
       const x = pos.x, y = pos.y;
       const dir = (pos && pos.dir) ? pos.dir : 'down';
-      const c = TA.townCharacter(look, dir, 0, 'stand', false);
+      const t = performance.now() / 1000;
+      // solo minion mischief (never while checking in at the front desk)
+      const antic = nap.phase === 'activity' ? this.mischiefAt(key, t) : null;
+      const frame = antic && antic.kind === 'dance' ? Math.floor(antic.p * 8) % 4 : 0;
+      const c = TA.townCharacter(look, dir, frame, 'stand', false);
       const w = c.width * AS, h = c.height * AS;
       ctx.fillStyle = 'rgba(0,0,0,.2)';
       ctx.fillRect(Math.round(x) - 5, Math.round(y) - 1, 10, 3);
-      ctx.drawImage(this.sprite2x(c), Math.round(x) - w / 2, Math.round(y) - h + 1, w, h);
-      if (nap.phase === 'checking') bubbles.push([x, y - h - 4, 'done']);
+
+      let dx = 0, dy = 0, rot = 0;
+      if (antic) {
+        const p = antic.p;
+        if (antic.kind === 'fart') { rot = 0.12; this.drawGas(x - 6, y - 6, p); }
+        else if (antic.kind === 'burp') { rot = -0.1; dy = -1; this.drawGas(x + 2, y - h - 2, p, true); }
+        else if (antic.kind === 'giggle') { dy = -Math.abs(Math.sin(p * Math.PI * 4)) * 3; }
+        else if (antic.kind === 'dance') { rot = Math.sin(p * Math.PI * 6) * 0.12; dy = -Math.abs(Math.sin(p * Math.PI * 6)) * 2; }
+        else if (antic.kind === 'banana') {
+          if (p > 0.55) rot = Math.sin((p - 0.55) / 0.45 * Math.PI) * 1.1; // slip on the peel, then recover
+          else dy = -Math.abs(Math.sin(p * Math.PI * 3));
+          if (p > 0.5) { ctx.fillStyle = '#fde047'; ctx.fillRect(Math.round(x) + 5, Math.round(y) - 2, 4, 2); ctx.fillStyle = '#a16207'; ctx.fillRect(Math.round(x) + 8, Math.round(y) - 3, 1, 1); }
+        }
+      }
+      ctx.save();
+      ctx.translate(Math.round(x) + dx, Math.round(y) + dy);
+      if (rot) ctx.rotate(rot);
+      ctx.drawImage(this.sprite2x(c), -w / 2, -h + 1, w, h);
+      ctx.restore();
+
+      if (antic) {
+        const bk = antic.kind === 'dance' ? 'giggle' : antic.kind;
+        bubbles.push([x, y - h - 4, bk]);
+      } else if (nap.phase === 'checking') bubbles.push([x, y - h - 4, 'done']);
       else if (nap.p) {
         const act = nap.p.activity;
         if (act === 'water' || act === 'drink') bubbles.push([x, y - h - 4, 'drink']);
@@ -2212,6 +2296,77 @@
         else if (act === 'holochess') bubbles.push([x, y - h - 4, 'chess']);
         else bubbles.push([x, y - h - 4, 'idle']);
       }
+    }
+
+    // expanding, fading gas puffs — green for minions, purple for the evil ones.
+    // `rise` drifts them upward (a burp) instead of hanging low (a fart).
+    drawGas(x, y, p, rise) {
+      const { ctx } = this;
+      const col = evilMode() ? '168,85,247' : '132,204,22';
+      for (let i = 0; i < 3; i++) {
+        const q = clamp(p * 1.4 - i * 0.18, 0, 1);
+        if (q <= 0 || q >= 1) continue;
+        const r = 2 + q * 5;
+        const gx = x + Math.sin(i * 2.1 + p * 3) * 3 - q * 4;
+        const gy = y + (rise ? -q * 10 : q * 2) + i * 2;
+        ctx.fillStyle = `rgba(${col},${(0.5 * (1 - q)).toFixed(3)})`;
+        ctx.beginPath(); ctx.arc(gx, gy, r, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+
+    // one half of a minion brawl: the minion shakes and faces its rival; the
+    // lead fighter also draws the shared cartoon dust cloud between them. Each
+    // fighter draws itself, so neither can vanish if the other is interrupted.
+    drawFighter(key, nap, pos, bubbles, t) {
+      const { ctx } = this;
+      const look = this.agentLook(key);
+      const x = pos.x, y = pos.y;
+      const dir = (pos && pos.dir) ? pos.dir : 'down';
+      const fight = nap.p && nap.p.fight;
+      const pnap = fight && this.naps.get(fight.partner);
+      const partnerHere = !!(pnap && pnap.phase === 'activity' && pnap.p && pnap.p.activity === 'fight');
+      const shake = minionMode() && !REDUCED ? Math.sin(t * 30 + hash(key)) * 1.5 : 0;
+      const c = TA.townCharacter(look, dir, Math.floor(t * 10) % 4, 'stand', false);
+      const w = c.width * AS, h = c.height * AS;
+      ctx.fillStyle = 'rgba(0,0,0,.2)';
+      ctx.fillRect(Math.round(x) - 5, Math.round(y) - 1, 10, 3);
+      ctx.drawImage(this.sprite2x(c), Math.round(x) - w / 2 + shake, Math.round(y) - h + 1, w, h);
+      if (fight && fight.lead && partnerHere && minionMode()) {
+        const fs = this.fightSpots(nap.b);
+        this.drawBrawlCloud((fs[0].x + fs[1].x) / 2, (fs[0].y + fs[1].y) / 2 - 8, t, bubbles);
+      }
+    }
+
+    // the classic cartoon fight: a lumpy dust ball with limbs and stars flying
+    // out, and a POW! bubble popping over it. Deterministic wiggle (no RNG) so
+    // it animates smoothly and identically every frame.
+    drawBrawlCloud(mx, my, t, bubbles) {
+      const { ctx } = this;
+      const wob = Math.sin(t * 18) * 1.5;
+      // dust ball — overlapping tan/grey puffs
+      const puffs = [[0, 0, 13], [-9, 3, 8], [9, 2, 8], [-5, -7, 7], [6, -6, 7], [0, 7, 8]];
+      for (const [ox, oy, r] of puffs) {
+        ctx.fillStyle = 'rgba(214,203,178,0.95)';
+        ctx.beginPath(); ctx.arc(mx + ox + Math.sin(t * 22 + ox) * 1.2, my + oy + wob * 0.4, r, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.fillStyle = 'rgba(168,152,124,0.9)';
+      for (const [ox, oy, r] of [[-6, 4, 4], [7, -3, 4], [0, -6, 3]]) {
+        ctx.beginPath(); ctx.arc(mx + ox, my + oy + wob * 0.3, r, 0, Math.PI * 2); ctx.fill();
+      }
+      // a flailing arm and leg poking out
+      ctx.strokeStyle = '#fdd835'; ctx.lineWidth = 3; ctx.lineCap = 'round';
+      const aa = Math.sin(t * 16) * 0.9;
+      ctx.beginPath(); ctx.moveTo(mx - 10, my - 2); ctx.lineTo(mx - 16 - Math.cos(aa) * 4, my - 8 + Math.sin(aa) * 5); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(mx + 10, my + 4); ctx.lineTo(mx + 17 + Math.sin(aa) * 3, my + 9 + Math.cos(aa) * 4); ctx.stroke();
+      ctx.lineCap = 'butt';
+      // flying stars
+      ctx.fillStyle = '#fde047';
+      for (let i = 0; i < 3; i++) {
+        const a = t * 6 + i * 2.1;
+        const sx = mx + Math.cos(a) * 16, sy = my - 10 + Math.sin(a * 1.3) * 6;
+        ctx.fillRect(sx - 1, sy - 2, 2, 4); ctx.fillRect(sx - 2, sy - 1, 4, 2);
+      }
+      if (Math.floor(t * 2.5) % 2 === 0) bubbles.push([mx, my - 20, 'pow']);
     }
 
     drawWalker(key, nap, r, t) {
@@ -2244,7 +2399,14 @@
         const c = TA.townCharacter(TA.townLookFor(name), 'down', typing, 'sit', state === 'idle');
         const cw = c.width * AS, ch = c.height * AS;
         ctx.drawImage(this.sprite2x(c), cx - cw / 2, Y + 25 - ch, cw, ch);
-        if (state === 'idle' && bubbles) bubbles.push([cx, Y - 12, 'sleep']); // Zzz above chair
+        if (state === 'idle' && bubbles) {
+          // an idle minion at its desk still goofs off (fart / burp / giggle)
+          const antic = this.mischiefAt(key, t);
+          if (antic && (antic.kind === 'fart' || antic.kind === 'burp' || antic.kind === 'giggle')) {
+            bubbles.push([cx, Y - 12, antic.kind]);
+            if (antic.kind === 'fart') this.drawGas(cx - 8, Y + 12, antic.p);
+          } else bubbles.push([cx, Y - 12, 'sleep']); // Zzz above chair
+        }
       }
 
       // table over the agent's lower body (also baked in the base canvas)

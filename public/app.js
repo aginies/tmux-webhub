@@ -1572,17 +1572,17 @@ if (window.TownView) {
 }
 
 // ---------- crew style (Space view) ----------
-// astronauts (default) | minions | evil (diabolic purple minions). Browser-only
+// minions (default) | evil (diabolic purple minions) | astronauts. Browser-only
 // pref read by space-art.js's townCharacter; the sprite cache is keyed by mode,
 // so the change applies live on the next frame.
 function setCrew(mode) {
-  if (mode !== 'minions' && mode !== 'evil') mode = 'astronauts';
+  if (mode !== 'minions' && mode !== 'evil' && mode !== 'astronauts') mode = 'minions';
   window.WhCrew = window.WhCrew || {};
   window.WhCrew.mode = mode;
   localStorage.setItem('pc.crew', mode);
   if (townView) townView.needsRedraw = true; // reduced-motion: force one redraw
 }
-setCrew(localStorage.getItem('pc.crew') || 'astronauts');
+setCrew(localStorage.getItem('pc.crew') || 'minions');
 function setView(v) {
   if (v === 'town' && !townView) v = 'list'; // no art bundle → list only
   // The town floating window carries inline left/top/width/height from

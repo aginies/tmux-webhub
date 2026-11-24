@@ -318,10 +318,13 @@ atomic and JSON-validated, so a broken file can never be saved.
 - **Theme** — Space (default), classic dark, light, or high contrast. Browser
   only (stored in `localStorage`), applies to the terminal palette and the scene
   skin.
-- **Crew** — who mans the Space view: **Astronauts** (default), **Minions**
-  (Kevin, Stuart, Bob & Otto — each with its own height, eye count and hair,
-  assigned per session) or **Evil minions** (the diabolic purple variant).
+- **Crew** — who mans the Space view: **Minions** (default — Kevin, Stuart,
+  Bob & Otto, each with its own height, eye count and hair, assigned per
+  session), **Evil minions** (the diabolic purple variant) or **Astronauts**.
   Browser only, applies live; the imperial guards stay on duty either way.
+  Idle minions goof off: they fart, burp, giggle, slip on banana peels, dance,
+  and occasionally pick a fight with another minion (cartoon dust-cloud brawl,
+  POW! and all). Astronauts just rest.
 - **Log out** — ends this browser's session (with 2FA: deleted server-side).
 
 The host list and per-host `cmd` apply immediately; server settings (`port`,

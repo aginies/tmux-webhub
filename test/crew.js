@@ -59,8 +59,9 @@ const render = (lk, dir = 'down', frame = 0, pose = 'stand', eyes = false) => TA
 const fills = (c) => c.ops.filter((o) => o[0] === 'fillRect').map((o) => o[1]);
 const sig = (c) => JSON.stringify(c.ops);
 
-// default mode
-check('default crew mode is astronauts', call('window.WhCrew.mode') === 'astronauts');
+// default mode is minions
+check('default crew mode is minions', call('window.WhCrew.mode') === 'minions');
+call("window.WhCrew.mode = 'astronauts'");
 const astro = render(look(3));
 check('astronaut renders the white EVA suit', fills(astro).includes('#f8fafc'));
 
@@ -129,6 +130,13 @@ const town = fs.readFileSync(path.join(ROOT, 'public/town.js'), 'utf8');
 check('space theme enlarges the crew (TOWN_AGENT_SCALE > vendor 1.4)', TA.TOWN_AGENT_SCALE > 1.4);
 check('rename hit box matches the 20×24 sprite', town.includes('const aw = 20 * AS, ah = 24 * AS;'));
 check('session tabs default OFF', app.includes("localStorage.getItem('pc.tabs') === '1'"));
+
+// minion mischief bubble art exists (fart / burp / giggle / banana / pow / dizzy)
+const space = fs.readFileSync(path.join(ROOT, 'public/vendor/space-art.js'), 'utf8');
+check('mischief bubbles defined', ['fart', 'burp', 'giggle', 'banana', 'pow', 'dizzy'].every((k) => space.includes('sp.bubble.' + k + ' =')));
+check('town.js wires the idle mischief (antics + brawl)',
+  town.includes('mischiefAt') && town.includes('drawFighter') && town.includes('drawBrawlCloud') && town.includes("activity === 'fight'"));
+check('default crew is minions', app.includes("localStorage.getItem('pc.crew') || 'minions'"));
 check('index.html has the cfg-crew select with 3 options',
   /id="cfg-crew"/.test(html) && ['astronauts', 'minions', 'evil'].every((v) => html.includes(`value="${v}"`)));
 check('app.js persists the pref (pc.crew) and applies it live',
