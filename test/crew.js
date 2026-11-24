@@ -116,7 +116,7 @@ check('imperial guard untouched by crew mode', gEvil === gMin && gMin === gAst);
 call("window.WhCrew.mode = 'minions'");
 check('switching back to minions reuses the cached sprite', render(look(3)) === min);
 // definition upgrade: minions rasterise at 2× resolution with a bold outline
-check('minion rendered at 4× resolution (80×96)', min.width === 80 && min.height === 96);
+check('minion rendered at 16× resolution (320×384)', min.width === 320 && min.height === 384);
 check('minion has a bold cartoon outline', fills(min).includes('#1f2430'));
 call("window.WhCrew.mode = 'astronauts'");
 check('switching back to astronauts reuses the cached sprite', render(look(3)) === astro);

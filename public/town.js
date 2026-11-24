@@ -1233,6 +1233,9 @@
     // set are memoized, so the cache is bounded) so every per-frame bilinear
     // draw under a HiDPI transform has real source pixels — sharper, not blurry.
     sprite2x(c) {
+      // Already-hi-res sources (e.g. 16× minions at 320px) don't need doubling —
+      // skip to avoid a wasteful 4× memory blow-up; they're crisp as-is.
+      if (c.width >= 160) return c;
       if (!this._sprite2x) this._sprite2x = new Map();
       let big = this._sprite2x.get(c);
       if (big) return big;
