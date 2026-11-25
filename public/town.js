@@ -49,8 +49,8 @@
   const ANTICS = ['fart', 'burp', 'giggle', 'banana', 'dance', 'sneeze', 'spin', 'panic'];
   const WORK_ANTICS = ['panic', 'coffee', 'headbang', 'sneeze', 'spin', 'rocket'];
   const WEAPONS = ['gun', 'banana', 'sword', 'plunger', 'fish', 'bat'];  // crazy brawl weapons
-  const ANTIC_DUR = 2.6;      // s an antic lasts
-  const FIGHT_WINDOW = 16;    // s bucket a brawl assignment lives in
+  const ANTIC_DUR = 3.2;      // s an antic lasts
+  const FIGHT_WINDOW = 10;    // s bucket a brawl assignment lives in
   // byte formatting for the network console (the header readout has its own copy in app.js)
   const fmtB = (b) => b >= 1048576 ? (b / 1048576).toFixed(1) + ' MB' : b >= 1024 ? (b / 1024).toFixed(1) + ' KB' : Math.round(b) + ' B';
   const fmtBps = (b) => fmtB(b) + '/s';
@@ -1118,11 +1118,11 @@
     mischiefAt(key, t) {
       if (!minionMode() || REDUCED) return null;
       const h = hash(key);
-      const period = 14 + (h % 9);             // 14–22 s base cycle
+      const period = 8 + (h % 6);              // 8–13 s base cycle
       const stagger = (h % 1000) / 1000 * period;
       const u = t + stagger;
       const cycle = Math.floor(u / period);
-      if ((h + cycle) % 3 !== 0) return null;  // only ~1 cycle in 3 → an antic every ~40–70 s
+      // fires every cycle — minions are relentless goofballs (~every 8–13 s)
       const p = (u - cycle * period) / ANTIC_DUR;
       if (p < 0 || p >= 1) return null;
       // kind via a hash decorrelated from the %3 gate (otherwise the gate's
@@ -1137,11 +1137,11 @@
     workAntic(key, t) {
       if (!minionMode() || REDUCED) return null;
       const h = hash(key + 'w');
-      const period = 18 + (h % 10);            // 18–27 s base cycle
+      const period = 10 + (h % 6);             // 10–15 s base cycle
       const stagger = (h % 1000) / 1000 * period;
       const u = t + stagger;
       const cycle = Math.floor(u / period);
-      if ((h + cycle) % 3 !== 0) return null;  // ~1 cycle in 3 → every ~54–80 s
+      // fires every cycle — even working minions can't sit still (~every 10–15 s)
       const p = (u - cycle * period) / ANTIC_DUR;
       if (p < 0 || p >= 1) return null;
       return { kind: WORK_ANTICS[hash(key + ':' + cycle) % WORK_ANTICS.length], p };
@@ -1182,7 +1182,7 @@
         const fighting = new Set();
         if (minionMode() && !REDUCED && idle.length >= 2) {
           const bucket = Math.floor(performance.now() / 1000 / FIGHT_WINDOW);
-          if (hash(b.hostKey + ':' + bucket) % 4 === 0) {
+          if (hash(b.hostKey + ':' + bucket) % 2 === 0) {
             const fs = this.fightSpots(b);
             const i = hash(b.hostKey + 'a' + bucket) % idle.length;
             let j = hash(b.hostKey + 'b' + bucket) % idle.length;
